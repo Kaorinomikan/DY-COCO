@@ -1,0 +1,17 @@
+'use strict';
+const fs = require('node:fs');
+const path = require('node:path');
+const vm = require('node:vm');
+const assert = require('node:assert/strict');
+const source = fs.readFileSync(path.join(__dirname, '../src/content/stock-direct.js'), 'utf8');
+const start = source.indexOf('  function buildClearBody(');
+const end = source.indexOf('\n  /** 提交', start);
+const context = vm.createContext({ SCENE: 1 });
+vm.runInContext(source.slice(start, end), context);
+const build = (stock, arrive = 0) => context.buildClearBody('1234567', [{ sku_id: '123456789', batch_stock_list: [{ stock_num: stock, arrive_time: arrive }] }], {});
+assert.equal(JSON.parse(build(12)).stock_list[0].batch_stock_list[0].stock_incr_num, -12);
+assert.equal(JSON.parse(build('12')).stock_list[0].batch_stock_list[0].stock_incr_num, -12);
+for (const stock of ['unknown', Infinity, -1]) assert.equal(build(stock), null);
+for (const arrive of ['unknown', Infinity, -1]) assert.equal(build(12, arrive), null);
+assert.equal(context.buildClearBody('1234567', [{ sku_id: '123456789', stock_type: 1, total_stock_num: 0 }], {}), null);
+console.log('库存数值守卫自测：9/9 通过；非法数量与特殊库存拒绝直提。');

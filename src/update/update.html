@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <title>可可助手 · 更新</title>
+  <link rel="stylesheet" href="update.css">
+</head>
+<body>
+  <div class="wrap">
+    <h1>可可助手 · 更新</h1>
+
+    <div class="meta">
+      <div class="meta-row">
+        <span class="k">当前版本</span>
+        <b id="cur-ver">—</b>
+      </div>
+      <div class="meta-row" id="meta-target">
+        <span class="k">目标版本</span>
+        <b id="tgt-ver">—</b>
+        <code id="tgt-tag"></code>
+      </div>
+    </div>
+
+    <!-- 升级模式专属：本版更新要点。拉不到就整块不显示（见 update.js 的 renderWhatsNew） -->
+    <section class="block" id="block-news" hidden>
+      <div class="block-title">本版更新要点</div>
+      <div class="block-body">
+        <div class="news-sum" id="news-sum"></div>
+        <ul class="news-list" id="news-list"></ul>
+      </div>
+    </section>
+
+    <!-- 回退模式专属：备份列表（升级模式下整块隐藏） -->
+    <section class="block" id="block-backups" hidden>
+      <div class="block-title">① 选择要回退到的版本</div>
+      <div class="block-body">
+        <div class="bak-list" id="bak-list"></div>
+        <div class="hint" id="bak-hint"></div>
+      </div>
+    </section>
+
+    <section class="block" id="block-dir">
+      <div class="block-title" id="dir-title">① 扩展目录</div>
+      <div class="block-body">
+        <div class="dir-state" id="dir-state">正在读取…</div>
+        <div class="hint dir-default" id="dir-default" hidden>
+          <b>默认目录 <code>C:\DY-COCO</code></b> —— 用安装助手(双击
+          <code>!安装助手.bat</code>)装的话就是这里;若手动存过别处,就选你实际存放的那一层。
+          判断依据:该文件夹里能看到 <code>manifest.json</code>。
+          <button type="button" class="btn btn-mini" id="btn-copy-dir">复制默认路径</button>
+        </div>
+        <div class="btns">
+          <button type="button" class="btn" id="btn-pick" hidden>选择扩展目录</button>
+          <button type="button" class="btn primary" id="btn-grant" hidden>授权并开始</button>
+        </div>
+        <div class="hint" id="dir-hint"></div>
+      </div>
+    </section>
+
+    <section class="block" id="block-run">
+      <div class="block-title" id="run-title">② 下载并覆盖</div>
+      <div class="block-body">
+        <div class="bar-wrap"><div class="bar" id="bar"></div></div>
+        <div class="log" id="log"></div>
+        <div class="btns">
+          <button type="button" class="btn primary" id="btn-run" hidden>开始覆盖</button>
+          <button type="button" class="btn" id="btn-abort" hidden>中断</button>
+          <button type="button" class="btn" id="btn-rollback" hidden>回退到上一版本</button>
+        </div>
+      </div>
+    </section>
+
+    <section class="block unsupported" id="block-unsupported" hidden>
+      <div class="block-title">本浏览器不支持扩展内自动更新</div>
+      <div class="block-body">
+        <div class="hint">
+          当前内核没有提供 <code>showDirectoryPicker</code>，扩展无法在浏览器内改写自己的文件。
+          请改为手动更新：<br>
+          1. 打开项目标签页，下载最新版本的源码压缩包；<br>
+          2. 解压后覆盖到扩展所在目录（<b>必须是同一个目录</b>，换路径会导致扩展 ID 变化、设置丢失）；<br>
+          3. 回到扩展管理页点一次「重新加载」。
+        </div>
+        <div class="btns">
+          <button type="button" class="btn" id="btn-tags">打开 Gitee 标签页下载</button>
+        </div>
+      </div>
+    </section>
+
+    <div class="foot" id="foot"></div>
+  </div>
+
+  <script src="../shared/gitee.js"></script>
+  <script src="../shared/backup-store.js"></script>
+  <script src="update.js"></script>
+</body>
+</html>

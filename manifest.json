@@ -1,0 +1,295 @@
+{
+  "manifest_version": 3,
+  "name": "可可助手",
+  "version": "26.11.01.2",
+  "description": "抖音抖店、微信小店、中控台小助手",
+  "permissions": [
+    "storage",
+    "tabs",
+    "alarms",
+    "scripting",
+    "desktopCapture",
+    "activeTab",
+    "clipboardRead",
+    "offscreen",
+    "declarativeNetRequest",
+    "declarativeNetRequestWithHostAccess"
+  ],
+  "host_permissions": [
+    "https://*.jinritemai.com/*",
+    "https://anchor.douyin.com/*",
+    "https://liveservice.douyin.com/*",
+    "https://store.weixin.qq.com/*",
+    "https://channels.weixin.qq.com/*",
+    "https://gitee.com/*",
+    "https://raw.giteeusercontent.com/*",
+    "https://api.github.com/*",
+    "https://data.jsdelivr.com/*",
+    "https://dycoco-feedback.app.workbuddy.host/*"
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [
+        "src/feedback/*",
+        "src/content/stock-net-probe-main.js"
+      ],
+      "matches": [
+        "https://*.jinritemai.com/*",
+        "https://dycoco-feedback.app.workbuddy.host/*"
+      ]
+    },
+    {
+      "resources": [
+        "src/content/wx-link-main.js",
+        "src/content/stock-net-probe-main.js"
+      ],
+      "matches": [
+        "https://store.weixin.qq.com/*",
+        "https://channels.weixin.qq.com/*"
+      ]
+    }
+  ],
+  "background": {
+    "service_worker": "src/background/service-worker.js"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://fxg.jinritemai.com/ffa/g/list*",
+        "https://fxg.jinritemai.com/ffa/g/channel-goods-manage/list*"
+      ],
+      "js": [
+        "src/content/flags.js",
+        "src/content/diag.js",
+        "src/content/cursor-fix.js",
+        "src/content/anchor.js",
+        "src/content/dialog.js",
+        "src/content/row-scan.js",
+        "src/content/inject-button.js",
+        "src/content/clear-stock.js",
+        "src/content/stock-net-probe.js",
+        "src/content/stock-direct.js",
+        "src/content/channel-stock.js",
+        "src/live/hide-elements.js",
+        "src/content/debug-panel.js",
+        "src/content/channel-offline-delete.js",
+        "src/content/shop-list-name.js",
+        "src/content/main.js"
+      ],
+      "css": [
+        "src/content/style.css",
+        "src/content/msgbox.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://fxg.jinritemai.com/ffa/content-tool/live/control*",
+        "https://buyin.jinritemai.com/dashboard/live/control*"
+      ],
+      "js": [
+        "src/content/flags.js",
+        "src/content/diag.js",
+        "src/content/cursor-fix.js",
+        "src/content/anchor.js",
+        "src/content/dialog.js",
+        "src/content/row-scan.js",
+        "src/live/tool-slots.js",
+        "src/live/locate.js",
+        "src/content/overlay-guard.js",
+        "src/live/nav.js",
+        "src/live/back-to-top.js",
+        "src/live/back-to-bottom.js",
+        "src/live/search.js",
+        "src/live/hide-elements.js",
+        "src/live/name-wrap.js",
+        "src/live/copy-code.js",
+        "src/live/auto-refresh.js",
+        "src/content/stock-net-probe.js",
+        "src/live/cart-paste.js",
+        "src/content/debug-panel.js",
+        "src/live/auto-loop-lecture.js",
+        "src/live/lucky-bag.js",
+        "src/live/toolbar.js"
+      ],
+      "css": [
+        "src/content/style.css",
+        "src/live/nav.css",
+        "src/content/msgbox.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.jinritemai.com/*"
+      ],
+      "exclude_matches": [
+        "https://*.jinritemai.com/ffa/g/list*",
+        "https://*.jinritemai.com/ffa/content-tool/live/control*",
+        "https://*.jinritemai.com/dashboard/live/control*",
+        "https://compass.jinritemai.com/shop/live-detail*",
+        "https://compass.jinritemai.com/talent/live-statement*",
+        "https://compass.jinritemai.com/screen/live/*",
+        "https://compass.jinritemai.com/shop/commodity/product-list*",
+        "https://compass.jinritemai.com/shop/merchandise-traffic*",
+        "https://*.jinritemai.com/ffa/merchant/*"
+      ],
+      "js": [
+        "src/content/flags.js",
+        "src/live/hide-elements.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://compass.jinritemai.com/shop/live-detail*",
+        "https://compass.jinritemai.com/talent/live-statement*"
+      ],
+      "js": [
+        "src/content/flags.js",
+        "src/content/diag.js",
+        "src/content/anchor.js",
+        "src/content/dialog.js",
+        "src/content/debug-panel.js",
+        "src/live/live-detail.js",
+        "src/live/live-detail-tab.js",
+        "src/live/live-detail-jump.js",
+        "src/live/hide-elements.js"
+      ],
+      "css": [
+        "src/content/style.css",
+        "src/content/msgbox.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://anchor.douyin.com/*",
+        "https://liveservice.douyin.com/*"
+      ],
+      "js": [
+        "src/content/flags.js",
+        "src/content/diag.js",
+        "src/content/dialog.js",
+        "src/content/debug-panel.js",
+        "src/replay/replay-net.js",
+        "src/replay/m3u8.js",
+        "src/replay/replay-meta.js",
+        "src/replay/replay-ui.js",
+        "src/replay/vendor/mux.min.js",
+        "src/replay/replay-writer.js",
+        "src/replay/replay-guard.js",
+        "src/replay/replay-download.js"
+      ],
+      "run_at": "document_start",
+      "css": [
+        "src/content/msgbox.css"
+      ]
+    },
+    {
+      "matches": [
+        "https://compass.jinritemai.com/screen/live/*"
+      ],
+      "js": [
+        "src/content/flags.js",
+        "src/content/diag.js",
+        "src/content/dialog.js",
+        "src/content/debug-panel.js",
+        "src/live/hide-elements.js",
+        "src/replay/replay-ui.js",
+        "src/live/live-screen.js",
+        "src/replay/replay-link.js"
+      ],
+      "css": [
+        "src/content/style.css",
+        "src/content/msgbox.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://compass.jinritemai.com/shop/commodity/product-list*",
+        "https://compass.jinritemai.com/shop/merchandise-traffic*"
+      ],
+      "js": [
+        "src/content/flags.js",
+        "src/content/diag.js",
+        "src/content/anchor.js",
+        "src/content/dialog.js",
+        "src/content/debug-panel.js",
+        "src/live/compass-table.js",
+        "src/live/hide-elements.js"
+      ],
+      "css": [
+        "src/content/style.css",
+        "src/content/msgbox.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://fxg.jinritemai.com/ffa/merchant/*"
+      ],
+      "js": [
+        "src/content/flags.js",
+        "src/content/diag.js",
+        "src/content/anchor.js",
+        "src/content/dialog.js",
+        "src/content/campaign-channel-tick.js",
+        "src/live/hide-elements.js"
+      ],
+      "css": [
+        "src/content/style.css",
+        "src/content/msgbox.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://store.weixin.qq.com/*",
+        "https://channels.weixin.qq.com/*"
+      ],
+      "js": [
+        "src/content/flags.js",
+        "src/content/diag.js",
+        "src/content/anchor.js",
+        "src/content/dialog.js",
+        "src/content/wx-goods-title.js",
+        "src/content/wx-goods-tools.js",
+        "src/content/stock-net-probe.js",
+        "src/content/debug-panel.js"
+      ],
+      "css": [
+        "src/content/style.css",
+        "src/content/msgbox.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://store.weixin.qq.com/*",
+        "https://channels.weixin.qq.com/*"
+      ],
+      "js": [
+        "src/content/wx-link-main.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    }
+  ],
+  "action": {
+    "default_title": "可可助手",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_popup": "src/popup/popup.html"
+  },
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  }
+}

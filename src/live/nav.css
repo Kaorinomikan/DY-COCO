@@ -1,0 +1,123 @@
+/**
+ * 中控台工具栏样式 + 定位控件样式
+ *
+ * 顶部是工具栏外壳与通用按钮(所有注册进来的功能共用),
+ * 下面才是「定位」功能自己的控件样式。
+ *
+ * 尺寸与 aurora 组件对齐,视觉上不突兀。
+ */
+
+/* ===== 工具栏外壳(2026-10-11 新增)=====
+   所有注册到工具栏的功能都挂在它下面,一个功能一个 .dyc-tool 包裹。
+   新功能只要用 ctx.makeButton() 就能拿到与这里一致的按钮外观,
+   不必各写一套内联样式。 */
+#dyc-toolbar {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: 10px;
+  vertical-align: middle;
+}
+
+#dyc-toolbar .dyc-tool {
+  display: inline-flex;
+  align-items: center;
+}
+
+#dyc-toolbar .dyc-tool-btn {
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid #d9dce1;
+  border-radius: 4px;
+  background: #fff;
+  color: #1f2329;
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif;
+  line-height: 28px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+#dyc-toolbar .dyc-tool-btn:hover {
+  background: #f2f3f5;
+  border-color: #c9cdd4;
+}
+
+#dyc-toolbar .dyc-tool-btn:active {
+  background: #e8eaed;
+}
+
+/* 定位控件作为工具栏里的第一个注册项,不再自带左边距 */
+#dyb-nav-box {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  vertical-align: middle;
+}
+
+#dyb-nav-box #dyb-nav-input {
+  width: 80px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid #d9dce1;
+  border-radius: 4px;
+  background: #fff;
+  color: #1f2329;
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif;
+  text-align: center;
+  outline: none;
+  transition: border-color 0.15s;
+}
+
+#dyb-nav-box #dyb-nav-input::placeholder {
+  color: #a9aeb8;
+}
+
+#dyb-nav-box #dyb-nav-input:focus {
+  border-color: #0075ff;
+}
+
+#dyb-nav-box #dyb-nav-go {
+  height: 30px;
+  padding: 0 14px;
+  border: 1px solid #0075ff;
+  border-radius: 4px;
+  background: #0075ff;
+  color: #fff;
+  font-size: 13px;
+  font-family: -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif;
+  line-height: 28px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
+}
+
+#dyb-nav-box #dyb-nav-go:hover {
+  background: #3a8cff;
+  border-color: #3a8cff;
+}
+
+/* 定位进行中禁用，防止重复点击 */
+#dyb-nav-box #dyb-nav-go:disabled {
+  background: #9dbfff;
+  border-color: #9dbfff;
+  cursor: default;
+}
+
+#dyb-nav-box #dyb-nav-go:active {
+  background: #0065d6;
+  border-color: #0065d6;
+}
+
+/* 商品总数提示：紧跟定位按钮 */
+#dyb-nav-box .dyb-nav-count {
+  font-size: 11px;
+  line-height: 1.4;
+  color: #86909c;
+  white-space: nowrap;
+  pointer-events: none;
+  margin-left: 2px;
+}
+

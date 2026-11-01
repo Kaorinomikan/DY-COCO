@@ -1,0 +1,758 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    /* ===== 整体：固定 600 高，页脚"有空间就黏底、没空间就跟内容走" =====
+       2026-10-31 第九轮（最终形态，用户这句把两条要求一次说全了）：
+         「微信态这种功能比较少的情况下，中间留空，调试模式等等都是黏着在最下方」
+         + 上一轮已经定的「抖音态功能多时，要滚到底才看到」。
+       实现只有一条 auto 外边距（.pop-foot 的 margin-top:auto），但必须配三个前提：
+         ① body 是纵向 flex 容器且 height:600px —— 才有"剩余空间"可分配；
+         ② 主体、页头、副标题全部 flex:none —— 谁都不许压缩或放大自己的高度；
+         ③ body overflow-y:auto —— 内容超过 600 时整页滚。
+       于是：
+         · 微信态 370px 内容 → 剩 230px 全归 auto margin，页脚黏在 600-102=498 处，
+           中间那段空白正是用户说的"留空"；
+         · 抖音态 860px 内容 → 没有剩余空间，auto 退化为 0，页脚在 690 处，
+           必须滚到底才见。
+       ★ 主体千万不能写 flex:1：那会吃掉全部剩余空间，页脚被顶到底 —— 微信态就不留空了。
+       ★ 千万不能写 max-height：那会让窗口缩到内容高度，就不是 600 了。 */
+    html {
+      height: 600px;
+      overflow: hidden;
+    }
+    body {
+      width: 280px;
+      height: 600px;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      overflow-y: auto;
+      font-family: -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif;
+      font-size: 13px;
+      color: #1f2329;
+    }
+
+    /* 滚动条收窄到 6px：win 默认 17px，一出现就把 248px 内容宽挤成 231px，
+       分组框宽度会随"这一屏有没有滚动条"来回变。滚动在 body 上（整页滚）。 */
+    body::-webkit-scrollbar {
+      width: 6px;
+    }
+    body::-webkit-scrollbar-thumb {
+      background: #d9dce1;
+      border-radius: 3px;
+    }
+    body::-webkit-scrollbar-track {
+      background: transparent;
+    }
+
+    /* ===== 顶部：标题 + 平台切换胶囊（方案 A，2026-10-31 用户定）=====
+       猫腻全在宽度上：280 − 16×2 = 248px。标题「可可助手」4 字 × 15px ≈ 60px，
+       胶囊 88px，中间 100px 余量 —— 换回 6 字的「抖音可可助手」也放得下，
+       但插件名已统一为「可可助手」，这个余量留给将来的字重变化。 */
+    .pop-head {
+      flex: none;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 16px 16px 0;
+    }
+    .plat-seg {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      padding: 2px;
+      border-radius: 6px;
+      background: #f2f3f5;
+      flex: none;
+    }
+    /* 用 <button> 而不是 <span>：这一处是**主动作**，键盘 Tab 要能到、
+       空格/回车要能触发。普通 span 需自己补 tabindex + keydown，容易漏。 */
+    .plat-item {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      height: 20px;
+      padding: 0 7px;
+      border: 0;
+      border-radius: 4px;
+      background: transparent;
+      font-family: inherit;
+      font-size: 10.5px;
+      line-height: 1;
+      color: #86909c;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .plat-item:hover {
+      color: #4e5969;
+    }
+    .plat-item.on {
+      background: #fff;
+      color: #1f2329;
+      font-weight: 500;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.07);
+    }
+    .plat-item svg {
+      display: block;
+      width: 11px;
+      height: 11px;
+    }
+    /* 判定平台是异步的（要问当前标签页）。在拿到结果之前先把主体藏起来，
+       否则会先按"全部分组"画一遍、再刷成单平台 —— 肉眼就是闪一下。 */
+    body.plat-pending #flags-root {
+      visibility: hidden;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 500;
+    }
+    .tagline {
+      flex: none;
+      padding: 0 16px;
+      color: #86909c;
+      /* 11.5px 不是随手改的：新副标题 21 个字，12px 时 252px > 可用宽 248px，
+         会折出一个只剩「。」的第二行。11.5px × 21 = 241.5px，一行放下、余 6px。 */
+      font-size: 11.5px;
+      margin-top: 3px;
+      margin-bottom: 4px;
+      line-height: 1.5;
+    }
+
+    /* ===== 主体：分组框都在这里，切平台只换这块 =====
+       2026-10-31 第九轮：flex:none —— **按内容自然长高，不放大也不压缩**。
+       这是"页脚有空间就黏底、没空间就跟内容走"的前提：
+       它一旦写成 flex:1，就会吃掉全部剩余空间，页脚被顶到底、微信态不再留空。 */
+    .pop-body {
+      flex: none;
+      padding: 0 16px 8px;
+    }
+
+    /* ===== 页脚：调试模式 + 版本号 =====
+       2026-10-31 第九轮定稿（用户：「微信态功能比较少，中间留空，调试模式黏着在最下方」）：
+       margin-top:**auto** 就是全部答案 ——
+         · 微信态内容少 → 剩余空间全归这条 auto，页脚黏在窗口最下方，中间留空；
+         · 抖音态内容多 → 没有剩余空间，auto 退化为 0，页脚跟在内容末尾，
+           必须滚到底才见（上一轮定的行为）。
+       配 flex:none：它自己不参与伸缩。 */
+    .pop-foot {
+      flex: none;
+      margin: auto 16px 12px;
+      padding-top: 6px;
+      border-top: 1px solid #f2f3f5;
+    }
+    /* 第一行不描线（分隔已经由 .pop-foot 自己的 border-top 提供了） */
+    .pop-foot > :first-child {
+      border-top: none;
+    }
+    /* 底栏里的行统一收紧一档：padding 8 → 5，行高 2 → 1.7。
+       这三行本来就没人天天看（用户原话「也不是什么重要东西」），不值得占两行位置。 */
+    .pop-foot .toggle-row {
+      padding: 5px 0;
+    }
+    .pop-foot .update-box {
+      padding-top: 4px;
+    }
+    .pop-foot .upd-row {
+      line-height: 1.7;
+    }
+    .pop-foot .upd-status {
+      margin-top: 2px;
+    }
+
+    /* ===== 三大类分组框 =====
+       1px 细线 + 圆角,三色区分;无渐变、无投影。
+       中控台 = 蓝、抖店 = 橙、微信小店 = 绿、其他 = 灰。 */
+    .group {
+      margin-top: 12px;
+      padding: 2px 10px 4px;
+      border: 1px solid;
+      border-radius: 10px;
+    }
+    .group-live { border-color: #165dff; }
+    .group-shop { border-color: #ff7d00; }
+    .group-wx { border-color: #07c160; }
+    .group-other { border-color: #c9cdd4; }
+    /* 2026-10-31 平台切换：不属于当前平台的分组整框隐掉。
+       显式写 display:none —— 只靠 hidden 属性的话，将来谁给 .group
+       加一条 display 规则，这一整组就会在错误的平台上冒出来。 */
+    .group[hidden] { display: none; }
+
+    .group-head {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin: 8px 0 0;
+      font-size: 11px;
+      letter-spacing: 0.5px;
+    }
+    .group-head .dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: currentColor;
+      flex-shrink: 0;
+    }
+    .group-live .group-head { color: #165dff; }
+    .group-shop .group-head { color: #ff7d00; }
+    .group-wx .group-head { color: #07c160; }
+    .group-other .group-head { color: #86909c; }
+
+    .item {
+      padding: 10px 0;
+      border-top: 1px solid #f2f3f5;
+    }
+    .item-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    /* 2026-10-16 弹窗微调:改用 flex 对齐。
+       原先徽章与箭头靠 vertical-align 手工撑位置 —— 字号、行高、内容一变就偏
+       (把常显说明收进气泡后,开关行只剩一行,这点偏移就显出来了)。
+       现在文字、徽章、箭头都是 flex 项,由 align-items:center 统一居中,不再手调。 */
+    .name {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+      font-size: 13px;
+    }
+    .status {
+      color: #00b42a;
+      font-size: 12px;
+    }
+    .desc {
+      font-size: 11px;
+      color: #86909c;
+      margin-top: 3px;
+      line-height: 1.5;
+    }
+
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 0;                 /* 2026-10-16 弹窗减噪:10 → 8px */
+      border-top: 1px solid #f2f3f5;
+    }
+    /* 分组标题下第一行不再重复描线 */
+    .group-head + .toggle-row,
+    .group-head + .host-row,
+    .group-head + .update-box {
+      border-top: none;
+    }
+
+    /* ===== 行内下拉箭头(2026-10-18「开关门控」新增)=====
+       含义:名字这一行可以点开/收起。三态 ——
+         · 开关关着(门控关):visibility:hidden,箭头位留着但看不见;
+         · 开关开着、未展开:▶ 朝右;#86909c;
+         · 已展开:▶ 旋转 90° 朝下。
+       名字在门控关着时变灰、无手型光标 —— 「看着不能点」与「真点不动」一致。 */
+    .caret {
+      display: inline-block;
+      margin-right: 4px;
+      font-size: 9px;
+      color: #86909c;
+      transition: transform 0.15s;
+      flex: none;
+    }
+    .row--fold .name,
+    .host-row .tname { cursor: pointer; }
+    .row--fold .name:hover,
+    .host-row:hover .tname { color: #165dff; }
+    /* 门控关着:名字灰掉,悬停也不变色,不留手型光标 */
+    .row--gated-off .name,
+    .row--gated-off .tname {
+      color: #a9aeb5;
+      cursor: default;
+    }
+    .row--gated-off .name:hover,
+    .row--gated-off .tname:hover { color: #a9aeb5; }
+    .open > .caret,
+    .toggle-row.open .caret,
+    .host-row.open .caret { transform: rotate(90deg); }
+
+    /* ===== 一级行(2026-10-16 新增,2026-10-18 改门控)=====
+       可展开的分组行。有开关的(全能搜索 / 页面滚动按钮)右侧挂 toggle,它是该组总闸;
+       无开关的纯分组行(现仅「更多设置」)右侧显示「展开 N 项」。
+       2026-10-18 起一级行也挂「?」徽章 —— 总闸本身同样需要说明入口。 */
+    .host-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 8px 0;
+      border-top: 1px solid #f2f3f5;
+      user-select: none;
+    }
+    .host-row .tname {
+      display: flex;
+      align-items: center;
+      font-size: 13px;
+    }
+    .host-row .caret {
+      display: inline-block;
+      margin-right: 4px;
+      font-size: 9px;
+      color: #86909c;
+      transition: transform 0.15s;
+      flex: none;
+    }
+    /* 一级行右侧的开关容器(2026-10-16 修「一级行开关错位」):
+       原先它是个没有任何布局约束的 <span>,里面的 .switch 是 <label>(默认 inline),
+       而 inline 元素上 width/height 不生效 —— 开关宽度失控,被挤出分组框。
+       让它成为 flex 容器,.switch 才是 flex item、被块化,width:36px 才生效。 */
+    .host-row .host-switch {
+      display: flex;
+      align-items: center;
+      flex: none;
+    }
+    .host-row .host-tip {
+      flex: none;
+      font-size: 10.5px;
+      color: #c9cdd4;
+    }
+
+    /* ===== 「更多设置」入口行 =====
+       2026-10-18 已取消该折叠层(它只剩「抓手光标可见」一项,该项已提为常显行),
+       .more-row 与 buildMoreRow() 一并删除 —— 不再保留永不命中的死样式。 */
+
+    /* ===== 折叠容器:左侧竖线缩进,一眼看出从属关系 ===== */
+    .fold-box {
+      border-top: 1px solid #f2f3f5;
+      padding-left: 12px;
+      box-shadow: inset 2px 0 0 #e5e6eb;
+    }
+    .fold-box[hidden] { display: none; }
+    .switch {
+      position: relative;
+      display: inline-block;   /* 2026-10-16:明确 display —— 退化成 inline 时 width/height 会失效 */
+      width: 36px;
+      height: 20px;
+      flex-shrink: 0;
+      cursor: pointer;
+    }
+    .switch input {
+      opacity: 0;
+      width: 0;
+      height: 0;
+    }
+    .slider {
+      position: absolute;
+      inset: 0;
+      background: #d9dce1;
+      border-radius: 20px;
+      transition: background 0.2s;
+    }
+    .slider::before {
+      content: "";
+      position: absolute;
+      width: 16px;
+      height: 16px;
+      left: 2px;
+      top: 2px;
+      background: #fff;
+      border-radius: 50%;
+      transition: transform 0.2s;
+    }
+    .switch input:checked + .slider {
+      background: #ff7d00;
+    }
+    .switch input:checked + .slider::before {
+      transform: translateX(16px);
+    }
+
+    .tip {
+      margin: 2px 0 8px;
+      padding: 10px;
+      background: #f7f8fa;
+      border-radius: 6px;
+      font-size: 11px;
+      color: #4e5969;
+      line-height: 1.7;
+    }
+    .tip.hidden {
+      display: none;
+    }
+
+    .apply-note {
+      margin-top: 8px;
+      font-size: 11px;
+      color: #00b42a;
+      min-height: 16px;
+      line-height: 1.6;
+    }
+    /* 空着的时候一点都不占：不写这条，它会在页脚前面常年留 24px（16 高 + 8 间距），
+       而 2026-10-31 的口径正是"页脚尽量矮"。 */
+    .apply-note:empty { display: none; }
+
+    /* ===== 更新区(「其他」分组内)===== */
+    .update-box {
+      padding-top: 10px;
+      border-top: 1px solid #f2f3f5;
+    }
+    .upd-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      line-height: 2;
+    }
+    .upd-label {
+      font-size: 11px;
+      color: #86909c;
+    }
+    .upd-label b {
+      color: #4e5969;
+      font-weight: 500;
+    }
+    /* 版本号右侧的动作区：「回退」与「检查更新/安装更新」并排 */
+    .upd-right {
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .upd-action {
+      font-size: 11px;
+      color: #165dff;
+      cursor: pointer;
+      user-select: none;
+    }
+    .upd-action:hover {
+      text-decoration: underline;
+    }
+    .upd-action.busy {
+      color: #c9cdd4;
+      cursor: default;
+      text-decoration: none;
+    }
+    .upd-action.install {
+      color: #ff7d00;
+      font-weight: 500;
+    }
+    .upd-link {
+      font-size: 11px;
+      color: #165dff;
+      text-decoration: none;
+    }
+    .upd-link:hover {
+      text-decoration: underline;
+    }
+    .upd-feedback {
+      font-size: 11px;      /* 2026-10-16 弹窗减噪:12 → 11px,与其他链接统一 */
+      color: #ff7d00;
+      font-weight: 500;
+      text-decoration: none;
+    }
+    .upd-feedback:hover {
+      text-decoration: underline;
+    }
+    .upd-status {
+      font-size: 11px;
+      color: #86909c;
+      margin-top: 4px;
+      line-height: 1.6;
+    }
+    /* 2026-10-16 弹窗减噪:空状态不再白占高度(原 min-height:15px 常驻占位) */
+    .upd-status:empty { display: none; }
+    .upd-status.ok { color: #00b42a; }
+    .upd-status.err { color: #f53f3f; }
+    .upd-status.warn { color: #ff7d00; }
+
+    /* ===== 内联确认框 =====
+       刻意不用 window.confirm:原生模态在 popup 里可能让弹窗失焦关闭,
+       一关掉整个更新流程就断了。 */
+    .mask {
+      position: fixed;
+      inset: 0;
+      background: rgba(0, 0, 0, 0.35);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 99;
+    }
+    .mask[hidden] { display: none; }
+    .dialog {
+      width: 232px;
+      background: #fff;
+      border-radius: 8px;
+      padding: 16px;
+      box-shadow: 0 6px 24px rgba(0, 0, 0, 0.18);
+    }
+    .dialog h2 {
+      margin: 0 0 8px;
+      font-size: 13px;
+      font-weight: 500;
+    }
+    .dialog p {
+      margin: 0 0 14px;
+      font-size: 11px;
+      color: #4e5969;
+      line-height: 1.7;
+    }
+    .dialog-btns {
+      display: flex;
+      gap: 8px;
+      justify-content: flex-end;
+    }
+    .btn {
+      font-size: 12px;
+      padding: 5px 12px;
+      border-radius: 5px;
+      border: 1px solid #d9dce1;
+      background: #fff;
+      color: #1f2329;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .btn:hover { background: #f7f8fa; }
+    .btn.primary {
+      background: #ff7d00;
+      border-color: #ff7d00;
+      color: #fff;
+    }
+    .btn.primary:hover { background: #e56f00; }
+
+    /* ===== 「隐藏页面元素」复选框面板 =====
+       由 popup.js 按 flags.js 的 DYC_HIDE_TARGETS 自动渲染;
+       默认收起、点名字展开(2026-10-18 门控规则);总开关关闭时整块灰显
+       (勾选保留,只是暂不生效)。
+       2026-10-18:每项的第二行灰字说明已收进问号气泡 —— .h-desc 不再使用。 */
+    /* .name .caret 已于 2026-10-16 删除,2026-10-18 以通用 .caret 重新引入
+       (见上方「行内下拉箭头」一节:带子内容的行才有箭头,门控关着时隐藏)。 */
+
+    /* ===== 问号帮助徽章(2026-10-12 用户定:只允许在弹窗里) =====
+       flags.js 元数据有 desc/note 的行,名字右侧「?」小圆徽,
+       悬停出黑底气泡;页面(工具栏)一律不注入问号。
+
+       2026-10-18 泛化:徽章不再只属于主开关行(.name),子菜单的选项、
+       清单项、调试子项都能挂 —— 所以选择器**去掉了 .name 前缀**。
+       这是用户定「子菜单的备注放进问号里,不要用注解浪费空间」的前提。
+
+       2026-10-16 用户定(计划栏第 4 条,用户原话「拓展的菜单,浮动展示」):
+       气泡改为**浮动层** —— position:fixed,left/top 由 popup.js 在悬停
+       瞬间按徽章实测位置现算,并**钳制在弹窗视口内**(左右各留 8px;
+       下方放不下就翻到徽章上方)。旧版是「200px 定宽 + 相对徽章居中」的
+       absolute 气泡:徽章一旦靠近弹窗左缘,气泡左边界算出来是负数、
+       落到窗口之外,被弹窗窗口本身裁掉(用户截图:文案开头「排」被切)。
+       弹窗是浏览器自绘的小窗口,**画不出边界之外** —— 只能让气泡
+       自己挪进来,不能指望它溢出去。 */
+    .help-badge {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 13px;
+      height: 13px;
+      margin-left: 2px;
+      border-radius: 50%;
+      background: #c9cdd4;
+      color: #fff;
+      font-size: 10px;
+      font-weight: bold;
+      line-height: 1;
+      cursor: help;
+      user-select: none;
+    }
+    .help-badge:hover { background: #86909c; }
+    .help-badge .help-pop {
+      position: fixed;            /* 浮动层:不受任何祖先容器裁剪 */
+      top: 0;                     /* 真实坐标由 popup.js 现算(见 popup.js 的
+                                     问号气泡浮动定位一节) */
+      left: 0;
+      display: none;
+      width: 232px;               /* 2026-10-16:200 → 232px(装下 desc + note 两段) */
+      max-width: calc(100vw - 16px);   /* 弹窗比气泡还窄时也不越界 */
+      padding: 6px 9px;
+      border-radius: 5px;
+      background: #1f2329;
+      color: #fff;
+      font-size: 11px;
+      font-weight: normal;
+      line-height: 1.5;
+      text-align: left;
+      white-space: normal;
+      box-shadow: 0 2px 8px rgba(31, 35, 41, 0.25);
+      z-index: 999;               /* 与旧版同值:压过开关行,不抢确认遮罩的层级 */
+    }
+    .help-badge .help-pop.is-open { display: block; }
+    /* 气泡内容分两段(2026-10-16 弹窗减噪):
+       pop-desc = 基础说明(原常显的灰色小字),pop-note = 操作提示(原气泡内容)。
+       两段都在,信息一点没丢。 */
+    .help-badge .help-pop .pop-desc { display: block; }
+    .help-badge .help-pop .pop-note {
+      display: block;
+      margin-top: 5px;
+      padding-top: 5px;
+      border-top: 1px solid #4e5969;
+      color: #c9cdd4;
+    }
+    /* 小三角:默认贴气泡**顶边**(朝上指徽章);气泡翻到徽章上方时贴**底边**
+       朝下。横向位置取 --dyb-pop-arrow-x —— 始终对准徽章中心,并随气泡
+       一起钳制在气泡内,避免「气泡挪进来了、箭头却指到框外」 */
+    .help-badge .help-pop::before {
+      content: '';
+      position: absolute;
+      top: -4px;
+      left: var(--dyb-pop-arrow-x, 50%);
+      margin-left: -4px;
+      transform: rotate(45deg);
+      width: 8px;
+      height: 8px;
+      background: #1f2329;
+    }
+    .help-badge .help-pop.is-above::before {
+      top: auto;
+      bottom: -4px;
+    }
+    .hide-panel {
+      margin: 0 0 10px;
+      padding: 8px 10px;
+      background: #f7f8fa;
+      border-radius: 6px;
+    }
+    .hide-panel[hidden] {
+      display: none;
+    }
+    .hide-panel.disabled {
+      opacity: 0.5;
+      pointer-events: none;
+    }
+    .hide-item {
+      display: flex;
+      align-items: flex-start;
+      gap: 7px;
+      padding: 4px 0;
+      cursor: pointer;
+    }
+    .hide-item input {
+      margin: 2px 0 0;
+      flex-shrink: 0;
+      accent-color: #ff7d00;
+    }
+    .hide-item .h-text {
+      flex: 1;
+      display: block;
+    }
+    .hide-item .h-name {
+      display: inline-flex;
+      align-items: center;
+      font-size: 12px;
+      line-height: 1.5;
+      color: #1f2329;
+    }
+    /* .h-desc 已于 2026-10-18 停用:每项的第二行灰字说明已收进问号气泡
+       (用户定「子菜单的备注放进问号里,不要用注解浪费空间」)。
+       留着这段规则会让人误以为还有入口,故整段删除。 */
+    .hide-foot {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 6px;
+    }
+    .hide-foot .btn {
+      font-size: 11px;
+      padding: 4px 12px;
+    }
+    .hide-note {
+      font-size: 11px;
+      color: #00b42a;
+      line-height: 1.6;
+    }
+    /* 「导出当前页结构」按钮(2026-10-16)
+       与调试面板分工:调试面板导「扩展自身健康档案」,
+       这里导「目标页面结构档案」,交给助手写适配代码。
+       2026-10-18:按钮原先下面带一行灰字说明(.probe-hint),
+       现改挂一枚问号在按钮右侧 —— .probe-hint 已删除。 */
+    .probe-box {
+      margin: 8px 0 2px;
+    }
+    .probe-box .btn {
+      font-size: 11px;
+      padding: 4px 12px;
+    }
+    /* 按钮 + 问号的横排容器 */
+    .probe-title {
+      display: flex;
+      align-items: center;
+      gap: 2px;
+    }
+    .probe-msg {
+      font-size: 11px;
+      line-height: 1.6;
+      margin-top: 4px;
+    }
+    .probe-msg.ok {
+      color: #00b42a;
+    }
+    .probe-msg.err {
+      color: #f53f3f;
+    }
+    .probe-fallback {
+      display: block;
+      width: 100%;
+      box-sizing: border-box;
+      margin-top: 6px;
+      min-height: 120px;
+      font-size: 11px;
+      font-family: Consolas, Monaco, monospace;
+      border: 1px solid #e5e6eb;
+      border-radius: 4px;
+      padding: 6px;
+    }
+    .probe-fallback[hidden] {
+      display: none;
+    }
+  </style>
+</head>
+<body class="plat-pending">
+  <!-- ===== 顶部：插件名统一为「可可助手」（2026-10-31 用户定），
+       右侧是平台切换胶囊 —— 图标在前、文字在后，点一下换平台。 ===== -->
+  <div class="pop-head">
+    <h1>可可助手</h1>
+    <div class="plat-seg" id="plat-seg" role="group" aria-label="切换平台">
+      <button type="button" class="plat-item" data-plat="dy" aria-pressed="true">
+        <svg viewBox="0 0 24 24" fill="#161823" aria-hidden="true"><path d="M16.6 3c.28 2.1 1.6 3.6 3.6 3.9v3.1c-1.4 0-2.7-.4-3.8-1.2v5.9c0 3.4-2.4 5.6-5.5 5.6-2.7 0-4.6-1.9-4.6-4.4 0-2.7 2.1-4.6 4.9-4.4v3.2c-1.1-.2-1.9.3-1.9 1.3 0 .9.7 1.5 1.6 1.5 1.1 0 1.7-.7 1.7-2.1V3h4z"/></svg>抖音
+      </button>
+      <button type="button" class="plat-item" data-plat="wx" aria-pressed="false">
+        <svg viewBox="0 0 24 24" fill="#07c160" aria-hidden="true"><path d="M9.2 4C5.2 4 2 6.6 2 9.8c0 1.8 1 3.4 2.7 4.6l-.7 2.1 2.4-1.2c.9.3 1.8.4 2.8.4.3 0 .5 0 .8-.1-.2-.5-.3-1-.3-1.5 0-3 2.9-5.4 6.4-5.4h.5C16.1 5.6 13 4 9.2 4zm-2.4 3.1a.95.95 0 1 1 0 1.9.95.95 0 0 1 0-1.9zm4.8 0a.95.95 0 1 1 0 1.9.95.95 0 0 1 0-1.9z"/><path d="M22 14.1c0-2.6-2.6-4.7-5.8-4.7s-5.8 2.1-5.8 4.7 2.6 4.7 5.8 4.7c.7 0 1.4-.1 2-.3l2 1-.6-1.8c1.5-.9 2.4-2.2 2.4-3.6zm-7.7-1.3a.8.8 0 1 1 0 1.6.8.8 0 0 1 0-1.6zm3.8 0a.8.8 0 1 1 0 1.6.8.8 0 0 1 0-1.6z"/></svg>微信
+      </button>
+    </div>
+  </div>
+  <div class="tagline">适配抖音、微信的中控台和店铺的便携化升级。</div>
+
+  <!-- ===== 主体：功能开关区（由 flags.js 的元数据表自动渲染）=====
+       三个分组框按平台归属显隐：抖音 = 中控台 + 抖店 + 其他，微信 = 微信小店。
+       新增开关只改 flags.js，不要改本文件。 -->
+  <div class="pop-body">
+    <div id="flags-root"></div>
+    <div class="apply-note" id="apply-note"></div>
+  </div>
+
+  <!-- ===== 页脚：调试模式 + 版本号（2026-10-31 用户定）=====
+       内容由 popup.js 填：先一行「调试模式」开关，再是原来的更新区。
+       要点：**两个平台都渲染这一块**（用户澄清「底部固定」= 切到哪个平台都有），
+       但它不是常驻浮层 —— 就是内容流最后一块，内容长时跟页面一起滚下去。 -->
+  <div class="pop-foot" id="pop-foot"></div>
+
+  <div class="mask" id="confirm-mask" hidden>
+    <div class="dialog">
+      <h2>安装更新</h2>
+      <p id="confirm-text"></p>
+      <div class="dialog-btns">
+        <button class="btn" id="confirm-cancel">取消</button>
+        <button class="btn primary" id="confirm-ok">确认安装</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="../content/flags.js"></script>
+  <script src="../shared/gitee.js"></script>
+  <script src="../shared/backup-store.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

@@ -1,0 +1,272 @@
+/**
+ * 抖音可可助手 · 内容脚本样式
+ *
+ * 全部使用高前缀类名与 shadow 隔离思路，避免与抖店自身样式冲突。
+ */
+
+#dyb-dialog-root {
+  position: fixed;
+  inset: 0;
+  z-index: 2147483647;
+  display: none;
+  font-family: -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif;
+  font-size: 13px;
+  line-height: 1.6;
+  color: #1f2329;
+}
+
+/* ---- 遮罩 ---- */
+.dyb-mask {
+  position: absolute;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.45);
+}
+
+/* ---- 弹窗面板 ---- */
+.dyb-panel {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 420px;
+  max-width: calc(100vw - 48px);
+  max-height: calc(100vh - 96px);
+  overflow-y: auto;
+  background: #fff;
+  border-radius: 8px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.16);
+  padding: 20px;
+}
+
+/* ---- 标题 ---- */
+.dyb-title {
+  font-size: 16px;
+  font-weight: 500;
+  margin-bottom: 16px;
+  color: #1f2329;
+}
+
+/* ---- 详情字段 ---- */
+.dyb-fields {
+  background: #f7f8fa;
+  border-radius: 6px;
+  padding: 12px;
+  margin-bottom: 14px;
+}
+
+.dyb-field {
+  display: flex;
+  gap: 12px;
+  padding: 4px 0;
+  align-items: baseline;
+}
+
+.dyb-label {
+  flex-shrink: 0;
+  width: 84px;
+  color: #86909c;
+  font-size: 12px;
+}
+
+.dyb-value {
+  flex: 1;
+  color: #1f2329;
+  word-break: break-all;
+}
+
+/* ---- 警告区 ---- */
+.dyb-warning {
+  background: #fff8e6;
+  border-left: 3px solid #ff7d00;
+  border-radius: 4px;
+  padding: 10px 12px;
+  margin-bottom: 16px;
+  color: #613400;
+  font-size: 12px;
+  white-space: pre-wrap;
+}
+
+/* ---- 按钮区 ---- */
+.dyb-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.dyb-btn {
+  min-width: 72px;
+  height: 32px;
+  padding: 0 16px;
+  border: none;
+  border-radius: 4px;
+  font-size: 13px;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.dyb-btn:hover {
+  opacity: 0.85;
+}
+
+.dyb-btn-cancel {
+  background: #f2f3f5;
+  color: #1f2329;
+}
+
+.dyb-btn-primary {
+  background: #0075ff;
+  color: #fff;
+}
+
+.dyb-btn-danger {
+  background: #f53f3f;
+  color: #fff;
+}
+
+/* ---- 进度条 ---- */
+.dyb-progress-status {
+  font-size: 14px;
+  margin-bottom: 12px;
+  color: #1f2329;
+}
+
+.dyb-progress-bar {
+  height: 4px;
+  background: #e5e6eb;
+  border-radius: 2px;
+  overflow: hidden;
+  margin-bottom: 8px;
+}
+
+.dyb-progress-fill {
+  height: 100%;
+  width: 0;
+  background: #0075ff;
+  border-radius: 2px;
+  transition: width 0.25s ease;
+}
+
+.dyb-progress-detail {
+  font-size: 12px;
+  color: #86909c;
+}
+
+/* ---- 行内注入按钮 ---- */
+/* 位于「总库存」列的单元格内（数字下方） */
+.dyb-clear-btn {
+  /* 宽度固定（2026-10-29）：结果反馈会把文字换成勾/叉图标，图标比四个字窄，
+     不锁宽就会让同一列里的按钮在反馈时左右跳一下。70 = 4 字×12 + 左右内边距 20 + 边框 2。 */
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 70px;
+  height: 24px;
+  padding: 0 10px;
+  border: 1px solid #0075ff;
+  border-radius: 4px;
+  background: #fff;
+  color: #0075ff;
+  font-size: 12px;
+  line-height: 22px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: opacity 0.2s ease, background 0.15s, color 0.15s;
+  z-index: 10;
+  /* 常驻显示，默认半透明 */
+  opacity: 0.45;
+}
+
+.dyb-clear-btn:hover {
+  /* 鼠标指向时变为实体（不透明） */
+  opacity: 1;
+  background: #0075ff;
+  color: #fff;
+}
+
+.dyb-clear-btn:active {
+  transform: translateY(1px);
+}
+
+/* 清空库存的结果反馈（2026-10-29，用户定「加个类似粘贴加车的图案指示」）。
+   勾 = 确认清零成功；叉 = 失败；2.5 秒后恢复「清空库存」文字。
+   ⚠️ 只有接口确认成功才给勾，「已提交保存，请核对库存」不给 —— 没回读落库
+      就把勾打上去属于抢报（AGENTS 第 25 条第 4 条）。
+   规则写在 :hover / :active 之后：同等特异性，靠顺序压住悬停的蓝底白字。 */
+.dyb-clear-btn.dyc-clear-ok,
+.dyb-clear-btn.dyc-clear-fail {
+  opacity: 1;
+  background: #fff;
+}
+.dyb-clear-btn.dyc-clear-ok { border-color: #16803c; color: #16803c; }
+.dyb-clear-btn.dyc-clear-fail { border-color: #c03532; color: #c03532; }
+
+.dyc-clear-result { display: block; animation: dyc-clear-pop 240ms ease-out; }
+.dyc-clear-result path {
+  stroke-dasharray: 36;
+  animation: dyc-clear-draw 380ms ease-out;
+}
+@keyframes dyc-clear-draw { from { stroke-dashoffset: 36; } to { stroke-dashoffset: 0; } }
+@keyframes dyc-clear-pop { from { transform: scale(.7); opacity: .3; } to { transform: scale(1); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .dyc-clear-result, .dyc-clear-result path { animation: none; }
+}
+
+/* 按钮的承载格：按钮走文档流塞进「总库存」单元格里（2026-10-14 修 #73）。
+   旧版用绝对定位（--floating）锚在表头中心，列宽/缩放一变就歪 ——
+   绝对定位的按钮还会被平台的 transform 祖先劫走包含块，反复错位。 */
+.dyb-clear-slot {
+  margin-top: 4px;
+  /* 靠右对齐（2026-10-29 用户定：「清空按钮靠右对齐，放在库存数字的下面」）。
+     库存数字本身在本列里是靠右的，槽位再居中就会让按钮偏到数字左下方、看着不像
+     挂在它下面；改成右对齐后按钮右边缘与上面的数字右边缘落在同一条线上。
+     单元格的左右内边距由平台给，槽位是普通块级 div，跟着单元格走，不算任何坐标。 */
+  text-align: right;
+  line-height: 0;
+}
+/* ---- 消息盒子 / 状态栏样式已拆出(2026-10-18) ----
+   #dyb-status-bar / .dyb-badge / .dyb-msg-col / .dyb-status / .dyb-dot /
+   .dyb-history* / .h-* 这批规则原来都在本文件里,只能被「加载了 style.css 的
+   条目」用到 —— 直播回放两页(anchor.douyin.com/anchor/review、
+   liveservice.douyin.com)与直播大屏页没有那套弹窗样式,于是它们的提示
+   只能自渲染一条轻提示,进不了消息盒子。
+   现在整批规则搬进 src/content/msgbox.css,凡是需要消息盒子的页面
+   单独加载这一份即可,不必把整套中控台样式带过去。
+   ⚠️ 改消息盒子外观去 msgbox.css,不要在这里加回来。 */
+
+/* 小黄车「粘贴加车」按钮(2026-10-24,中控台「添加商品」左边;
+   文档流兄弟节点,固定 px,不随页面缩放变大小) */
+.dyc-cartpaste-btn {
+  box-sizing: border-box;
+  width: 72px;
+  min-width: 72px;
+  max-width: 72px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  margin-right: 8px;
+  height: 28px;
+  padding: 0 10px;
+  font-size: 12px;
+  line-height: 26px;
+  color: #165dff;
+  background: #ffffff;
+  border: 1px solid #165dff;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dyc-cartpaste-btn:hover { background: #f2f7ff; }
+
+.dyc-cartpaste-result { display: block; animation: dyc-cartpaste-pop 240ms ease-out; }
+.dyc-cartpaste-result path {
+  stroke-dasharray: 36;
+  stroke-dashoffset: 0;
+  animation: dyc-cartpaste-draw 380ms ease-out;
+}
+@keyframes dyc-cartpaste-draw { from { stroke-dashoffset: 36; } to { stroke-dashoffset: 0; } }
+@keyframes dyc-cartpaste-pop { from { transform: scale(.7); opacity: .3; } to { transform: scale(1); opacity: 1; } }
+@media (prefers-reduced-motion: reduce) {
+  .dyc-cartpaste-result, .dyc-cartpaste-result path { animation: none; }
+}

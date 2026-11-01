@@ -1,0 +1,113 @@
+# ===== 密钥与凭据：绝对不能提交 =====
+# 扩展 pem 私钥。丢了就无法保持扩展 ID 一致，更新会变成重装
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+*.jks
+
+# 发布物：对外分发的 zip / crx 由本地打包生成，不需要进版本库
+# 注意：绝不要把 pem 打进去，那等于把控制权交出去
+*.crx
+/dist/
+/build/
+/release/
+*.zip
+
+# 版本探测接口的本地配置（可能含你的服务器地址与设备密钥）
+/config.local.json
+/.env
+/.env.*
+*.local.json
+
+# Gitee 私人令牌：发布脚本 gitee-release.py 用它上传发行版附件。
+# 正常位置是工程目录之外（../.dyc-gitee-token）或环境变量 GITEE_TOKEN，
+# 这里做防御性忽略 —— 令牌一旦进仓库，等于把仓库控制权交出去。
+.dyc-gitee-token
+*.gitee-token
+.gitee-token
+
+# 反馈高清原图取图通道的密钥（正常位置在工程上级目录 ../.dyc-shot-key）。
+# 泄露 = 任何人可调用云端函数 dyc_shot 读走全部反馈截图，这里做防御性忽略。
+.dyc-shot-key
+*.shot-key
+
+# ===== 依赖与缓存 =====
+node_modules/
+.cache/
+.temp/
+.tmp/
+__pycache__/
+*.pyc
+*.pyo
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# ===== 页面探测产物 =====
+# 结构探测脚本导出的页面 DOM，含抖店后台内部结构，不宜入库
+/_probe/
+/probe-output/
+/page-structure-*.json
+
+# ===== 编辑器与系统 =====
+.vscode/
+.idea/
+*.swp
+*.swo
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# ===== 开发者本地痕迹 =====
+# 本机工作区数据、临时目录、版本化的旧构建目录名，不应出现在公开仓库
+.workbuddy/
+*_v[0-9]/
+*-v[0-9]/
+
+# 本工程目录直接作为扩展加载，不使用独立构建输出目录
+
+# 临时工具目录（探测/诊断），用完即删
+/tools/
+
+# ===== 自更新清单：必须入库 =====
+# update-manifest.json 是扩展自更新时读取的文件清单（21 个文件的路径 + sha256），
+# 由 scripts/make-update-manifest.py 生成。它必须随代码一起提交 ——
+# 没提交就发版 = 所有商家点「安装更新」都会失败。
+# 若将来有人加了 *.json 之类的忽略规则，这条负向规则负责兜底。
+!update-manifest.json
+
+# 发布备份（由 publish.sh 生成，位于上级目录，此处防御性忽略）
+*.bundle
+
+# 发布脚本在本机运行，不需要入库
+
+# 自审标记：本地状态文件，不应入库
+# （2026-10-11 前叫 .release-approved，语义由「用户验收」改为「助手自审」）
+.self-review-ok
+.release-approved
+
+# ===== 交接文档：必须入库 =====
+# AGENTS.md（交接入口）、开发计划.md（待办与决策）都是工程的一部分，
+# 供跨模型接手时阅读，绝不能被上面的 *.md 类规则或本地忽略误伤。
+!AGENTS.md
+!开发计划.md
+
+# ===== 扩展图标：必须入库 =====
+# 图标是扩展的必需资源（manifest.json 的 icons 字段引用），
+# 若将来有人在上面加了 *.png 之类的忽略规则，这条负向规则负责兜底。
+!icons/
+!icons/*.png
+
+# 开源许可协议：非商业使用许可，公开仓库必须包含，缺失即违约
+!LICENSE
+
+# 备份收纳目录（如误配置到工程内时兜底）
+/_backup/
+/_backup-*/
+
+# ===== 本地评审/阅读页产物：不入库 =====
+# 方案评审稿、反馈阅读页这类单文件 HTML 是给用户当场看的，按「本地不当图仓」
+# 的口径只留在本机；进了仓库只会让看板一直报「主工作区有未提交」。
+/output/

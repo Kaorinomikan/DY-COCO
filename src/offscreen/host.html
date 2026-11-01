@@ -1,0 +1,15 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>dyc-offscreen-host</title></head>
+<body>
+<!-- 离屏文档宿主(2026-11-01 由 clipboard.html 升级而来)
+
+     一个扩展同时只能有一个离屏文档,所以这里不按用途拆页面,而是当"离屏宿主"用:
+       1) clipboard.js  —— 代读剪贴板(内容脚本读会被页面的 clipboard-read 权限拦)
+       2) ticker.js     —— 统一闹钟(后台标签被节流时,靠它给中控台页面打拍子)
+
+     创建理由要覆盖实际用途,否则属于理由不实:CLIPBOARD + WORKERS(ticker 用 Worker 定时)。 -->
+<script src="clipboard.js"></script>
+<script src="ticker.js"></script>
+</body>
+</html>

@@ -1,0 +1,283 @@
+/* 抖音可可助手 · 更新页样式
+   风格刻意与弹窗一致：素净、单色、无渐变无投影装饰。 */
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif;
+  font-size: 13px;
+  color: #1f2329;
+  background: #fff;
+}
+
+.wrap {
+  padding: 18px 20px 20px;
+}
+
+h1 {
+  margin: 0 0 4px;
+  font-size: 15px;
+  font-weight: 500;
+}
+
+/* ---- 版本信息 ---- */
+.meta {
+  margin: 10px 0 4px;
+  padding: 10px 12px;
+  background: #f7f8fa;
+  border-radius: 6px;
+}
+
+.meta-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  line-height: 1.9;
+  font-size: 12px;
+}
+
+.meta-row .k {
+  color: #86909c;
+  width: 60px;
+  flex-shrink: 0;
+}
+
+.meta-row b {
+  font-weight: 500;
+  color: #1f2329;
+}
+
+.meta-row code {
+  font-size: 11px;
+  color: #86909c;
+  background: #eef0f3;
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+
+/* ---- 本版更新要点 ---- */
+/* 只承载「本版一句话 + 若干条要点」，条目上限在 update.js 里控制（MAX_NEWS_ITEMS）。
+   刻意不加底色与边框：它是说明文字，不是操作区，别和下面的步骤块抢视线。 */
+.news-sum {
+  font-size: 12px;
+  color: #1f2329;
+  line-height: 1.7;
+  margin-bottom: 6px;
+}
+
+.news-list {
+  margin: 0;
+  padding-left: 18px;
+  font-size: 12px;
+  color: #4e5969;
+  line-height: 1.9;
+}
+
+/* ---- 步骤块 ---- */
+.block {
+  margin-top: 14px;
+  border-top: 1px solid #f2f3f5;
+  padding-top: 12px;
+}
+
+.block-title {
+  font-size: 12px;
+  font-weight: 500;
+  color: #4e5969;
+  margin-bottom: 8px;
+}
+
+.block-body {
+  font-size: 12px;
+}
+
+.dir-state {
+  color: #4e5969;
+  line-height: 1.7;
+  word-break: break-all;
+}
+
+/* 三态：已就绪 / 待授权 / 未定位（或失效） */
+.dir-state.ok { color: #00b42a; }
+.dir-state.warn { color: #ff7d00; }
+.dir-state.err { color: #f53f3f; }
+
+.btns {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.btn {
+  font-size: 12px;
+  padding: 5px 12px;
+  border-radius: 5px;
+  border: 1px solid #d9dce1;
+  background: #fff;
+  color: #1f2329;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.btn:hover { background: #f7f8fa; }
+
+.btn:disabled {
+  color: #c9cdd4;
+  cursor: not-allowed;
+  background: #fff;
+}
+
+.btn.primary {
+  background: #ff7d00;
+  border-color: #ff7d00;
+  color: #fff;
+}
+
+.btn.primary:hover:not(:disabled) { background: #e56f00; }
+
+.btn.primary:disabled {
+  background: #f7d8b8;
+  border-color: #f7d8b8;
+  color: #fff;
+}
+
+/* 小号按钮:用在提示行内(如「复制默认路径」),不抢主按钮的视线 */
+.btn-mini {
+  display: inline-block;
+  margin-left: 2px;
+  padding: 1px 7px;
+  font-size: 11px;
+  line-height: 1.6;
+  border-radius: 4px;
+  vertical-align: baseline;
+}
+
+.hint {
+  margin-top: 8px;
+  font-size: 11px;
+  color: #86909c;
+  line-height: 1.8;
+}
+
+/* 「默认目录」提示行:比普通 hint 略强调,但仍是浅底素色,不做花哨处理 */
+.dir-default {
+  padding: 7px 9px;
+  background: #f7f8fa;
+  border-radius: 5px;
+  color: #4e5969;
+}
+
+.dir-default b { font-weight: 500; color: #1f2329; }
+.dir-default b code { color: #ff7d00; background: #fff4e8; }
+
+.hint code {
+  background: #eef0f3;
+  border-radius: 3px;
+  padding: 1px 4px;
+}
+
+/* ---- 备份列表（回退模式）---- */
+/* 刻意不用 :has() 做选中态：老内核（360 极速浏览器X 一类）支持度不稳，
+   选中反馈交给原生 radio 自己表现，样式只负责排布。 */
+.bak-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.bak-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid #e5e6eb;
+  border-radius: 6px;
+  cursor: pointer;
+  line-height: 1.6;
+}
+
+.bak-item:hover { background: #f7f8fa; }
+
+.bak-item input {
+  margin: 0;
+  flex-shrink: 0;
+}
+
+.bak-ver {
+  font-size: 12px;
+  font-weight: 500;
+  color: #1f2329;
+  flex-shrink: 0;
+}
+
+.bak-meta {
+  font-size: 11px;
+  color: #86909c;
+}
+
+.bak-empty {
+  font-size: 11px;
+  color: #86909c;
+  line-height: 1.8;
+  padding: 8px 10px;
+  background: #f7f8fa;
+  border-radius: 6px;
+}
+
+/* ---- 进度与日志 ---- */
+.bar-wrap {
+  height: 6px;
+  background: #f2f3f5;
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.bar {
+  height: 100%;
+  width: 0;
+  background: #ff7d00;
+  transition: width 0.18s linear;
+}
+
+.log {
+  margin-top: 10px;
+  max-height: 170px;
+  overflow-y: auto;
+  background: #f7f8fa;
+  border-radius: 6px;
+  padding: 8px 10px;
+  font-size: 11px;
+  line-height: 1.75;
+  color: #4e5969;
+  white-space: pre-wrap;
+  word-break: break-all;
+  min-height: 62px;
+}
+
+.log .err { color: #f53f3f; }
+.log .ok { color: #00b42a; }
+.log .dim { color: #86909c; }
+.log .warn { color: #ff7d00; }
+
+/* ---- 兜底提示 ---- */
+.unsupported .block-title { color: #ff7d00; }
+
+.foot {
+  margin-top: 14px;
+  font-size: 11px;
+  color: #86909c;
+  line-height: 1.8;
+  min-height: 16px;
+}
+
+.foot a {
+  color: #165dff;
+  text-decoration: none;
+}
+
+.foot a:hover { text-decoration: underline; }
