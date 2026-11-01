@@ -1124,7 +1124,7 @@
         (lbSc.searchPh ? (' · 搜索框「' + clamp(lbSc.searchPh, 20) + '」') : ''));
       var lbRows = lbSc.detail || [];
       if (!lbSc.panel && !lbRows.length) {
-        L.push('> 判读:抽屉没认出也没有行。**先确认你打开的是「超级福袋-活动管理」抽屉**;');
+        L.push('> 判读:抽屉没认出也没有行。**先确认你打开的是超级福袋抽屉**;');
         L.push('> 开着还这样,就是锚点不匹配 —— 把下面「线索」一并看。');
       }
       if (lbRows.length) {

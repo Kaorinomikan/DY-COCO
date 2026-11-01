@@ -53,7 +53,9 @@
    * 旧版本存下的 dybAutoLoopSlowSearch 键留在 storage 里,不影响任何行为。 */
 
   /* 2026-10-30 用户定:秒档做成**固定四档**,下限 15 秒。
-   * 四档不是一个连续量程的两端,而是四个场景名 —— 用户点之前就该知道差别在哪。 */
+   * 四档不是一个连续量程的两端,而是四个场景名 —— 用户点之前就该知道差别在哪。
+   * 2026-11-01 用户定:四档统一按「(档位 − 3) 秒 + 0~3 秒随机」跑(见 intervalMs);
+   *   按钮仍标标称值,各档按钮内小字注明实际范围(如 15 档 = 12~15 秒,见 buildSecButtons)。 */
   var SEC_TIERS = [15, 30, 45, 60];
   var SEC_REC = 30;
   var SEC_DEF = 30;
@@ -288,7 +290,17 @@
     return (min - MIN_MIN) / (MAX_MIN - MIN_MIN) * 100;
   }
 
-  function intervalMs() { return state.group === 'sec' ? state.seconds * 1000 : state.minutes * 60000; }
+  /* 2026-11-01 用户定:秒档四档统一「实际间隔 = (档位 − 3) 秒 + 0~3 秒随机」。
+   *   面板按钮与读数仍显示标称值 —— 档位是「场景名」,不是精确秒数;
+   *   真实范围由每档按钮内的小字注明(如 15 档 = 12~15 秒)。
+   *   随机的核心收益:打散与自动刷新(10 秒 ±0.5 秒)的整数锁步碰撞
+   *   (30/45/60 与 10 有公倍数,固定间隔会周期性撞车白烧一轮),
+   *   顺带去机械节律、错开平台 DOM 翻回窗口的相位。 */
+  var SEC_JITTER_MS = 3000;   // 每档随机浮动上限(含,即 0~3000ms)
+  function intervalMs() {
+    if (state.group !== 'sec') return state.minutes * 60000;
+    return (state.seconds - 3) * 1000 + Math.floor(Math.random() * (SEC_JITTER_MS + 1));
+  }
   function sliderMin() { return MIN_MIN; }
   function sliderMax() { return MAX_MIN; }
   function sliderValue() { return state.minutes; }
@@ -1792,14 +1804,17 @@
     '.grp[aria-pressed="true"] .gt{color:#1f2329;font-weight:600}',
     '.gx{font-size:11px;color:#86909c;margin-left:auto;font-variant-numeric:tabular-nums}',
     '.seg{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}',
-    '.sg{position:relative;border:1px solid #e8e9ec;border-radius:5px;padding:8px 0;text-align:center;background:#fff;cursor:pointer}',
+    '.sg{position:relative;border:1px solid #e8e9ec;border-radius:5px;padding:6px 0 5px;text-align:center;background:#fff;cursor:pointer}',
     '.sg b{display:block;font-size:15px;font-weight:600;line-height:1.15;color:#1f2329}',
+    '.sg .u{display:block;margin-top:2px;font-size:9.5px;line-height:1.3;color:#86909c}',
     '.sg[aria-pressed="true"]{background:#165dff;border-color:#165dff}',
     '.sg[aria-pressed="true"] b{color:#fff}',
+    '.sg[aria-pressed="true"] .u{color:rgba(255,255,255,.85)}',
     '.sg .pin{position:absolute;right:5px;top:4px;width:5px;height:5px;border-radius:50%;background:#00b42a}',
     '.sg[aria-pressed="true"] .pin{background:#8ff0a4}',
-    '.grp[aria-pressed="false"] .fill{background:#dfe2e6}',
+    '.grp[aria-pressed="false"] .fill{background:#dfe2e6;box-shadow:none}',
     '.grp[aria-pressed="false"] .thumb{border-color:#c9cdd4;box-shadow:none}',
+    '.grp[aria-pressed="false"] .thumb::after{background:#c9cdd4}',
     '[hidden]{display:none!important}',
 
     '.zones{display:flex;height:18px;border-radius:4px;overflow:hidden;margin:0 0 4px}',
@@ -1814,13 +1829,21 @@
     '.ticks button.first{transform:translateX(0)}',
     '.ticks button.last{transform:translateX(-100%)}',
 
-    '.track{position:relative;height:22px;cursor:pointer;touch-action:none}',
-    '.rail{position:absolute;left:0;right:0;top:9px;height:4px;border-radius:2px;background:#e5e6eb}',
-    '.fill{position:absolute;left:0;top:9px;height:4px;border-radius:2px;background:#b9cdff}',
-    '.tick{position:absolute;top:5px;width:1px;height:12px;background:#c9cdd4;transform:translateX(-50%)}',
-    '.tick.rec{width:2px;height:14px;top:4px;background:#00b42a}',
-    '.thumb{position:absolute;top:2px;width:18px;height:18px;margin-left:-9px;border-radius:50%;',
-    '  background:#fff;border:2px solid #165dff;box-shadow:0 1px 4px rgba(22,93,255,.28);will-change:transform}',
+    /* 滑条(2026-11-01 美化,同时修「滑钮看着透明」):
+     *   ① 删掉 will-change:transform —— 定位走 left,它本是死代码;
+     *      老内核上 will-change+圆角+边框会触发合成层 bug,把白底丢成透明。
+     *   ② 轨道 4→6px 加内凹阴影,填充改蓝色渐变 + 顶部高光;
+     *   ③ 滑钮加实心芯点(::after),任何内核下都不可能是「空心」观感;
+     *   ④ 按下时光环扩大,拖动手感有反馈。 */
+    '.track{position:relative;height:24px;cursor:pointer;touch-action:none}',
+    '.rail{position:absolute;left:0;right:0;top:9px;height:6px;border-radius:3px;background:#e9ebf0;box-shadow:inset 0 1px 2px rgba(31,35,41,.08)}',
+    '.fill{position:absolute;left:0;top:9px;height:6px;border-radius:3px;background:linear-gradient(90deg,#6aa1ff,#165dff);box-shadow:inset 0 1px 0 rgba(255,255,255,.35)}',
+    '.tick{position:absolute;top:4px;width:1px;height:16px;background:#d3d7de;transform:translateX(-50%)}',
+    '.tick.rec{width:2px;height:18px;top:3px;background:#00b42a}',
+    '.thumb{position:absolute;top:3px;width:18px;height:18px;margin-left:-9px;border-radius:50%;',
+    '  background:#fff;border:2.5px solid #165dff;box-shadow:0 2px 6px rgba(22,93,255,.35),0 0 0 3px rgba(22,93,255,.1)}',
+    '.thumb::after{content:"";position:absolute;left:50%;top:50%;width:6px;height:6px;margin:-3px 0 0 -3px;border-radius:50%;background:#165dff}',
+    '.track:active .thumb{box-shadow:0 2px 8px rgba(22,93,255,.45),0 0 0 5px rgba(22,93,255,.14)}',
 
     '.readout{margin:10px -18px 0;padding:10px 18px 12px;border-top:1px solid #f2f3f5;background:#fbfcfe}',
     '.r1{font-size:12.5px;color:#4e5969;line-height:1.5}',
@@ -1952,12 +1975,14 @@
     return null;
   }
 
-  /** 秒档四个固定档位：15 / 30 / 45 / 60，30 秒带推荐点 */
+  /** 秒档四个固定档位：15 / 30 / 45 / 60，30 秒带推荐点。
+   *  每档按钮内小字各自标注实际间隔范围(2026-11-01 用户定,取代原档位下方共用公式注):
+   *  下限 = 档位 − 3,与 intervalMs 的偏移保持一致(15 档 = 12~15 秒,依此类推)。 */
   function buildSecButtons() {
     refs.secSeg.innerHTML = SEC_TIERS.map(function (v) {
       return '<button type="button" class="sg" data-sec="' + v + '" aria-pressed="false">' +
         (v === SEC_REC ? '<span class="pin"></span>' : '') +
-        '<b>' + v + '</b></button>';
+        '<b>' + v + '</b><span class="u">' + (v - 3) + '~' + v + '秒</span></button>';
     }).join('');
     Array.prototype.forEach.call(refs.secSeg.children, function (el) {
       el.addEventListener('click', function (e) {
@@ -2067,7 +2092,8 @@
         (rec ? '<span class="bdg">推荐</span>' : '');
       refs.r2.innerHTML = isSec ? '' : adviceOf(cur);
     }
-    /* 秒档不写场景说明(用户 2026-10-30 定):四档按钮只有数字,读数区只留主句。 */
+    /* 秒档不写场景说明(用户 2026-10-30 定):读数区只留主句,真实间隔由各档按钮内小字注明
+     * (2026-11-01 用户定,取代原档位下方共用的公式注)。 */
     refs.r2.hidden = isSec;
     if (refs.minGx && !isSec) refs.minGx.textContent = '每 ' + fmtMinute(cur);
     refreshTrack();

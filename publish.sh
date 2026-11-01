@@ -279,6 +279,11 @@ elif ! grep -q "$LOCAL_VER" "$NEWS_FILE" 2>/dev/null; then
   DOC_PROBLEMS="${DOC_PROBLEMS}$NEWS_FILE 未提及当前版本号 $LOCAL_VER\n"
 else
   NEWS_CNT=$(awk '
+    /^# / { seg++ }             # 版本段编号（# 标题，## 不受影响）
+    seg >= 2 { next }           # ★ 只统计最顶上的第一个版本段 —— 商家更新页
+                                #   展示的就是它；历史版本要点是已随包发出的
+                                #   存档，跨版本累计会把发布卡死（2026-11-02 实测
+                                #   10+4+5=19 条误报）
     /^## / {
       if ($0 ~ /^##[[:space:]]*验证/) m = "verify";
       else if ($0 ~ /^##[[:space:]]*破坏性变更/) m = "breaking";

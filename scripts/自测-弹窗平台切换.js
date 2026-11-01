@@ -266,34 +266,22 @@ check('版本回退标题与目录校验提示', () => {
   assert.ok(/indexOf\('可可助手'\)/.test(u), '目录校验应保持含「可可助手」的宽松判据');
 });
 
-console.log('\n【福袋收纳】两个开关收进「福袋功能」折叠子菜单');
-check('「福袋功能」是一级行且带总闸开关（2026-11-01 05:31 用户要求补开关）', () => {
-  const hosts = META.filter((m) => m.foldHost === 'bag');
-  assert.equal(hosts.length, 1, 'foldHost:bag 应恰好一条');
-  /* 2026-11-01 上午是「无 key 的纯收纳壳」；05:31 用户改口：
-   * 「菜单这里加个开关……只有开了开关，才能有机会看到子菜单」
-   * ⇒ 与「页面滚动按钮」(scrollBtns) 同一套：有 key、有开关、关掉连带停。 */
-  assert.equal(hosts[0].key, 'luckyBag', '一级行必须带 key，否则右侧没有开关、子菜单永远点得开');
-  assert.equal(hosts[0].label, '福袋功能', '一级行文案应为「福袋功能」');
-  assert.equal(hosts[0].default, true, '总闸默认开（老用户在用的功能不能被默认关掉）');
-  assert.ok(/控制/.test(hosts[0].desc), '父开关要讲控制范围：' + hosts[0].desc);
-  assert.ok(/保留/.test(hosts[0].note), '父开关要讲清「重开后子开关不丢」：' + hosts[0].note);
+console.log('\n【福袋功能增强】单一开关（2026-11-01 深夜：子菜单撤下，自动发福袋挪进悬浮面板）');
+check('「福袋功能增强」是普通一级行，不再有任何折叠关系', () => {
+  const host = META.find((m) => m.key === 'luckyBag');
+  assert.ok(host, '应有 luckyBag 开关');
+  assert.equal(host.label, '福袋功能增强', '一级行文案应为「福袋功能增强」');
+  assert.equal(host.default, true, '默认开（老用户在用的功能不能被默认关掉）');
+  assert.ok(!host.foldHost && !host.foldGroup, '折叠子菜单已撤，不应再挂 foldHost / foldGroup');
+  assert.ok(/停/.test(host.desc), 'desc 要讲总闸范围（关了全停）：' + host.desc);
+  assert.ok(/悬浮窗|默认关/.test(host.note), 'note 要交代「自动发福袋在悬浮窗里」：' + host.note);
 });
-check('两个福袋开关都收进去，且与收纳壳同组', () => {
-  const host = META.find((m) => m.foldHost === 'bag');
-  const kids = META.filter((m) => m.foldGroup === 'bag');
-  assert.equal(kids.length, 2, 'bag 折叠组应恰好两项');
-  // 别用 deepEqual：META 来自 jsdom 的另一个 realm，数组原型不同会误判。
-  assert.equal(kids.map((k) => k.key).sort().join(','), 'luckyBagAuto,luckyBagWatch',
-    '收进去的应是「福袋活动状态监视」与「福袋自动开始下一轮」');
-  kids.forEach((k) => assert.equal(k.group, host.group,
-    '子项与收纳壳必须同组，否则折叠盒建在别的分组框里'));
-});
-check('收纳壳排在两个子项之前', () => {
-  const iHost = META.findIndex((m) => m.foldHost === 'bag');
-  const iKids = META.map((m, i) => (m.foldGroup === 'bag' ? i : -1)).filter((i) => i >= 0);
-  assert.ok(iKids.length === 2, '应找到两个子项');
-  iKids.forEach((i) => assert.ok(iHost < i, 'foldHost 必须先出现，折叠容器才建得出来'));
+check('两个福袋子开关已从 META 删除', () => {
+  assert.equal(META.find((m) => m.key === 'luckyBagWatch'), undefined,
+    '「福袋活动状态监视」应删（监视跟随总闸）');
+  assert.equal(META.find((m) => m.key === 'luckyBagAuto'), undefined,
+    '「福袋自动开始下一轮」应删（开关挪进悬浮面板，存本地键 dycBagAuto）');
+  assert.equal(META.filter((m) => m.foldHost === 'bag').length, 0, 'bag 折叠组不应残留');
 });
 
 console.log('');

@@ -1,5 +1,5 @@
 {
-  "version": "26.11.01.3",
+  "version": "26.11.02.1",
   "algorithm": "sha256",
   "files": [
     {
@@ -20,7 +20,7 @@
     {
       "path": "manifest.json",
       "size": 8209,
-      "sha256": "9fc731870d3e7fabaa15ec3c5c3e24aeb26276fccad13fdc5e7a50c1ae4938d0"
+      "sha256": "f4a73a8fb8229ca2aa066ca0acadc8bbfd642c530ec7ab23b4f6538950b0b085"
     },
     {
       "path": "src/background/service-worker.js",
@@ -64,8 +64,8 @@
     },
     {
       "path": "src/content/diag.js",
-      "size": 53851,
-      "sha256": "f4eebc215693ded9b4ecfcf17b3d011c829a29b9ba040aaae3d967cb50867660"
+      "size": 53832,
+      "sha256": "4400123ea93f1537963a0cc63c86ea0367776143037ed1287f62578e3724458e"
     },
     {
       "path": "src/content/dialog.js",
@@ -74,8 +74,8 @@
     },
     {
       "path": "src/content/flags.js",
-      "size": 79661,
-      "sha256": "11b740a4004eb353732d50e77fab0d5ba21418af1cd970f0545dda7dec0106c0"
+      "size": 78641,
+      "sha256": "c408481fa3dd335a373063c729eff1119972676973da394aef2df59a30d253d2"
     },
     {
       "path": "src/content/inject-button.js",
@@ -164,8 +164,8 @@
     },
     {
       "path": "src/live/auto-loop-lecture.js",
-      "size": 219603,
-      "sha256": "8d161fefda67223a7b9f8045fe6a8069308c3aa4c58fdff182dba7418435aa81"
+      "size": 221974,
+      "sha256": "e62f05cd1f8f0d5f8f88c1e252ed09ddf50502135996cd6da6afab804b4da14b"
     },
     {
       "path": "src/live/auto-refresh.js",
@@ -229,8 +229,8 @@
     },
     {
       "path": "src/live/lucky-bag.js",
-      "size": 118838,
-      "sha256": "f999709ed70a3f26c7ba08f357b467667df886eefded23bdc64314368ad5b979"
+      "size": 154081,
+      "sha256": "16357b5763d464d0a9cc41ec6e7a61893ac9eea670ee8f742a9851eb0b653809"
     },
     {
       "path": "src/live/name-wrap.js",

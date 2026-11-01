@@ -58,7 +58,8 @@ function setup(store = {}) {
   check(!f.api.state.on&&f.api.state.group==='sec'&&f.api.state.seconds===45&&f.api.state.minutes===8.5,'停止状态、组与两个间隔均恢复');
   check(!f.ui('.sw')&&f.ui('.power').textContent==='开启','面板没有右上角开关，启停位常驻胶囊末端');
   f.ui('.power').click();await flush();
-  check(f.api.state.on&&f.api.state.nextAt-f.now()===45000,'手动开启先识别当前商品，等待完整间隔');
+  const d45=f.api.state.nextAt-f.now(); /* 2026-11-01:四档统一 (档位−3) 秒 + 0~3 秒随机,45 档 = 42~45 秒 */
+  check(f.api.state.on&&d45>=42000&&d45<=45000,'手动开启先识别当前商品，等待完整间隔(45 档 42~45 秒随机)');
   const deadline=f.api.state.nextAt;
   f.ui('.cap-main').click();f.ui('.cap-main').click();
   check(f.api.state.on&&f.api.state.nextAt===deadline,'展开和收起只改面板，不停机、不重计');
@@ -67,9 +68,11 @@ function setup(store = {}) {
   check(f.ui('.ticks [data-v="3"]').style.left.startsWith('14.28'),'3 分钟推荐刻度按真实比例定位');
   const ran=f.api.doFastCycle();await ran;
   check(f.clicks()===2&&f.api.state.round===1,'秒档只取消和续讲各一次，按同一商品确认');
-  check(f.api.state.nextAt-f.now()===45000&&f.api.state.nextAt>f.now(),'计时起点在成功续讲之后，间隔完整');
+  const d45b=f.api.state.nextAt-f.now();
+  check(d45b>=42000&&d45b<=45000&&f.api.state.nextAt>f.now(),'计时起点在成功续讲之后，间隔完整(45 档 42~45 秒)');
   f.api.saveSeconds(15);await flush();
-  check(f.api.state.nextAt-f.now()===15000&&f.store.dybAutoLoopSeconds===15,'改档重新计时并保存');
+  const d15=f.api.state.nextAt-f.now(); /* 2026-11-01:15 档实际 12~15 秒(12 秒+0~3 秒随机) */
+  check(d15>=12000&&d15<=15000&&f.store.dybAutoLoopSeconds===15,'改档重新计时并保存(15 档按 12~15 秒随机)');
   f.ui('.power').click();await flush();f.advance(100000);f.api.checkNow();
   check(!f.api.state.on&&f.store.dybAutoLoopEnabled===false&&f.clicks()===2,'点击停止立即生效且观察器不能自动恢复');
   f.api.setGroup('min');await flush();
@@ -138,7 +141,8 @@ function setup(store = {}) {
   check(!restart.api.state.on,'失败停止后刷新或重开仍停止');
   f.api.setOn(true,true);await flush();
   const resume=setup({...f.store});resume.api.apply({autoLoopLecture:true});await flush();
-  check(resume.api.state.on&&resume.api.state.nextAt-resume.now()===15000,'上次运行中刷新后恢复，并从完整间隔开始');
+  const d15r=resume.api.state.nextAt-resume.now();
+  check(resume.api.state.on&&d15r>=12000&&d15r<=15000,'上次运行中刷新后恢复，并从完整间隔开始(15 档 12~15 秒)');
   f.w.__sleepHook=()=>{f.w.__sleepHook=null;f.api.setOn(false,true);};
   await f.api.doFastCycle();await flush();
   check(f.clicks()===3&&!f.api.state.on&&!f.api.state.busy,'取消后停止能中断续讲，锁会释放');

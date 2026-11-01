@@ -1127,8 +1127,10 @@ src/
                             按上次启停状态重新识别与完整计时，不恢复旧商品或补发积压动作。
                             readSettings代际号拦迟到启动，writeSetting串行保存，abortSeq拦旧链。
                             开关autoLoopLecture只管功能门控；诊断含mode/seconds。
-    lucky-bag.js            ★自启动：超级福袋活动状态监视与自动执行下一轮。总闸 luckyBag + luckyBagWatch/Auto
-                            （「与」关系，总闸不覆写子开关）。读数路径只有一条：「超级福袋-活动管理」
+    lucky-bag.js            ★自启动：超级福袋活动状态监视与自动发福袋。popup 只有总闸 luckyBag
+                            （「福袋功能增强」，2026-11-01 深夜折叠子菜单撤下）：监视跟随总闸；
+                            「自动发福袋」开关在悬浮面板里（存 dycBagAuto 默认关，与总闸「与」门）。
+                            圆钮跟随总闸（toolbar flag）。读数路径只有一条：「超级福袋-活动管理」
                             抽屉 —— 开播期间按确认间隔（滑块 3~10 分钟默认 5，存 dycBagCheckMin）
                             自动开抽屉读一轮、1.5 秒内 Esc 关（期间 __dycBagBusyUntil 让自动刷新顺延）；
                             倒计时归零额外确认一次。只认文案不认类名，「开始活动」必须完全相等，
@@ -1136,6 +1138,7 @@ src/
                             （认「结束直播 / 开始直播」，都认不出按在播）；圆钮被平台浮层盖住
                             （covers≥20%，问 overlay-guard）或福袋抽屉开着时让位隐藏。右下圆钮 60px
                             跟「上滑到顶」同轴；面板无 ✕、点外部收起、与圆钮至少留 8px（resolveOverlap）。
+                            老存档 luckyBagWatch/luckyBagAuto 键无人读取、留着无害。
                             授权闸 05:31 加、05:42 撤（沿革见开发日志）。诊断报告「六、超级福袋」整段体检。
     hide-elements.js        隐藏页面元素（按弹窗勾选隐藏指定区块；**中控台与抖店全域共用**，
                             抖店侧由 manifest 第 3 条轻量条目单独注入；隐藏手法按目标的
@@ -3587,6 +3590,28 @@ bash scripts/计点.sh                              # 本次攒批到底算几�
     `github.com:443` 不通，HTTPS 推不了；SSH 22 通且**保留完整提交历史**。
     另有 `scripts/publish-github-api.py`（REST API 通道，不依赖 SSH，
     保留完整历史与 58 个标签；需 Token 有 Contents 写权限）。
+    ★ **2026-11-01 实测口径修正**：SSH 公钥**从未被加入 GitHub 账号**
+    （`ls-remote` 报 Permission denied publickey），`publish-github.py`
+    目前不可用；**实际发版通道 = `publish-github-api.py --single`**
+    （token 单提交模式，token 在 `C:\Develop project\.dyc-github-token`）。
+    其前置：本地必须先打好本次版本的 annotated 标签
+    （`git tag -a vX.Y.Z.N -m "发布 vX.Y.Z.N"`，脚本只搬运不创建 ——
+    2026-11-01 发 26.11.01.3 时漏打，第一次推被脚本校验段拦下）。
+  - ★ **【2026-11-01 用户定 · Gitee 解封后的补推策略】只补最新版，中间版本全部放弃**：
+    用户原话「如果有更新的就补最新的，只要最新的那个版本，
+    中间错过的版本全都不要了」。届时 GitHub 已领先到 26.11.01.3，
+    Gitee 停在 26.11.01.1 —— 补推动作 = 跑 `publish.sh`：
+    ① main 完整历史照常 FF 推进（publish.sh 本来就是
+    `push.followTags=false` + 仅 `refs/tags/$TAG_VER` 一个标签，
+    中间版本标签天然不会带上去）；
+    ② **v26.11.01.2 标签不单独补建** —— 商家端「双源并行取最大版本」
+    只依赖最新标签存在，缺中间标签不影响任何一档升级
+    （含 v26.11.01.1 单源老版本直跳 26.11.01.3 的路径）；
+    ③ 攒批门槛此时为 0 点会拦 —— 这是「补推已上线版本」不是新发布，
+    按用户口令用 `FORCE_PUSH=1` 越过；
+    ④ 推完必须消费方读法对账：raw 回读 update-manifest +
+    抽文件 sha256，与 GitHub 侧逐字节一致才算同步完成；
+    ⑤ Gitee 上仅 v26.11.01.1 及更早的旧标签保留不动（它们内容本来就对）。
   - ★ 备用源坐标写在 `src/shared/gitee.js` 的 `GH_OWNER` / `GH_REPO`，
     改 GitHub 账号名只改这两行；`ghCoord()` 允许运行时覆盖（自测用）。
   - 网络实测脚本：`scripts/实测-更新源双通道.js`（**真跑网络**，

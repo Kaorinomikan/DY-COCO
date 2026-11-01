@@ -44,11 +44,19 @@ function checkFlags(source) {
 function checkNews(source) {
   const issues = [];
   function add(id, rule, message, value) { issues.push({ file: 'RELEASE_NOTES.md', id, field: 'news', rule, message, value }); }
-  const summary = source.match(/^\*\*本版一句话\*\*\s*[:：]\s*(.+)$/m);
+  /* ★ 只检查最顶上的第一个版本段（2026-11-02）。
+   * 理由：商家更新页展示的就是这一段 —— src/update/update.js 的
+   * parseNewsMd「本版一句话」只认第一个、要点按文件顺序取前几条；
+   * 历史版本的要点是已随包发出的存档，跨版本累计计数没有意义
+   * （实测把 26.11.01.3 的 10 条 + 26.11.01.2 的 4 条凑成 14 条，
+   * 连历史文案里的词也一起误报，把发布卡死）。 */
+  const topSection = String(source).split(/^# /m)[1] || '';
+  const scoped = '# ' + topSection;
+  const summary = scoped.match(/^\*\*本版一句话\*\*\s*[:：]\s*(.+)$/m);
   if (!summary) add('summary', 'required', '缺少本版一句话', '');
   else if (len(plain(summary[1])) > limits.summary) add('summary', 'length', '本版一句话超过 ' + limits.summary + ' 字', summary[1]);
   let section = '', items = [];
-  source.split(/\r?\n/).forEach((line) => {
+  scoped.split(/\r?\n/).forEach((line) => {
     if (/^## /.test(line)) section = line.slice(3).trim();
     if (!/^- /.test(line) || /^(验证|破坏性变更)/.test(section)) return;
     const value = plain(line.slice(2));
