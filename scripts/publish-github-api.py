@@ -173,6 +173,19 @@ class GitHub:
             "object": commit_sha, "type": "commit",
         })["sha"]
 
+    def delete_ref(self, ref):
+        """删引用（ref 形如 tags/v1.2.3 或 heads/main）。
+
+        不存在时 GitHub 返回 422 —— 这不算错（本来就是要"确保没有"）。
+        """
+        try:
+            self._req("DELETE", self.base + "/git/refs/" + ref)
+            return True
+        except RuntimeError as e:
+            if "422" in str(e):
+                return False
+            raise
+
     def update_ref(self, ref, sha):
         self._req("PATCH", self.base + "/git/refs/" + ref,
                   body={"sha": sha, "force": False})
@@ -571,8 +584,13 @@ def main():
                 sha_map[commit_sha] = target
             if otype == "tag":
                 t_sha = gh.create_tag(name, subject or ("发布 " + name), target)
+                # 重建场景：旧引用还在时 POST 会 422，先删（不存在则忽略 422）。
+                if gh.delete_ref("tags/" + name):
+                    log("    已删旧引用 %s（重建）" % name)
                 gh.create_ref("tags/" + name, t_sha)
             else:
+                if gh.delete_ref("tags/" + name):
+                    log("    已删旧引用 %s（重建）" % name)
                 gh.create_ref("tags/" + name, target)
             if i % 10 == 0 or i == len(todo):
                 log("  进度 %d/%d（API %d 次）" % (i, len(todo), gh.calls))
