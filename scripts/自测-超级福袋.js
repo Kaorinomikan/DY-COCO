@@ -1,12 +1,12 @@
 /**
- * 自测 · 超级福袋「活动状态监视 + 自动开始下一轮」（jsdom）
+ * 自测 · 超级福袋「开奖监视 + 自动续发」（jsdom）
  * ============================================================
  * 盯的是用户 2026-11-01 拍板的口径：
  *
- *   ① 两个开关分开：监视只读、开始下一轮默认关；
- *   ② 开始即开始下一轮：对同一个活动再点一次「开始活动」；
+ *   ① 两个开关分开：监视只读、续发默认关；
+ *   ② 开奖即续发：对同一个活动再点一次「开始活动」；
  *   ③ 停止判据 = 还能点就继续，点不动了就停；失败立即停、不重试；
- *   ④ 只播报状态，三段式（来源 ｜ 值 ｜ 结果数），开始消息原位刷新；
+ *   ④ 只播报状态，三段式（来源 ｜ 值 ｜ 结果数），开奖消息原位刷新；
  *   ⑤ 「复制」是邻居，绝不能误点；「开始活动后不可修改」这种说明文字也不能点。
  *
  * jsdom 的坑（本文件必须自己补）：
@@ -45,7 +45,7 @@ const PRIZE = '10元店铺红包';
 
 /* ------------------------------------------------------------
  * 页面骨架：照 2026-11-01 用户截图里的真机结构写
- *   表头四列 + 一行活动（奖励信息 / 参与信息 / 参与条件 / 活动状态）
+ *   表头四列 + 一行活动（奖品信息 / 中奖信息 / 中奖条件 / 活动状态）
  *   「开始活动」与「复制」是上下相邻的两个文字链
  * ------------------------------------------------------------ */
 function makeDom(opts) {
@@ -64,7 +64,7 @@ function makeDom(opts) {
   const rows = opts.noRows
     ? ''
     : '<tr id="r1"><td>' + PRIZE + ' ID</td>' +
-      '<td>本次奖励数：1</td>' +
+      '<td>本次奖品数：1</td>' +
       '<td>达到店铺粉丝团等级LV20</td>' +
       '<td>' + cell + '</td></tr>';
 
@@ -72,15 +72,15 @@ function makeDom(opts) {
     ? ''
     : '<div id="dlg" role="dialog">' +
       '<div>管理超级福袋活动</div>' +
-      '<input placeholder="请输入奖励名称" id="q">' +
+      '<input placeholder="请输入奖品名称" id="q">' +
       '<table><thead><tr>' +
-      '<th>奖励信息</th><th>参与信息</th><th>参与条件</th><th>活动状态</th>' +
+      '<th>奖品信息</th><th>中奖信息</th><th>中奖条件</th><th>活动状态</th>' +
       '</tr></thead><tbody>' + rows + '</tbody></table>' +
       '</div>';
 
   const entry = opts.noEntry
     ? ''
-    : '<div id="tools"><span id="bagEntry">超级福袋</span><i>实物抽取，提流量</i></div>';
+    : '<div id="tools"><span id="bagEntry">超级福袋</span><i>实物抽奖，提流量</i></div>';
 
   const html = '<!doctype html><html><body>' +
     '<div id="left">直播工具' + entry + '</div>' + dialog +
@@ -195,7 +195,7 @@ function remove(env, id) {
 }
 
 (async function main() {
-  console.log('===== 超级福袋 · 活动状态监视与自动开始下一轮 =====');
+  console.log('===== 超级福袋 · 开奖监视与自动续发 =====');
 
   /* ---------- ① 开关全关：一点不动、一声不出 ---------- */
   let env = await boot({ watch: false, auto: true });
@@ -220,7 +220,7 @@ function remove(env, id) {
   ok(env.clicks.s1 === 0, '③ 只开监视时不点「开始活动」');
   ok(env.api.probe().detail[0].kind === 'pending', '③ 只监视也能认出「待开始」');
 
-  /* ---------- ④ 自动开始下一轮：点一次，事件序列完整 ---------- */
+  /* ---------- ④ 自动续发：点一次，事件序列完整 ---------- */
   env = await boot({ watch: true, auto: true, onStartClick: 'running' });
   // 不用额外 tick —— boot 落地的第一拍就会点，这里直接验结果
   ok(env.clicks.s1 === 1, '④ 有待开始活动时点一次「开始活动」');
@@ -238,17 +238,17 @@ function remove(env, id) {
   ok(!!startMsg && startMsg.source === '福袋', '⑤ 开始播报带来源词「福袋」');
   ok(!!startMsg && /第 1 轮/.test(startMsg.count), '⑤ 开始播报的结果数 = 第 1 轮');
 
-  /* ---------- ⑥ 开始：播报参与人数，且原位刷新 ---------- */
+  /* ---------- ⑥ 开奖：播报中奖人数，且原位刷新 ---------- */
   env.messages.length = 0;
-  setText(env, 'st1', '● 活动已结束，共 8 人参与');
+  setText(env, 'st1', '● 活动已结束，共 8 人中奖');
   env.tick();
   const drew = env.byType('success');
-  ok(drew.length === 1, '⑥ 开始只播一条 success');
-  ok(/8 人参与/.test(drew[0].count), '⑥ 结果数带参与人数 8');
+  ok(drew.length === 1, '⑥ 开奖只播一条 success');
+  ok(/8\s*人/.test(drew[0].count), '⑥ 结果数带出参与人数 8');
   ok(drew[0].standalone === true, '⑥ 带 count 必须 standalone（否则会被合并掉）');
-  ok(drew[0].histKey === 'bagDraw', '⑥ 开始消息用固定 histKey 原位刷新');
+  ok(drew[0].histKey === 'bagDraw', '⑥ 开奖消息用固定 histKey 原位刷新');
 
-  /* ---------- ⑦ 开始后开始下一轮下一轮：点的是同一活动 ---------- */
+  /* ---------- ⑦ 开奖后续发下一轮：点的是同一活动 ---------- */
   setText(env, 'st1', '● 活动待开始');
   const td = env.doc.querySelector('#r1 td:last-child');
   if (td) {
@@ -258,8 +258,8 @@ function remove(env, id) {
     td.appendChild(a);
   }
   env.tick();
-  ok(env.api.snapshot().round === 1, '⑦ 开始下一轮不改变已完成轮数');
-  ok(env.clicks.s1 === 2, '⑦ 开始后确实又点了一次「开始活动」');
+  ok(env.api.snapshot().round === 1, '⑦ 续发不改变已完成轮数');
+  ok(env.clicks.s1 === 2, '⑦ 开奖后确实又点了一次「开始活动」');
 
   /* ---------- ⑧ 没有可点的了 → 连续两拍停 ---------- */
   // 先关着起，再拨开 —— 否则 boot 里那一拍已经用掉了「防抖」这一次机会
@@ -317,7 +317,7 @@ function remove(env, id) {
   env.tick(); env.tick(); env.tick();
   ok(env.api.snapshot().phase !== 'stopped', '⑫ 弹窗被关掉时不停止（你随时可能再打开）');
   ok(env.messages.length === 0, '⑫ 弹窗被关掉时不报警（不打扰直播）');
-  ok(/^(?:\d{2}:\d{2}|未开始)$/.test(env.api.snapshot().badge), '⑫ 悬浮窗仍显示倒计时（本轮还没开始，你知道还剩多久）');
+  ok(/^(?:\d{2}:\d{2}|未开始)$/.test(env.api.snapshot().badge), '⑫ 悬浮窗仍显示倒计时（本轮还没开奖，你知道还剩多久）');
 
   /* ---------- ⑬ 有弹窗但没有活动行（还在加载）→ 一直等 ---------- */
   env = await boot({ watch: true, auto: true, noRows: true });
@@ -396,9 +396,9 @@ function remove(env, id) {
   ok(/key:\s*'luckyBagWatch'/.test(FLAGS_SRC) && /key:\s*'luckyBagAuto'/.test(FLAGS_SRC),
     '⑳ 两个开关都已登记');
   const autoBlock = FLAGS_SRC.slice(FLAGS_SRC.indexOf("key: 'luckyBagAuto'"), FLAGS_SRC.indexOf("key: 'luckyBagAuto'") + 400);
-  ok(/default:\s*false/.test(autoBlock), '⑳ 「福袋自动开始下一轮」默认关闭（花真奖励，必须用户主动开）');
+  ok(/default:\s*false/.test(autoBlock), '⑳ 「福袋自动续发」默认关闭（花真奖品，必须用户主动开）');
   const watchBlock = FLAGS_SRC.slice(FLAGS_SRC.indexOf("key: 'luckyBagWatch'"), FLAGS_SRC.indexOf("key: 'luckyBagWatch'") + 400);
-  ok(/default:\s*true/.test(watchBlock), '⑳ 「福袋活动状态监视」默认开启（只读无害）');
+  ok(/default:\s*true/.test(watchBlock), '⑳ 「福袋开奖监视」默认开启（只读无害）');
 
   /* ---------- ㉑ 点成功后：行内没给倒计时就只说「进行中」 ---------- */
   env = await boot({ watch: true, auto: true, onStartClick: 'running' });
@@ -412,12 +412,12 @@ function remove(env, id) {
     '㉑ 圆钮只说「进行中」，不显示一个跟平台无关的假 mm:ss');
   ok(env.api.snapshot().running === true, '㉑ 快照标记「有活动在跑」');
 
-  /* ---------- ㉒ 卡片上写了开始倒计时 → 优先用它 ---------- */
-  env = await boot({ watch: true, auto: true, onStartClick: 'nothing', status: '距开始 04:32' });
+  /* ---------- ㉒ 卡片上写了开奖倒计时 → 优先用它 ---------- */
+  env = await boot({ watch: true, auto: true, onStartClick: 'nothing', status: '距开奖 04:32' });
   env.tick();                                   // 点一次
   await sleep(20);
   const st22 = env.doc.getElementById('st1');
-  if (st22) st22.textContent = '● 活动进行中 · 距开始 04:32';
+  if (st22) st22.textContent = '● 活动进行中 · 距开奖 04:32';
   env.messages.length = 0;
   env.tick();                                   // 校验 + 读倒计时
   const d22 = env.api.snapshot().drawIn;
@@ -659,7 +659,7 @@ function remove(env, id) {
   /* ---------- ㊞ 活动异常 → 立即停（用户定「遇异常即停」） ---------- */
   env = await boot({ watch: true, auto: true, status: '活动异常', keepBootMsgs: true });
   env.tick();
-  ok(env.api.snapshot().phase === 'stopped', '㊞ 有活动异常 → 自动开始下一轮立即停');
+  ok(env.api.snapshot().phase === 'stopped', '㊞ 有活动异常 → 自动续发立即停');
   ok(env.api.snapshot().reason === 'row-error', '㊞ 停止原因 = 活动异常');
   ok(env.clicks.s1 === 0, '㊞ 异常行不会被点');
   ok(env.messages.filter(function (m) { return m.histKey === 'bagError'; }).length === 1,
@@ -675,8 +675,8 @@ function remove(env, id) {
   ok(env.messages.filter(function (m) { return m.histKey === 'bagError'; }).length === 1,
     '㊟ 仍然播报，且只报一次');
 
-  /* ---------- ㊠ 卡死：预期开始已过 90 秒还在进行中 ---------- */
-  env = await boot({ watch: true, auto: true, status: '活动进行中 · 距开始 01:00' });
+  /* ---------- ㊠ 卡死：预期开奖已过 90 秒还在进行中 ---------- */
+  env = await boot({ watch: true, auto: true, status: '活动进行中 · 距开奖 01:00' });
   env.tick();
   ok(env.api.snapshot().drawIn > 0, '㊠ 先读到卡片倒计时');
   // 把行文字去掉时间，避免下一拍重读把 backdate 覆盖掉
@@ -684,20 +684,20 @@ function remove(env, id) {
   env.api.setTimingForTest({ backdate: 200000 });
   env.tick();
   ok(env.api.snapshot().phase === 'stopped' && env.api.snapshot().reason === 'stuck',
-    '㊠ 预期开始过了 90 秒仍未结束 → 判卡死并停');
+    '㊠ 预期开奖过了 90 秒仍未结束 → 判卡死并停');
 
   /* ---------- ㊡ 每拍校准：平台把时间改短，本地跟着改 ---------- */
-  env = await boot({ watch: true, auto: true, status: '活动进行中 · 距开始 05:00' });
+  env = await boot({ watch: true, auto: true, status: '活动进行中 · 距开奖 05:00' });
   env.tick();
   const d1 = env.api.snapshot().drawIn;
-  env.doc.getElementById('st1').textContent = '● 活动进行中 · 距开始 02:00';
+  env.doc.getElementById('st1').textContent = '● 活动进行中 · 距开奖 02:00';
   env.tick();
   const d2 = env.api.snapshot().drawIn;
   ok(d1 > 4 * 60000 && d2 < 3 * 60000,
     '㊡ 第二拍读到 02:00 → 校正为 2 分钟档（旧版只读一次，会一直按 5 分钟倒数）');
 
-  /* ---------- ㊣ 倒计时走完停在 00:00（不切「待开始」） ---------- */
-  env = await boot({ watch: true, auto: true, status: '活动进行中 · 距开始 01:00' });
+  /* ---------- ㊣ 倒计时走完停在 00:00（不切「待开奖」） ---------- */
+  env = await boot({ watch: true, auto: true, status: '活动进行中 · 距开奖 01:00' });
   env.tick();
   env.doc.getElementById('st1').textContent = '● 活动进行中';
   env.api.setTimingForTest({ backdate: 90000 });
@@ -739,7 +739,7 @@ function remove(env, id) {
    * 这一组复现两条现实路径：
    *   ① 标题写法与截图不同 → 旧版 panelPresent() 永远 false（认不出抽屉）；
    *   ② 表格是 div 布局、且「进行中」的行里没有「开始活动」
-   *      → 旧版只扫 tr，这一行永远读不到，开始播报整段哑掉。
+   *      → 旧版只扫 tr，这一行永远读不到，开奖播报整段哑掉。
    * ============================================================ */
 
   async function bootDrawer(body) {
@@ -772,26 +772,26 @@ function remove(env, id) {
   /* 抽屉骨架：入口文案用真机那句「超级福袋-活动管理」 */
   function drawerHtml(o) {
     o = o || {};
-    const head = o.noSearch ? '' : '<input id="q" placeholder="请输入奖励名称">';
+    const head = o.noSearch ? '' : '<input id="q" placeholder="请输入奖品名称">';
     const rows = o.rows || '';
     return '<div id="drawer">'
       + '<div id="dTitle">超级福袋-活动管理</div>'
       + '<ul><li>全部</li><li>待开始</li><li>进行中</li><li>已结束</li></ul>'
       + head
-      + '<table><thead><tr><th>奖励信息</th><th>参与信息</th><th>参与条件</th><th>活动状态</th></tr></thead>'
+      + '<table><thead><tr><th>奖品信息</th><th>中奖信息</th><th>中奖条件</th><th>活动状态</th></tr></thead>'
       + '<tbody id="tb">' + rows + '</tbody></table>'
       + '</div>';
   }
 
   const ROW_RUNNING = '<tr id="r1"><td><div class="index-ellipsis--ZAL9f">10元店铺红包 ID 8899</div></td>'
-    + '<td>本次奖励数：1</td><td>达到粉丝团等级LV20</td>'
+    + '<td>本次奖品数：1</td><td>达到粉丝团等级LV20</td>'
     + '<td><span id="st1">● 进行中</span></td></tr>';
 
   /* ㊥① 真机抽屉：搜索框 + tr 行 + 「进行中」 */
   let d = await bootDrawer(drawerHtml({ rows: ROW_RUNNING }));
   let info = d.api.pure.panelInfo();
   ok(info.open === true, '㊥① 真机抽屉能被认出（旧版锚点只有截图那一种写法）');
-  ok(info.by === '搜索框' && /奖励名称/.test(info.searchPh), '㊥① 靠搜索框认出来，并带出 placeholder');
+  ok(info.by === '搜索框' && /奖品名称/.test(info.searchPh), '㊥① 靠搜索框认出来，并带出 placeholder');
   ok(d.api.pure.scanRows().length === 1, '㊥① 抽屉里的 tr 行读到了');
   ok(d.api.pure.statusOf(d.doc.getElementById('r1')).kind === 'running', '㊥① 状态判为「进行中」');
   let det = d.api.probe().detail[0];
@@ -841,10 +841,10 @@ function remove(env, id) {
   ok(d.api.pure.clickable(hit[0]) === true, '㊥⑤ 外层判为可点');
 
   /* ㊥⑥ 平台时刻混进来时不许当倒计时 */
-  d = await bootDrawer('<div id="a1"><div>9元红包 ID 9</div><div>待开始 · 开始时间 12:30</div>'
+  d = await bootDrawer('<div id="a1"><div>9元红包 ID 9</div><div>待开始 · 开奖时间 12:30</div>'
     + '<span id="s1">开始活动</span></div>');
   ok(d.api.pure.computeDrawAt(d.doc.getElementById('a1')) === 0,
-    '㊥⑥ 「开始时间 12:30」不被读成 12 分 30 秒');
+    '㊥⑥ 「开奖时间 12:30」不被读成 12 分 30 秒');
   d = await bootDrawer('<div id="a2"><div>8元红包</div><div>进行中 · 剩余 3分12秒</div></div>');
   const ms312 = d.api.pure.computeDrawAt(d.doc.getElementById('a2'));
   ok(Math.abs(ms312 - (Date.now() + 192000)) < 3000, '㊥⑥ 「剩余 3分12秒」能读成约 192 秒');
@@ -861,7 +861,7 @@ function remove(env, id) {
    * ------------------------------------------------------------
    * 用户原话拆成四条硬要求：
    *   ① 圆钮不许压在面板上（旧版面板读常量 17.4、圆钮读实时值，错位 15px）；
-   *   ② 面板里那五行 + 说明全删，只留「下轮开始」+ 3~10 分钟滑块；
+   *   ② 面板里那五行 + 说明全删，只留「下轮开奖」+ 3~10 分钟滑块；
    *   ③ 滑块拖动不被每秒刷新复位（「跟自动循环功能一样」）；
    *   ④ 未开播不生效、下播停；到点自己开抽屉确认一次、读完就关。
    * ============================================================ */
@@ -874,7 +874,7 @@ function remove(env, id) {
       + '</div>'
       + (extraHtml || '')
       + '<div id="host">' + (opts.preOpen ? '<div id="drawer">'
-        + '<input id="q" placeholder="请输入奖励名称">'
+        + '<input id="q" placeholder="请输入奖品名称">'
         + '<table><tbody><tr id="r1"><td><div>10元店铺红包 ID 8899</div></td>'
         + '<td>进行中 距结束 03:12</td></tr></tbody></table></div>' : '') + '</div>'
       + '<div class="dyc-back-top" id="btt" style="position:fixed;right:36px;bottom:116.8px;'
@@ -900,7 +900,7 @@ function remove(env, id) {
      *   断言会误判成「没点入口」。 */
     const clicks = { entry: 0, esc: 0 };
     const drawerHtmlStr = '<div id="drawer">'
-      + '<input id="q" placeholder="请输入奖励名称">'
+      + '<input id="q" placeholder="请输入奖品名称">'
       + '<table><tbody>'
       + '<tr id="r1"><td><div>10元店铺红包 ID 8899</div></td><td>进行中 距结束 03:12</td></tr>'
       + '</tbody></table></div>';
@@ -927,13 +927,13 @@ function remove(env, id) {
     return { win, doc, api, messages, clicks, openDrawer, sleep };
   }
 
-  /* ㊦① 面板只留两样：下轮开始 + 滑条；五行与说明必须消失 */
+  /* ㊦① 面板只留两样：下轮开奖 + 滑条；五行与说明必须消失 */
   let bp = await bootBagPage();
   bp.api.togglePanel();
   let sh = bp.doc.getElementById('dyb-bag-panel').shadowRoot;
   let pText = sh.querySelector('.p').textContent;
   ok(pText.includes('下轮开始') && pText.includes('确认间隔'), '㊦① 面板留下「下轮开始 + 确认间隔」');
-  ok(!/已发轮数|开始时长|弹窗|中控台请保持|由你手动开着/.test(pText), '㊦① 旧五行与说明全删（用户要求「不需要这些信息」）');
+  ok(!/已发轮数|开奖时长|弹窗|中控台请保持|由你手动开着/.test(pText), '㊦① 旧五行与说明全删（用户要求「不需要这些信息」）');
 
   /* ㊦① 滑条是自绘的（原生 range 按 step 跳、也画不出推荐刻度） */
   const tk = sh.querySelector('.tk');
@@ -974,7 +974,7 @@ function remove(env, id) {
   ok(!sh.querySelector('.x') && pText.trim().indexOf('超级福袋') === 0,
     '㊦① 头部只剩标题，没有 ✕ 关闭键');
   ok(/font:11px\/1\.6/.test(cssText) && /\.rl \.val\{[^}]*font-size:14px/.test(cssText),
-    '㊦① 基准字号 12→11px、开始数字 16→14px');
+    '㊦① 基准字号 12→11px、开奖数字 16→14px');
 
   /* ㊦① 矮窗口终局防压：面板比「圆钮上方空间」还高时也不许压到圆钮 */
   const tiny = bp.api.pure.resolveOverlap(632.6, 8, 250, 400, 822.6, 222.4);
@@ -1115,7 +1115,7 @@ function remove(env, id) {
   env = await boot({ watch: true, gate: false });
   ok(env.api.snapshot().timers.tick === false, '㊪ 总闸关 → 不挂扫描定时器');
   ok(env.api.snapshot().flags.watch === false, '㊪ 总闸关 → 子开关即使开着也判为「关」');
-  ok(env.api.snapshot().flags.auto === false, '㊪ 总闸关 → 自动开始下一轮一并停');
+  ok(env.api.snapshot().flags.auto === false, '㊪ 总闸关 → 自动续发一并停');
   env.tick();
   ok(env.clicks.s1 === 0 && env.messages.length === 0, '㊪ 总闸关 → 什么都不点、一声不出');
 
@@ -1132,7 +1132,7 @@ function remove(env, id) {
   env.watch({ luckyBag: true, luckyBagWatch: false, luckyBagAuto: false });
   ok(env.api.snapshot().flags.watch === false, '㊪ 总闸仍开时，子开关照常生效');
   env.watch({ luckyBag: true, luckyBagWatch: true, luckyBagAuto: true });
-  ok(env.api.snapshot().flags.auto === true, '㊪ 总闸开着时开始下一轮也能恢复');
+  ok(env.api.snapshot().flags.auto === true, '㊪ 总闸开着时续发也能恢复');
 
   console.log('');
   console.log('通过 ' + pass + ' 项' + (failures.length ? '，失败 ' + failures.length + ' 项' : '，全部通过'));

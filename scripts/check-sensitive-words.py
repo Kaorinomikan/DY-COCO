@@ -256,11 +256,116 @@ def _near(text, word, trigger, window=4):
         start = i + 1
 
 
-def scan_text(text, wl):
-    """扫一段文本，返回 (block_hits, warn_hits)"""
+def _mask_regex_literals(text):
+    """找出**正则字面量**（/.../flags）的区间，返回 [(start, end), ...]。
+
+    ★ 为什么扫描时必须放过它们（2026-11-01 实测踩坑）：
+      本工程有一批正则匹配的是**平台页面上的原文**，例如
+        var RE_ROWISH = /奖品|中奖|福袋|.../;
+      它是用来**认平台元素**的。把里面的字面量换成中性说法，
+      真机上就匹配不到那个元素 —— **静默失效、不报错、最难发现**
+      （界面上只是「功能没反应」，没人会想到是正则被改了）。
+      ⇒ 所以扫描与自动改写都必须**跳过正则字面量**。
+
+    ★ 为什么要自己扫：
+      JS 里正则与除法的歧义只能靠上下文判断。按本工程的写法
+      （正则都是 `= /.../;` 或 `= /.../flags` 形式）识别足够，
+      且不会误伤注释里的斜杠。
+    """
+    regions = []
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        # 行注释
+        if ch == "/" and i + 1 < n and text[i + 1] == "/":
+            j = text.find("\n", i)
+            i = n if j < 0 else j + 1
+            continue
+        # 块注释
+        if ch == "/" and i + 1 < n and text[i + 1] == "*":
+            j = text.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+            continue
+        # 字符串字面量
+        if ch in ("'", '"', "`"):
+            q = ch
+            j = i + 1
+            while j < n:
+                if text[j] == "\\":
+                    j += 2
+                    continue
+                if text[j] == q:
+                    j += 1
+                    break
+                j += 1
+            i = j
+            continue
+        # 正则字面量：/ ... /flags
+        # ★ 判定「这是正则而不是除法」靠两条：
+        #   ① 前一个非空白字符必须是正则位置（= ( , : ? && return 等）；
+        #   ② 结尾斜杠之后只能是**合法的 flag 字母或直接结束** ——
+        #      **无 flag 的正则也算**（平台原文正则大多没写 flag，
+        #      第一版按「必须有 flag」判定，把它们全漏了）。
+        if ch == "/":
+            j = i + 1
+            in_class = False
+            while j < n:
+                cj = text[j]
+                if cj == "\\":
+                    j += 2
+                    continue
+                if cj == "[":
+                    in_class = True
+                elif cj == "]":
+                    in_class = False
+                elif cj == "/" and not in_class:
+                    break
+                elif cj == "\n":
+                    break
+                j += 1
+            if j < n and text[j] == "/":
+                k = j + 1
+                while k < n and text[k] in "gimsuy":
+                    k += 1
+                flags = text[j + 1:k]
+                # ① 前一个非空白字符
+                bpos = i - 1
+                while bpos >= 0 and text[bpos] in " \t":
+                    bpos -= 1
+                prev = text[bpos] if bpos >= 0 else ""
+                ok_prev = prev in "=(,:?&|!+*%[]{};" or prev == "" \
+                    or text[max(0, bpos - 6):bpos + 1].endswith("return")
+                # ② flag 必须合法（无 flag 也接受）
+                ok_flag = all(c in "gimsuy" for c in flags)
+                # ③ 正则体非空
+                ok_body = j > i + 1
+                if ok_prev and ok_flag and ok_body:
+                    regions.append((i, k))
+                    i = k
+                    continue
+        i += 1
+    return regions
+
+
+def scan_text(text, wl, skip_regex=True):
+    """扫一段文本，返回 (block_hits, warn_hits)
+
+    ★ skip_regex：默认**跳过正则字面量**（匹配平台 UI 原文的契约，
+      改了会静默失效）。见 _mask_regex_literals 的说明。
+    """
     blocks = []
     warns = []
     low = text
+
+    if skip_regex:
+        # 把正则区替换成**等长空白** —— 保留位置与长度，
+        # 这样「邻近」判定不会因字符移位而改变。
+        chars = list(text)
+        for a, b in _mask_regex_literals(text):
+            for idx in range(a, min(b, len(chars))):
+                chars[idx] = " "
+        low = "".join(chars)
 
     for word, reason in BLOCK_WORDS:
         if word in low:
@@ -361,6 +466,10 @@ FIX_RULES = [
 SELF_EXEMPT = {
     "scripts/check-sensitive-words.py",
     "scripts/sensitive-words-allowlist.txt",
+    # ★ 自测脚本 —— 它必须含**平台原文**（模拟页面要用平台真实文案，
+    #   否则扩展认自己造的假页面就行、真机认不出真页面反而测不出来）。
+    #   平台原文正是待拦的词 ⇒ 只能豁免。
+    "scripts/自测-超级福袋.js",
 }
 
 # 用户可见文案所在行的特征 —— 命中则**不自动优化**。
