@@ -521,6 +521,15 @@ def main():
             name, otype, obj, peeled, tagger, temail, tdate, subject = (
                 p[0], p[1], p[2], p[3], p[4], p[5], p[6], p[7] if len(p) > 7 else "")
             if name in remote_tags:
+                # ★ 单提交模式：本次版本的标签**已存在**时，要重建它。
+                #   情况：远端标签是上一轮推的，指向**旧提交**（旧内容）。
+                #   而扩展的备用更新源读的就是**标签**（contents/<path>?ref=<tag>）
+                #   ⇒ 标签不重指，商家拿到的还是旧版本（哪怕 main 已经更新）。
+                #   ⇒ 所以这里不跳过，标记为待重建，交给下面重建。
+                if args.single and name == tag:
+                    commit_sha = peeled if otype == "tag" else obj
+                    todo.append((name, otype, commit_sha, tagger, temail,
+                                 tdate, subject))
                 continue
             # ★ 单提交模式：**只打本次版本的标签**。
             #   历史标签不推 —— 那些标签指向的历史提交内容没有推到远端，
@@ -567,7 +576,6 @@ def main():
                 gh.create_ref("tags/" + name, target)
             if i % 10 == 0 or i == len(todo):
                 log("  进度 %d/%d（API %d 次）" % (i, len(todo), gh.calls))
-
     # ---- 校验 ----
     log("\n校验")
     final_main = gh.get_ref("heads/main")
