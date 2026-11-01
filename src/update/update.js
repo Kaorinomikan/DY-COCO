@@ -18,9 +18,11 @@
  *   不需要重新翻目录。
  * ─────────────────────────────────────────────────────────
  *
- * 数据源：Gitee 的 **raw 通道**（原理与实测数据见 src/shared/gitee.js 头部注释）。
- *   读一次更新清单 + 每个文件各取一次，全程不碰 /api/v5，
- *   因此不受「未登录 60 次/小时」的匿名限流影响 —— 这是 26.10.10.6 的改动。
+ * 数据源：**主源 Gitee + 备用源 GitHub 双通道**（原理与实测数据见
+ *   src/shared/gitee.js 头部注释；2026-11-01 Gitee 仓库被封后，备用源成为实际主源）。
+ *   读一次更新清单 + 每个文件各取一次；主源走 raw 通道全程不碰 /api/v5，
+ *   不受「未登录 60 次/小时」的匿名限流影响（26.10.10.6 的改动）；
+ *   备用源走 jsDelivr CDN 直出 + contents API 混合读法（2026-11-01 定稿）。
  *   （老实现走 /git/trees + /git/blobs，额度打满后商家点「安装更新」必然失败。）
  *
  * ═══════ 26.10.11.3 的流程改造（用户要求「少点几下」）═══════
@@ -696,8 +698,15 @@ function validateSnapshot(snap) {
 
 const PREFETCH_CONCURRENCY = 6;
 
+// 预载轮次号（2026-11-01 体检 P0-8）：某文件抛错时 Promise.all 会 reject，
+// 但**其余 worker 不停**（它们只认 aborted / 下标耗尽）；1.5 秒后的自动重试
+// 会清空 pre.files 重新下载，旧 worker 若还活着就会把旧一轮的文件 push 进
+// 新一轮数组 → 文件重复下载、doneCount/进度错乱。每轮发一个 runId，
+// worker 与 prefetchOne 在关键点校验，失效即安静退出、结果丢弃。
+let prefetchRunId = 0;
+
 /** 单个文件的下载 + 校验；重试前必须把字节计数回退，否则进度会虚高 */
-async function prefetchOne(entry) {
+async function prefetchOne(entry, myRun) {
   const base = pre.loadedBytes;
   const bytes = await withRetry(() => {
     // 上一轮失败时可能已经加过字节，回退到本次下载的起点
@@ -713,6 +722,8 @@ async function prefetchOne(entry) {
   if (sha !== entry.sha256) {
     throw fatal('内容校验失败：' + entry.path + '（与清单记录不一致，已中止）');
   }
+  // 下载期间本轮已被作废（自动重试重开了新一轮）→ 结果丢弃，不许入队
+  if (myRun !== undefined && myRun !== prefetchRunId) return null;
   pre.files.push({ path: entry.path, bytes });
   pre.doneCount++;
   refreshDownloadBar();
@@ -728,6 +739,7 @@ async function startPrefetch() {
   pre.started = true;
   pre.running = true;
   pre.error = null;
+  const myRun = ++prefetchRunId;   // 本轮预载的令牌（作废旧 worker）
   renderRunButtons();
 
   try {
@@ -780,11 +792,19 @@ async function startPrefetch() {
     let cursor = 0;
     const worker = async () => {
       for (;;) {
+        if (myRun !== prefetchRunId) return;   // 本轮已作废，安静退出
         if (aborted) throw new Error('已中断');
         const i = cursor++;
         if (i >= tree.length) return;
         const e = tree[i];
-        await prefetchOne(e);
+        try {
+          await prefetchOne(e, myRun);
+        } catch (err) {
+          // 旧轮 worker 的报错不作数（新一轮正在跑），不外抛免得成未捕获 rejection
+          if (myRun !== prefetchRunId) return;
+          throw err;
+        }
+        if (myRun !== prefetchRunId) return;
         log('已下载并校验 (' + pre.doneCount + '/' + tree.length + ') ' + e.path, 'dim');
       }
     };
@@ -1314,7 +1334,8 @@ function showUnsupported(isRollback) {
  * 从目标版本的仓库拉 RELEASE_NOTES.md，抽出「本版一句话」与要点条目，渲染到更新页。
  *
  * 为什么走 raw 通道读仓库里的文档，而不是往扩展本体里塞一份说明：
- *   · raw 与下载扩展本体是同一条通道（/raw/<tag>/…），不占 Gitee 接口额度、不需要新权限；
+ *   · 与下载扩展本体走同一条 fetchRawFile 双通道封装（主源 Gitee raw /
+ *     备用源 GitHub 混合读法），不占接口额度、不需要新权限；
  *   · tag 指向的内容不可变，拉到的天然就是「那个版本当时的说明」，
  *     不像打进包里的文件只能反映上一个版本；
  *   · 商家目录里始终只有运行必需的文件，不掺文档（这条是用户的硬性要求）。

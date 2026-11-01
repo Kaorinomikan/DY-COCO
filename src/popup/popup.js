@@ -839,11 +839,18 @@ function buildUpdateBox() {
       '</span>' +
     '</div>' +
     '<div class="upd-row">' +
-      // 源码地址：Gitee 主源已被封（仓库首页 404），改指 GitHub 镜像。
-      '<a href="#" id="upd-repo" class="upd-link">GitHub</a>' +
-      // 「更新日志」常驻入口（#106）：打开页面内浮层并落在「更新日志」Tab（2026-10-24 迭代）。
-      '<a href="#" id="upd-log" class="upd-link">更新日志</a>' +
-      '<a href="#" id="upd-feedback" class="upd-feedback">反馈</a>' +
+      // 2026-11-01 排版优化(定稿方案 B·标签引导):左组源码地址前加灰字
+      // 「源码」标签自解释用途,链接保持蓝色;右组「更新日志 + 反馈」。
+      '<span class="upd-repos">' +
+        '<span class="upd-repo-label">源码</span>' +
+        '<a href="#" id="upd-repo" class="upd-link">GitHub</a>' +
+        '<a href="#" id="upd-repo-gitee" class="upd-link">Gitee</a>' +
+      '</span>' +
+      '<span class="upd-links">' +
+        // 「更新日志」常驻入口（#106）：打开页面内浮层并落在「更新日志」Tab（2026-10-24 迭代）。
+        '<a href="#" id="upd-log" class="upd-link">更新日志</a>' +
+        '<a href="#" id="upd-feedback" class="upd-feedback">反馈</a>' +
+      '</span>' +
     '</div>' +
     '<div class="upd-status" id="upd-status"></div>';
   return box;
@@ -1489,6 +1496,7 @@ try {
 const actionEl = document.getElementById('upd-action');
 const statusEl = document.getElementById('upd-status');
 const repoEl = document.getElementById('upd-repo');
+const giteeRepoEl = document.getElementById('upd-repo-gitee');
 const logEl = document.getElementById('upd-log');
 const feedbackEl = document.getElementById('upd-feedback');
 const rollbackEl = document.getElementById('upd-rollback');
@@ -1721,9 +1729,16 @@ actionEl.addEventListener('click', (e) => {
 });
 
 // ---- 项目地址 ----
+// 2026-11-01 用户定稿：GitHub 与 Gitee 两个仓库地址并列展示，各开各的。
 repoEl.addEventListener('click', (e) => {
   e.preventDefault();
   chrome.tabs.create({ url: DYC_GITEE.GH_WEB });
+  window.close();
+});
+
+giteeRepoEl.addEventListener('click', (e) => {
+  e.preventDefault();
+  chrome.tabs.create({ url: DYC_GITEE.WEB });
   window.close();
 });
 

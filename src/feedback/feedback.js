@@ -184,7 +184,7 @@
     var foot = document.createElement('div');
     foot.className = 'cl-foot';
     foot.innerHTML = '以上说明取自各版本标签随仓库提交的 RELEASE_NOTES，'
-      + '完整文档见 <a id="cl-gitee">Gitee 仓库标签页</a>。';
+      + '完整文档见 <a id="cl-gitee">GitHub 仓库标签页</a>。';
     foot.querySelector('#cl-gitee').addEventListener('click', function () {
       if (data.webUrl) {
         try { window.open(data.webUrl, '_blank'); } catch (e) { /* 拦就拦了 */ }

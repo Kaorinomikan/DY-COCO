@@ -116,6 +116,14 @@ function onChannelPage() {
 function injectAllRows() {
   let count = 0;
 
+  // 每轮先清掉已被平台销毁的行（翻页/筛选不换 pageType，路由重置兜不住）：
+  // 否则 Set 强引用旧 tr 子树，连续翻 N 页 = N 页 DOM 常驻内存（2026-11-01 体检 P0-1）。
+  if (injectedRows.size) {
+    for (const row of injectedRows) {
+      if (!row.isConnected) injectedRows.delete(row);
+    }
+  }
+
   if (onListPage()) {
     const products = findProductRows();
     for (const item of products) {

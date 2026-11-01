@@ -442,6 +442,17 @@
     .upd-link:hover {
       text-decoration: underline;
     }
+    /* 2026-11-01 排版优化(定稿方案 B):底部一行按语义分两组 ——
+       左组源码地址前加灰字「源码」标签(#86909c,与「版本」标签同灰度),
+       链接保持蓝色;右组「更新日志 + 反馈」蓝/橙不变。 */
+    .upd-repos,
+    .upd-links {
+      display: inline-flex;
+      align-items: center;
+    }
+    .upd-repos { gap: 6px; }
+    .upd-links { gap: 10px; }
+    .upd-repo-label { color: #86909c; }
     .upd-feedback {
       font-size: 11px;      /* 2026-10-16 弹窗减噪:12 → 11px,与其他链接统一 */
       color: #ff7d00;

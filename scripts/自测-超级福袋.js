@@ -990,19 +990,28 @@ function remove(env, id) {
   const thumb8 = Math.round(parseFloat(sh.querySelector('.thumb').style.left));
   ok(thumb8 === 71, '㊦② 刷新一拍后滑钮仍停在 8 分钟处（' + thumb8 + '%，不会弹回 28%）');
 
-  /* ㊦③ 阻尼：目标立刻到位、画面追着走；松手才吸到整数 */
+  /* ㊦③ 阻尼 + 吸附（2026-11-01 下午用户「要做一些阻尼感（吸附到刻度），滑着太顺滑了」）：
+   * 拖动中 target 就吸到最近刻度，画面靠阻尼追过去 —— 磁吸咬合，不是硬跳 */
   bp.api.setCheckMin(5);                    // 回到推荐值当起点，拖动才有行程
   const rect = { left: 900, width: 250 };   // 与 getBoundingClientRect 打桩一致
-  bp.api.slideTo(rect.left);                // 按在 3 分钟处
-  bp.api.slideMove(rect.left + rect.width * 0.7);  // 拖到 70% ≈ 7.9 分钟
+  bp.api.slideTo(rect.left);                // 按在 3 分钟处（吸到刻度 3）
+  let st0 = bp.api.slideState();
+  ok(st0.target === 3, '㊦③ 按下轨道就吸到最近刻度（落点 3 分钟 → target=' + st0.target + '）');
+  bp.api.slideMove(rect.left + rect.width * 0.7);  // 拖到 70% ≈ 7.9 → 吸到 8
   let st = bp.api.slideState();
-  ok(st.target > 7.8 && st.target < 8.0, '㊦③ 拖动目标算成小数（' + st.target.toFixed(2) + '），不是一格一格跳');
+  ok(st.target === 8, '㊦③ 拖动中目标就吸附到刻度（70%≈7.9 → ' + st.target + '，不再跟指针连续走）');
+  bp.api.slideMove(rect.left + rect.width * 0.55); // 半格位置 55% ≈ 6.85 → 咬合到 7
+  st = bp.api.slideState();
+  ok(st.target === 7, '㊦③ 两格之间的落点咬合到最近刻度（6.85 → ' + st.target + '）');
+  bp.api.slideMove(rect.left + rect.width * 0.7);  // 拖回 70% → 8
+  st = bp.api.slideState();
+  ok(st.target === 8, '㊦③ 拖回 70% 目标仍吸到 8');
   ok(st.cur < st.target - 0.5, '㊦③ 画面还在追（阻尼中 ' + st.cur.toFixed(2) + ' ≠ ' + st.target.toFixed(2) + '），不是瞬间跳到位');
   await sleep(260);                         // 让 rAF 追到位（45%/帧 ≈ 150ms）
   st = bp.api.slideState();
-  ok(Math.abs(st.cur - st.target) < 0.05, '㊦③ 约 150ms 内平滑追上，不顿挫');
+  ok(Math.abs(st.cur - st.target) < 0.05, '㊦③ 约 150ms 内阻尼追上，稳停在刻度上');
   bp.api.slideEnd();
-  ok(bp.api.checkMin() === 8, '㊦③ 松手才吸到整数并写盘（8 分钟）');
+  ok(bp.api.checkMin() === 8, '㊦③ 松手吸到整数并写盘（8 分钟）');
   await sleep(200);
   const rest = bp.api.slideState();
   ok(Math.abs(rest.cur - 8) < 0.05 && Math.abs(rest.target - 8) < 0.001,

@@ -577,14 +577,32 @@
       }
     }
     if (!out) {
-      var resp = await fetch(url, {
-        method: opts.method || 'GET',
-        credentials: 'include',
-        headers: opts.body ? { 'Content-Type': 'application/json;charset=UTF-8' } : undefined,
-        body: opts.body || undefined
-      });
-      var text = await resp.text();
-      out = { status: resp.status, text: text, via: 'isolated' };
+      // 超时兜底（2026-11-01 体检 P0-5）：隔离 fetch 一旦挂起（TCP 黑洞 /
+      // 平台不回包），这个 await 永不 settle，上层 running 锁永不释放，
+      // 之后所有「下架并删除」点击永远弹「正在处理上一个任务」—— 功能级死锁。
+      // 主源转发那档已有 8 秒超时，这里对齐（同文件转发超时同款上限）。
+      var ctrl = typeof AbortController === 'function' ? new AbortController() : null;
+      var timer = ctrl
+        ? setTimeout(function () { try { ctrl.abort(); } catch (e0) { /* 忽略 */ } }, 8000)
+        : null;
+      try {
+        var resp = await fetch(url, {
+          method: opts.method || 'GET',
+          credentials: 'include',
+          headers: opts.body ? { 'Content-Type': 'application/json;charset=UTF-8' } : undefined,
+          body: opts.body || undefined,
+          signal: ctrl ? ctrl.signal : undefined
+        });
+        var text = await resp.text();
+        out = { status: resp.status, text: text, via: 'isolated' };
+      } catch (fe) {
+        // 超时/中断统一转成可读失败：上层按请求失败处理并释放锁。
+        if (timer) { clearTimeout(timer); }
+        throw new Error('隔离兜底请求失败' +
+          (fe && fe.name === 'AbortError' ? '（8 秒无响应已超时）' : '') +
+          '：' + (fe && fe.message || fe));
+      }
+      if (timer) { clearTimeout(timer); }
     }
 
     // 每个请求都留一条日志（含通道与响应摘要）—— 失败时不用猜是「没发出去」

@@ -125,10 +125,18 @@ function showConfirmDialog(opts) {
   function close() {
     root.style.display = 'none';
     root.innerHTML = '';
+    // ESC 监听在 close() 里统一摘（2026-11-01 体检 P1）：
+    // 原来只在按 ESC 的分支里 remove，用户点「确定/取消」关窗时监听
+    // 永久留在 document 上 —— 每张弹窗漏一条，之后任意时刻按 ESC
+    // 都会对已隐藏的 root 执行 close() 并误触上一张弹窗的 onCancel。
+    document.removeEventListener('keydown', onKeydown);
   }
 
   // ESC 取消
   const onKeydown = (e) => {
+    // 只认真实键盘：wx-goods-tools 关分享面板会派发**合成** Escape，
+    // 不过滤的话关面板的合成 ESC 会顺手把本确认框也关掉。
+    if (e.isTrusted === false) return;
     if (e.key === 'Escape') {
       document.removeEventListener('keydown', onKeydown);
       close();

@@ -626,7 +626,17 @@ REMOTE_ADDED=1
 
 echo ""
 echo "----- 推送（仅 main 与本次标签，普通推送）-----"
-# 显式 refspec 且关闭隐式跟随标签，防止 push.followTags 推出其他标签。
+# ★「漏了中间版本就跳过，只推最新」语义（用户 2026-11-01 定，与 GitHub 通道一致）：
+#   · main 用普通推送 —— 若 Gitee 落后多个版本，这里一次补齐到 HEAD，
+#     中间没推过的版本**不单独补推、不打历史标签**（跳过）；
+#   · 标签只推本次版本的这一个（refs/tags/$TAG_VER），显式关闭隐式跟随
+#     （push.followTags=false），防止把历史标签一起带上去；
+#   · 与 GitHub 上架脚本（publish-github-api.py --single）语义对齐：
+#     两平台都只保证「最新版本」可达，历史标签缺就缺着，不回填。
+#   注意：main 的 git push 天性会带上全部提交历史（含中间版本的提交），
+#   这是 git 的行为不是发布行为 —— 「版本」以标签为准。
+#   若待推送的提交信息含敏感词，闸门会先拦下（改写历史属禁用操作），
+#   此时按闸门提示处理后再推。
 if ! "$GIT" -c push.followTags=false push "$REMOTE" refs/heads/main:refs/heads/main; then
   echo "[中止] main 推送失败；脚本不会强制覆盖远程。"
   exit 1

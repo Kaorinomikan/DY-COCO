@@ -48,7 +48,7 @@
 // │ 发布会被直接中止。不需要靠人记。                                 │
 // └──────────────────────────────────────────────────────────────────┘
 // 全面整改：后台统一设置写入、私有历史与反馈来源截图，更新导入的开关定义。
-var DYC_BUILD = '26.11.01.2+sw21';
+var DYC_BUILD = '26.11.01.2+sw23';
 
 // classic worker，可以 importScripts（manifest 里没有设 type: module）
 importScripts('../shared/gitee.js', '../content/flags.js');
@@ -265,6 +265,17 @@ chrome.alarms.onAlarm.addListener(function (alarm) {
   }
 });
 
+// 标签关闭后把它的拍点登记一并清掉（2026-11-01 体检 P1）：
+// 原来条目永久留在内存与 storage.session，兜底闹钟也永远不清 ——
+// 开过循环讲解的标签关掉后，SW 整个浏览器会话都被周期性白唤醒。
+chrome.tabs.onRemoved.addListener(function (tabId) {
+  if (beatTabs[tabId]) {
+    delete beatTabs[tabId];
+    saveBeatTabs();
+    maybeStopBeatAlarm();
+  }
+});
+
 /**
  * 供弹窗 / 更新页调用的消息接口。
  * 返回 true 表示异步响应，必须保留——漏掉会让 sendResponse 永远发不出去。
@@ -332,6 +343,9 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   if (msg.type === 'dyc:beatOff') {
     var beatOffId = sender && sender.tab && sender.tab.id;
     if (beatOffId) { delete beatTabs[beatOffId]; saveBeatTabs(); }
+    // 没有任何标签在收拍点了 → 兜底闹钟一起停（2026-11-01 体检 P1）：
+    // 原来只删登记不清闹钟，30 秒一拍的空转伴随整个浏览器会话。
+    maybeStopBeatAlarm();
     // 离屏文档那边也要摘,这里放行不抢答。
     return false;
   }
@@ -937,6 +951,15 @@ function startAlarmBeat() {
   }
 }
 
+/** 没有标签在收拍点了 → 停掉兜底闹钟（2026-11-01 体检 P1）。
+ *  原来全项目没有一处 alarms.clear，兜底闹钟一旦建起永不清理。 */
+function maybeStopBeatAlarm() {
+  if (Object.keys(beatTabs).length) return;
+  try {
+    if (chrome.alarms && chrome.alarms.clear) chrome.alarms.clear(BEAT_ALARM);
+  } catch (e) { /* 忽略 */ }
+}
+
 /**
  * 离屏文档:一个扩展同时只能有一个,所以不按用途拆,统一当"离屏宿主"用。
  *   ① 剪贴板代读(2026-10-24)
@@ -1166,7 +1189,20 @@ function buildChangelog(fresh, emit) {
     return;
   }
   clFetchTags().then(function (tags) {
-    return clPool(tags, 3, function (t) {
+    // 配额防线（2026-11-01 体检 P0-4）：只为**比本地版新（含当前）**的标签
+    // 拉 RELEASE_NOTES。.md 不走 CDN，每个标签固定烧 1 次 api.github.com
+    // 匿名配额（60/小时）—— 全量拉约 24 个标签，一次「刷新」就烧掉 24 次，
+    // 与一次更新下载（7 次）互相挤兑，一小时内更新可能在中途 403。
+    // 旧版本的说明对更新决策没有价值；完整历史走面板底部的仓库标签页链接。
+    var localV = chrome.runtime.getManifest().version;
+    var useful = [];
+    for (var i = 0; i < tags.length; i++) {
+      if (DYC_GITEE.compareVersion(DYC_GITEE.tagToVersion(tags[i].tag), localV) >= 0) {
+        useful.push(tags[i]);
+      }
+    }
+    if (!useful.length) useful = tags.slice(0, 1); // 本地已是最新时至少保留当前版
+    return clPool(useful, 3, function (t) {
       return DYC_GITEE.fetchRawFile(t.tag, 'RELEASE_NOTES.md').then(function (buf) {
         return { tag: t.tag, date: t.date, notes: clParseNotes(clDecodeUtf8(buf)) };
       });

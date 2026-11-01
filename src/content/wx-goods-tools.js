@@ -1195,7 +1195,19 @@
     injectBridge();
   }
 
+  // 桥回包的白名单复核：MAIN world 与页面脚本同世界，页面任意脚本都能伪造
+  // {source, rid, link} 回包 —— 链接不过 SHOP_SHORT_RE 复核就写剪贴板，
+  // 用户会把恶意链接当「商品链接」发给客户（2026-11-01 体检 P0-2）。
+  // 取错比取不到严重得多，所以非本店商品链接一律当没拿到。
+  function safeBridgeLink(v) {
+    var m = String(v || '').match(SHOP_SHORT_RE);
+    return m ? m[0] : '';
+  }
+
   window.addEventListener('message', function (e) {
+    // 只认同窗口回包（桥在 MAIN world，postMessage 目标就是本 window）；
+    // 其余来源（iframe / 扩展间）一律不收。
+    if (e.source !== window) return;
     var d = e.data;
     if (!d || typeof d.source !== 'string') return;
     if (d.source === BRIDGE_SRC) {
@@ -1205,7 +1217,10 @@
     if (d.source === BRIDGE_SRC + '_HIT') {
       // 桥刚抓到「我们正在等的那个商品」的链接 —— 面板可以立刻收工，
       // 不必等 DOM 扫描轮询走完（那最多要 2.4 秒，用户看到的就是面板一直亮着）。
-      if (panelWait && panelWait.goodsId === d.goodsId && d.link) panelWait.onHit(String(d.link));
+      if (panelWait && panelWait.goodsId === d.goodsId && d.link) {
+        var hit = safeBridgeLink(d.link);
+        if (hit) panelWait.onHit(hit);
+      }
       return;
     }
     if (d.source !== BRIDGE_SRC + '_RES') return;
@@ -1392,9 +1407,10 @@
     askBridge(goodsId, name, function (res) {
       lastBridgeDiag = (res && res.diag) || null;
       lastBridgeAt = Date.now();
-      if (res && res.link) {
+      var via = safeBridgeLink(res && res.link);
+      if (via) {
         release();
-        deliverLink(btn, res.link, res.via === 'net' ? 'net' : 'vue', info);
+        deliverLink(btn, via, res.via === 'net' ? 'net' : 'vue', info);
         return;
       }
       // ④ 兜底：模拟点开分享面板，读可见浮层里的明文链接

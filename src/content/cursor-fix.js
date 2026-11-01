@@ -618,6 +618,15 @@
     document.removeEventListener('mouseover', onProbe, true);
     document.removeEventListener('mousedown', onProbe, true);
 
+    // 观察器也要断开（2026-11-01 体检 P1）：原来只把 enabled 拍成 false、
+    // 回调首行拦一下 —— observer 仍挂在 documentElement（childList+attributes
+    // subtree）上，中控台高频属性变更页面上，关掉的开关照样每次 DOM
+    // 变更都唤醒回调空跑。enable() 路径会重新 observe()，这里放心断。
+    if (mo) {
+      try { mo.disconnect(); } catch (e0) { /* 忽略 */ }
+      mo = null;
+    }
+
     // 元素上的属性标记保留即可 —— 覆盖样式已移除,不会再影响光标;
     // 若再次开启,enable() 会重新注入样式让标记立即恢复作用。
     console.log('[DYC-CURSOR] 抓手光标修复:已关闭,光标交还页面');

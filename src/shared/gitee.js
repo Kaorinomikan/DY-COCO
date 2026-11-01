@@ -32,8 +32,13 @@
  *       codeload.github.com                ✅     GitHub 整包 tarball
  *       data.jsdelivr.com                  ✅     jsDelivr 数据 API（列版本）
  *       fastly/gcore.jsdelivr.net          ✅     jsDelivr CDN（直出部分类型）
+ *       cdn.jsdelivr.net                   ❌/✅   本机不通；别的网络可能通 ⇒ 轮换兜底
  *       github.com                         ❌     TCP 443 不通
  *       raw.githubusercontent.com            ❌     TLS 被重置
+ *
+ *     ★ 同一时刻同一台机器上 jsDelivr 各子域可达性就不同（cdn 不通而
+ *       fastly/gcore 通），且会随网络变化 —— 所以 CDN 读文件按
+ *       fastly → gcore → cdn 轮换，全挂才降级 GitHub API。
  *
  *     于是备用源按用途分流，各取所长：
  *
@@ -122,6 +127,39 @@
   // 本工程最大的文件约 67 KB，4 MB 是很宽裕的天花板。
   var MAX_FILE_BYTES = 4 * 1024 * 1024;
 
+  /* ==================== fetch 超时包装（2026-11-01 体检 P0-3） ====================
+   *
+   * 轮换链（fastly→gcore→cdn→API）的设计假设「失败是快速的」；任一主机
+   * TCP 黑洞（连接挂起不返回）时裸 fetch 永不 settle ⇒ Promise.all 卡死，
+   * 检测/下载永久停在半路。所以所有更新源请求一律走这里：
+   *   检测/清单类 15 秒；文件下载 120 秒（最大文件约 67KB，120 秒对应
+   *   ≥0.6KB/s 的极慢链路仍能完成，只拦「永远不响应」的死连接）。
+   */
+  var FETCH_TIMEOUT_DETECT = 15000;
+  var FETCH_TIMEOUT_DOWNLOAD = 120000;
+
+  function fetchT(url, opts, ms) {
+    var o = opts || {};
+    var timedOut = false;
+    if (typeof AbortController === 'function') {
+      var ctrl = new AbortController();
+      o.signal = ctrl.signal;
+      setTimeout(function () {
+        timedOut = true;
+        try { ctrl.abort(); } catch (e) { /* 极老内核 abort 可能不支持 */ }
+      }, ms);
+    }
+    return fetch(url, o).catch(function (e) {
+      if (timedOut || (e && e.name === 'AbortError')) {
+        throw new Error('更新源连接超时（' + Math.round(ms / 1000) + ' 秒无响应）：' + url);
+      }
+      throw e;
+    });
+    // 注：成功路径不清计时器 —— 到点后对已完成请求 abort 是无害 no-op，
+    // 而保留它能在「headers 已到、body 慢死」时继续兑底（流式
+    // reader.read 会随 signal 一起中止）。
+  }
+
   /**
    * 版本号解析：把 "26.10.10.1" / "v26.10.10.1" 解析成 [26,10,10,1]
    *
@@ -168,10 +206,10 @@
   /* ==================== 通道 3：API（仅检测兜底） ==================== */
 
   function apiFetch(path) {
-    return fetch(API + path, {
+    return fetchT(API + path, {
       headers: { Accept: 'application/json' },
       cache: 'no-store'
-    }).then(function (res) {
+    }, FETCH_TIMEOUT_DETECT).then(function (res) {
       if (res.status === 403) {
         // Gitee 未登录调用限 60 次/小时，超出返回 403 且响应体是
         // "Rate Limit Exceeded"。给一句人话，别把状态码直接甩给商家。
@@ -246,10 +284,10 @@
    *   这份 feed，换了 key 也必然回源，绝不让检测结果卡在旧值上。
    */
   function fetchLatestTagFromTagsFeed() {
-    return fetch(WEB + '/tags.atom?t=' + Date.now(), {
+    return fetchT(WEB + '/tags.atom?t=' + Date.now(), {
       redirect: 'follow',
       cache: 'no-store'
-    }).then(function (res) {
+    }, FETCH_TIMEOUT_DETECT).then(function (res) {
       if (!res.ok) throw new Error('读取标签列表失败（HTTP ' + res.status + '）');
       return res.text();
     }).then(function (xml) {
@@ -296,11 +334,11 @@
    *   若哪天 Release 被删，这里拿不到标签会自动降级回 API。
    */
   function fetchLatestTagFromWeb() {
-    return fetch(WEB + '/releases/latest', {
+    return fetchT(WEB + '/releases/latest', {
       method: 'HEAD',
       redirect: 'follow',
       cache: 'no-store'
-    }).then(function (res) {
+    }, FETCH_TIMEOUT_DETECT).then(function (res) {
       var m = /(?:releases\/tag|blazearchive)\/(v?\d+(?:\.\d+)+)/i.exec(res.url || '');
       if (!m) throw new Error('未从最新发行版的跳转地址里解析出版本标签');
       var tag = decodeURIComponent(m[1]).trim();
@@ -310,6 +348,11 @@
   }
 
   /* ==================== 备用源：GitHub ==================== */
+
+  /* jsDelivr CDN 健康主机序号（0=fastly 1=gcore 2=cdn）。
+   * 探测出可用的主机后记住它，同一次更新里后续文件直接从它开始，
+   * 不必每个文件都把域名试一遍。进程生命周期内有效。 */
+  var cdnHealthyIdx = 0;
 
   /**
    * 备用源的仓库坐标解析。
@@ -356,9 +399,9 @@
    */
   function fetchLatestTagFromGitHub(owner, repo) {
     var c = ghCoord(owner, repo);
-    return fetch(c.jsdelivrData + '?t=' + Date.now(), {
+    return fetchT(c.jsdelivrData + '?t=' + Date.now(), {
       cache: 'no-store'
-    }).then(function (res) {
+    }, FETCH_TIMEOUT_DETECT).then(function (res) {
       if (!res.ok) throw new Error('GitHub 备用源读取版本列表失败（HTTP ' + res.status + '）');
       return res.json();
     }).then(function (data) {
@@ -388,10 +431,10 @@
    */
   function fetchLatestTagFromGitHubApi(owner, repo) {
     var c = ghCoord(owner, repo);
-    return fetch(c.api + '/tags?per_page=100', {
+    return fetchT(c.api + '/tags?per_page=100', {
       headers: { Accept: 'application/vnd.github+json' },
       cache: 'no-store'
-    }).then(function (res) {
+    }, FETCH_TIMEOUT_DETECT).then(function (res) {
       if (res.status === 403) {
         throw new Error('GitHub 备用源访问额度用完了（403），请稍后再试');
       }
@@ -439,9 +482,11 @@
    * @param {string} path  仓库内相对路径（形如 src/content/main.js）
    * @param {string} [owner] 可选：覆盖默认仓库主名
    * @param {string} [repo]  可选：覆盖默认仓库名
+   * @param {number} [expectSize] 可选：期望字节数（清单里有）。
+   *   CDN 路径拿到内容后先对它校验 —— 不符视为 CDN 旧缓存，自动降级 API。
    * @returns {Promise<ArrayBuffer>}
    */
-  function fetchGitHubFile(tag, path, owner, repo) {
+  function fetchGitHubFile(tag, path, owner, repo, expectSize) {
     var c = ghCoord(owner, repo);
     var t = encodeURIComponent(String(tag == null ? '' : tag).trim());
     var p = String(path == null ? '' : path)
@@ -459,7 +504,7 @@
 
     var viaApi = function () {
       var url = c.api + '/contents/' + p + '?ref=' + t;
-      return fetch(url, { cache: 'no-store' }).then(function (res) {
+      return fetchT(url, { cache: 'no-store' }, FETCH_TIMEOUT_DOWNLOAD).then(function (res) {
         if (res.status === 403) {
           // 匿名配额耗尽。这是 GitHub 侧最常见的失败，别只报状态码。
           throw new Error('GitHub 备用源访问额度用完了（403），请稍后再试');
@@ -483,19 +528,58 @@
 
     if (!viaCdn) return viaApi();
 
-    // CDN 路径：任何失败（404 未同步 / 301 后 raw 不可达 / 网络错误）都降级 API。
-    // 注意 fetch 默认跟随重定向 —— 301 到 raw 后若 raw 不可达，这里会 reject。
-    var cdnUrl = c.jsdelivrCdn + '@' + t + '/' + p + '?t=' + Date.now();
-    return fetch(cdnUrl, { redirect: 'follow', cache: 'no-store' })
-      .then(function (res) {
-        if (!res.ok) {
-          throw new Error('jsDelivr 无此内容（HTTP ' + res.status + '）：' + path);
+    // CDN 路径：多域名轮换 → 全挂才降级 API。
+    // ★ 为什么要多域名（2026-11-01 本机实测的实证）：
+    //   jsDelivr 的不同子域在大陆的可达性**真实存在差异且会随网络变化** ——
+    //   同一时刻同一台机器上 fastly/gcore 通、cdn.jsdelivr.net 直连不通。
+    //   写死一个域名 = 某天那个域名在某个商家网络里被堵，更新就断。
+    //   顺序：fastly（主）→ gcore → cdn；成功的主机记进 cdnHealthyIdx，
+    //   后续文件直接从它开始（健康探测只花一次）。
+    var hosts = [
+      c.jsdelivrCdn,
+      'https://gcore.jsdelivr.net/gh/' + c.owner + '/' + c.repo,
+      'https://cdn.jsdelivr.net/gh/' + c.owner + '/' + c.repo
+    ];
+    var startIdx = Math.min(Math.max(cdnHealthyIdx, 0), hosts.length - 1);
+
+    function tryCdn(k) {
+      if (k >= hosts.length) {
+        return Promise.reject(new Error('jsDelivr 各域名均不可达：' + path));
+      }
+      var url = hosts[k] + '@' + t + '/' + p + '?t=' + Date.now();
+      return fetchT(url, { redirect: 'follow', cache: 'no-store' }, FETCH_TIMEOUT_DOWNLOAD)
+        .then(function (res) {
+          if (!res.ok) {
+            throw new Error('jsDelivr 无此内容（HTTP ' + res.status + '）：' + path);
+          }
+          return res.arrayBuffer();
+        })
+        .then(function (buf) {
+          // ★ CDN 旧缓存防御（2026-11-01 实测踩到）：
+          //   同名标签重建后，jsDelivr 会**长期返回重建前的旧内容**（200、不是 404），
+          //   连 purge 接口都不立即生效。长度与清单不符 = 十有八九是旧缓存
+          //   ⇒ 当作 CDN 失败降级 API，把真内容拿回来，而不是让 sha256 校验失败。
+          if (typeof expectSize === 'number' && buf.byteLength !== expectSize) {
+            throw new Error('CDN 内容长度与清单不符（疑似旧缓存）：' + path);
+          }
+          cdnHealthyIdx = k;
+          return buf;
+        })
+        .catch(function () {
+          return tryCdn(k + 1);
+        });
+    }
+
+    return tryCdn(startIdx).catch(function () {
+      return viaApi().then(function (buf) {
+        if (typeof expectSize === 'number' && buf.byteLength !== expectSize) {
+          throw new Error(
+            '文件长度不符（期望 ' + expectSize + '，实得 ' + buf.byteLength + '）：' + path
+          );
         }
-        return res.arrayBuffer();
-      })
-      .catch(function () {
-        return viaApi();
+        return buf;
       });
+    });
   }
 
   /**
@@ -585,10 +669,10 @@
    * @returns {Promise<Array<{tag:string, date:string}>>} 按版本降序
    */
   function fetchTagList(owner, repo) {
-    var giteeChain = fetch(WEB + '/tags.atom?t=' + Date.now(), {
+    var giteeChain = fetchT(WEB + '/tags.atom?t=' + Date.now(), {
       redirect: 'follow',
       cache: 'no-store'
-    }).then(function (res) {
+    }, FETCH_TIMEOUT_DETECT).then(function (res) {
       if (!res.ok) throw new Error('读取版本列表失败（HTTP ' + res.status + '）');
       return res.text();
     }).then(function (xml) {
@@ -679,7 +763,7 @@
       return out;
     }
 
-    return fetch(c.jsdelivrData + '?t=' + Date.now(), { cache: 'no-store' })
+    return fetchT(c.jsdelivrData + '?t=' + Date.now(), { cache: 'no-store' }, FETCH_TIMEOUT_DETECT)
       .then(function (res) {
         if (!res.ok) throw new Error('jsDelivr 读取版本列表失败（HTTP ' + res.status + '）');
         return res.json();
@@ -687,10 +771,10 @@
       .then(fromVersions)
       .catch(function () {
         // jsDelivr 没同步（新仓库常见）→ 用 GitHub API 的标签列表
-        return fetch(c.api + '/tags?per_page=100', {
+        return fetchT(c.api + '/tags?per_page=100', {
           headers: { Accept: 'application/vnd.github+json' },
           cache: 'no-store'
-        }).then(function (res) {
+        }, FETCH_TIMEOUT_DETECT).then(function (res) {
           if (res.status === 403) {
             throw new Error('GitHub 备用源访问额度用完了（403），请稍后再试');
           }
@@ -765,7 +849,7 @@
    */
   function fetchUpdateManifest(tag, owner, repo) {
     var url = rawUrl(tag, MANIFEST_FILE);
-    return fetch(url, { redirect: 'follow', cache: 'no-store' }).then(function (res) {
+    return fetchT(url, { redirect: 'follow', cache: 'no-store' }, FETCH_TIMEOUT_DETECT).then(function (res) {
       if (res.status === 404) {
         var e404 = new Error(
           '这个版本没有提供更新清单（' + tag + '），' +
@@ -830,7 +914,7 @@
         '文件过大（' + expectSize + ' 字节），超出内置更新能力：' + path
       ));
     }
-    return fetch(rawUrl(tag, path), { redirect: 'follow', cache: 'no-store' })
+    return fetchT(rawUrl(tag, path), { redirect: 'follow', cache: 'no-store' }, FETCH_TIMEOUT_DOWNLOAD)
       .then(function (res) {
         if (!res.ok) {
           var err = new Error('下载失败（HTTP ' + res.status + '）：' + path);
@@ -884,7 +968,8 @@
         // 主源 raw 挂了（403/404/网络不通）→ 走 GitHub 备用源。
         // ★ 主源 404 也要降级（见上方注释）：那可能只是"该版本尚未同步到主源"。
         //   只有**两边都 404** 才判定为确定性失败（标记 noRetry，让调用方别再重试）。
-        return fetchGitHubFile(tag, path, owner, repo).then(function (buf) {
+        //   expectSize 传进去：CDN 旧缓存防御需要它（长度不符→自动降级 API）。
+        return fetchGitHubFile(tag, path, owner, repo, expectSize).then(function (buf) {
           var bytes = new Uint8Array(buf);
           if (typeof expectSize === 'number' && bytes.length !== expectSize) {
             throw new Error(

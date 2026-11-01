@@ -268,6 +268,7 @@
   var sliderDrag = false;        // 正在拖滑块：这一拍不许把值刷回去
   var slide = { cur: CHECK_DEF, target: CHECK_DEF, raf: 0, drag: null, rect: null };
   var slideApi = null;           // 自测用的拖动入口（每次建面板时重建）
+  var slideWinEnd = null;        // 滑条的 window pointerup 监听（销毁面板时对称摘除）
   var ring = [];
 
   /* 确认节拍（2026-11-01 05:0x）：滑块值 + 该开的时刻 + 是不是我们开的抽屉 */
@@ -1925,6 +1926,13 @@
     window.removeEventListener('resize', placePanel);
     window.removeEventListener('orientationchange', placePanel);
     document.removeEventListener('pointerdown', onDocDown, true);
+    // 滑条挂在 window 上的 pointerup 也要对称摘除（2026-11-01 体检 P0-7）：
+    // 原来不摘 —— 用户每开/关一次面板就叠加一条捕获监听，闭包持有
+    // 已脱离文档的旧 tk/pRefs，长直播场景必然积累。
+    if (slideWinEnd) {
+      window.removeEventListener('pointerup', slideWinEnd, true);
+      slideWinEnd = null;
+    }
     if (panelHost) {
       try { if (window.dycOverlayGuard) window.dycOverlayGuard.unbind(panelHost); } catch (e) {}
       if (panelHost.parentNode) panelHost.parentNode.removeChild(panelHost);
@@ -2263,6 +2271,13 @@
     return Math.max(0, Math.min(100, p));
   }
 
+  /** 吸附到最近刻度（整数分钟）。拖动中就吸 —— 2026-11-01 下午用户
+   * 「滑动条要做一些阻尼感（吸附到刻度），滑着太顺滑了」。
+   * 先钳进量程再取整，轨道两端外的落点吸到 3 / 10。 */
+  function snapTick(v) {
+    return Math.round(Math.max(CHECK_MIN, Math.min(CHECK_MAX, v)));
+  }
+
   /** 把当前值画到轨道上（只写两个 style，不读布局） */
   function paintSlide() {
     if (!pRefs) return;
@@ -2281,10 +2296,14 @@
   /**
    * 阻尼收尾：每帧追目标值的 45%，约 150ms 到位（0.35 要 270ms，显得拖）。
    *
-   * 用户 2026-11-01 05:2x 的原话是「有滑动的阻尼感，不要有顿挫感」——
-   * 顿挫来自「按 step=1 一格一格跳」。所以拖动时 target 是**小数**
-   * （指针在哪就是哪），画面跟着连续走；松手才吸到整数并存盘。
-   * 与「自动循环讲解」的滑条同一套算法，那边已经跑了几个月。
+   * 手感的两版口径（都在 2026-11-01）：
+   *   05:2x 用户「有滑动的阻尼感，不要有顿挫感」——当时顿挫来自原生 range
+   *   按 step=1 硬跳，解法是拖动时 target 取小数（指针在哪就是哪）。
+   *   下午用户再改口径：「要做一些阻尼感（吸附到刻度），滑着太顺滑了」——
+   *   太顺滑正是因为拖动全程 target 跟着指针连续走。现在改成：拖动中
+   *   target 就由 snapTick() 吸到最近刻度，画面靠这里的阻尼追过去 ——
+   *   手感是「磁吸咬合」：快甩一格一格咬，慢移稳停在格上，且因为追赶
+   *   是连续动画，仍然没有原生 range 那种硬跳。
    */
   function dampStep() {
     var d = slide.target - slide.cur;
@@ -2343,7 +2362,7 @@
       if (!slide.drag) return;
       if (typeof e.buttons === 'number' && e.buttons === 0 && isReal(e)) { onEnd(e); return; }
       cancelAt = 0;
-      dampTo(valueAt(e.clientX));
+      dampTo(snapTick(valueAt(e.clientX)));   // 拖动中就吸刻度（不再跟指针连续走）
       markUserDrag(true);
       e.stopPropagation();
     }
@@ -2394,7 +2413,7 @@
       cancelAt = 0;
       attach();
       markUserDrag(true);
-      dampTo(valueAt(clientX));
+      dampTo(snapTick(valueAt(clientX)));    // 按下/点轨道：同样吸到最近刻度
     }
 
     tk.addEventListener('pointerdown', function (e) {
@@ -2404,6 +2423,7 @@
       e.stopPropagation();
     });
 
+    slideWinEnd = onEnd;
     window.addEventListener('pointerup', onEnd, true);
 
     /* 键盘也能调（无障碍 + 精细一格）：方向键 ±1 分钟 */
@@ -2422,7 +2442,7 @@
     /* 给自测用的直接落点（绕开 jsdom 的 pointer 事件模拟） */
     slideApi = {
       to: function (clientX) { startDrag(clientX); },
-      move: function (clientX) { dampTo(valueAt(clientX)); },
+      move: function (clientX) { dampTo(snapTick(valueAt(clientX))); },  // 与真手势同口径：拖动中就吸
       end: function () { onEnd({ isTrusted: true }); },
       live: function () { return slide.cur; },
       target: function () { return slide.target; },

@@ -80,7 +80,14 @@ async function main() {
     let buf, route;
     if (viaCdn(f.path)) {
       route = 'CDN ';
-      try { buf = await cdnFetch(f.path); } catch (e) { buf = null; }
+      try {
+        buf = await cdnFetch(f.path);
+        // 与扩展端防御一致：CDN 内容 sha256 不符（同名标签重建后的旧缓存）
+        // ⇒ 当作 CDN 失败，降级 API。
+        if (crypto.createHash('sha256').update(buf).digest('hex') !== f.sha256) {
+          buf = null;
+        }
+      } catch (e) { buf = null; }
       if (!buf) { route = 'CDN→API'; try { buf = await apiFetch(f.path); } catch (e) { buf = null; } }
     } else {
       route = 'API  ';

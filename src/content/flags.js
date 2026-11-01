@@ -914,15 +914,41 @@ function dycFlagMeta(key) {
 }
 
 /**
+ * storage.get 的回调式封装（2026-11-01 体检 P1·老内核兼容）。
+ *
+ * 为什么不用裸 .then：老 360 极速X 内核部分 chrome.* API 不返回 Promise ——
+ * get() 返回 undefined 时 `.then` 直接同步抛 TypeError，**catch 救不了**，
+ * flags 层整体瘫猝（所有功能静默按默认值走，用户侧毫无报错）。
+ * background 侧早有 chromeCb 包装，这里对齐同一策略：
+ * 读存储一律走回调形式，新老内核通吃。失败（lastError/异常）给 null，
+ * 由调用方落默认值 —— 与原先 .catch 的容错口径一致。
+ */
+function dycStorageGet(key, cb) {
+  try {
+    chrome.storage.local.get(key, function (r) {
+      if (chrome.runtime.lastError) { cb(null); return; }
+      cb(r || null);
+    });
+  } catch (e) {
+    cb(null);
+  }
+}
+
+/** dycStorageGet 的 Promise 版（内部多个键并行读时用） */
+function dycStorageGetP(key) {
+  return new Promise(function (resolve) {
+    dycStorageGet(key, resolve);
+  });
+}
+
+/**
  * 读取全部功能开关(不含调试模式)。
  * 读取失败时回退到默认值 —— 宁可功能照常可用,也不要因为
  * 一次 storage 异常就把用户的功能悄悄关掉。
  */
 function dycReadFlags() {
-  return chrome.storage.local.get(DYC_FLAGS_STORE_KEY).then(function (r) {
+  return dycStorageGetP(DYC_FLAGS_STORE_KEY).then(function (r) {
     return Object.assign({}, DYC_FLAGS_DEFAULTS, (r && r[DYC_FLAGS_STORE_KEY]) || {});
-  }).catch(function () {
-    return Object.assign({}, DYC_FLAGS_DEFAULTS);
   });
 }
 
@@ -931,13 +957,11 @@ function dycReadFlags() {
  * 弹窗渲染初始状态用这个 —— 它不关心存储在哪,只要一个键值对。
  */
 function dycReadAllFlags() {
-  var featureRead = chrome.storage.local.get(DYC_FLAGS_STORE_KEY)
-    .then(function (r) { return (r && r[DYC_FLAGS_STORE_KEY]) || {}; })
-    .catch(function () { return {}; });
+  var featureRead = dycStorageGetP(DYC_FLAGS_STORE_KEY)
+    .then(function (r) { return (r && r[DYC_FLAGS_STORE_KEY]) || {}; });
 
-  var debugRead = chrome.storage.local.get(DYC_DEBUG_STORE_KEY)
-    .then(function (r) { return !!(r && r[DYC_DEBUG_STORE_KEY]); })
-    .catch(function () { return false; });
+  var debugRead = dycStorageGetP(DYC_DEBUG_STORE_KEY)
+    .then(function (r) { return !!(r && r[DYC_DEBUG_STORE_KEY]); });
 
   return Promise.all([featureRead, debugRead]).then(function (res) {
     var obj = res[0];
@@ -1246,8 +1270,8 @@ function dycSanitizeHideList(ids) {
  */
 function dycReadHideList() {
   return Promise.all([
-    chrome.storage.local.get(DYC_HIDE_LIST_KEY),
-    chrome.storage.local.get(DYC_HIDE_SEEN_KEY)
+    dycStorageGetP(DYC_HIDE_LIST_KEY),
+    dycStorageGetP(DYC_HIDE_SEEN_KEY)
   ]).then(function (rs) {
     var stored = rs[0] && rs[0][DYC_HIDE_LIST_KEY];
     var seenRaw = rs[1] && rs[1][DYC_HIDE_SEEN_KEY];
@@ -1288,7 +1312,6 @@ function markSeen(list) {
   payload[DYC_HIDE_SEEN_KEY] = Object.keys(all);
   chrome.storage.local.set(payload);
 }
-
 /** 写勾选清单(id 数组)。内容脚本订阅 storage 变化,写完即时生效。 */
 function dycWriteHideList(ids) {
   var payload = {};
@@ -1319,11 +1342,9 @@ var DYC_SHADE_MODES = ['opaque', 'translucent'];
 
 /** 读档位 → Promise<string>('opaque'|'translucent',脏值/异常一律落 opaque) */
 function dycReadShadeMode() {
-  return chrome.storage.local.get(DYC_SHADE_MODE_KEY).then(function (r) {
+  return dycStorageGetP(DYC_SHADE_MODE_KEY).then(function (r) {
     var v = r && r[DYC_SHADE_MODE_KEY];
     return DYC_SHADE_MODES.indexOf(v) >= 0 ? v : 'opaque';
-  }).catch(function () {
-    return 'opaque';
   });
 }
 
@@ -1361,11 +1382,9 @@ var DYC_OMNI_MODES = ['none', 'always'];
 
 /** 读档位 → Promise<string>('none'|'always',脏值/异常/已删档一律落 none) */
 function dycReadOmniMode() {
-  return chrome.storage.local.get(DYC_OMNI_MODE_KEY).then(function (r) {
+  return dycStorageGetP(DYC_OMNI_MODE_KEY).then(function (r) {
     var v = r && r[DYC_OMNI_MODE_KEY];
     return DYC_OMNI_MODES.indexOf(v) >= 0 ? v : 'none';
-  }).catch(function () {
-    return 'none';
   });
 }
 
@@ -1404,14 +1423,20 @@ function dycWatchOmniMode(cb) {
 var DYC_DEBUG_ON = false;
 
 try {
-  chrome.storage.local.get('dybDebug', function (r) {
-    if (chrome.runtime.lastError) return;
-    DYC_DEBUG_ON = !!(r && r.dybDebug);
-  });
-  chrome.storage.onChanged.addListener(function (changes, area) {
-    if (area !== 'local' || !changes || !changes.dybDebug) return;
-    DYC_DEBUG_ON = !!changes.dybDebug.newValue;
-  });
+  // 防重复注入守卫（2026-11-01 体检 P1）：本文件其余部分全是幂等的
+  // var/function 声明，重复执行无害；唯一有副作用的是这里的 onChanged
+  // 订阅 —— 重复注入会叠双份监听。用全局标记拦住。
+  if (!window.__DYC_FLAGS_WATCH__) {
+    window.__DYC_FLAGS_WATCH__ = true;
+    chrome.storage.local.get('dybDebug', function (r) {
+      if (chrome.runtime.lastError) return;
+      DYC_DEBUG_ON = !!(r && r.dybDebug);
+    });
+    chrome.storage.onChanged.addListener(function (changes, area) {
+      if (area !== 'local' || !changes || !changes.dybDebug) return;
+      DYC_DEBUG_ON = !!changes.dybDebug.newValue;
+    });
+  }
 } catch (e) { /* storage 不可用时退回纯 URL 判定 */ }
 
 /** 调试态判定(URL 或开关任一为真),供各页面脚本共用 */

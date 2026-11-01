@@ -285,6 +285,58 @@ def all_files_at(commit_sha):
     return entries
 
 
+def find_bash():
+    """找 bash.exe（计点.sh 要跑 bash）。
+
+    PortableGit 自带 bash；先看 git 同目录的版本树，找不到再赌 PATH。
+    """
+    base = os.path.expanduser("~/.workbuddy/binaries/PortableGit/versions")
+    if os.path.isdir(base):
+        for name in sorted(os.listdir(base), reverse=True):
+            for cand in (
+                os.path.join(base, name, "bin", "bash.exe"),
+                os.path.join(base, name, "usr", "bin", "bash.exe"),
+            ):
+                if os.path.isfile(cand):
+                    return cand
+    return "bash"
+
+
+def batch_gate(force=False):
+    """★ 攒批门槛（与 publish.sh 同一道闸，2026-11-01 补）。
+
+    【为什么必须有】2026-11-01 实测漏洞：v26.11.01.2 走本脚本上架，
+    绕过了 publish.sh 里的攒批门槛 —— 当时「待推送」栏是空的（0 点）也照推了。
+    门槛 = 攒够 5 个有效点（功能点逐项计 + 基建点上限 1）才推一次，
+    计数与数字的唯一事实来源是 scripts/计点.sh，这里直接问它，不许自报。
+    FORCE_PUSH=1（用户明确口令「就推」）可显式越过。
+    """
+    script = os.path.join(REPO_ROOT, "scripts", "计点.sh")
+    log("\n附加闸门 · 攒批门槛（功能点 + 基建点，门槛见 计点.sh）")
+    if not os.path.isfile(script):
+        log("  [中止] 找不到 %s —— 无法计点，拒绝上架。" % script)
+        return False
+    try:
+        proc = subprocess.run(
+            [find_bash(), script, "--gate"], cwd=REPO_ROOT,
+            capture_output=True, text=True, encoding="utf-8", errors="replace",
+        )
+    except OSError as e:
+        log("  [中止] 跑不了计点脚本：%s —— 拒绝上架。" % e)
+        return False
+    out = ((proc.stdout or "") + (proc.stderr or "")).strip()
+    if out:
+        log("  " + out.replace("\n", "\n  "))
+    if proc.returncode == 0:
+        return True
+    if force or os.environ.get("FORCE_PUSH", "") == "1":
+        log("  [注意] 未达攒批门槛，但 FORCE_PUSH=1 —— 按用户明确口令越过该闸门。")
+        return True
+    log("  [中止] 未达攒批门槛，本次不上架（未推送任何内容）。")
+    log("         攒够后再推；若用户已明确要求「就推」，用 FORCE_PUSH=1 重跑。")
+    return False
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--owner", required=True)
@@ -301,6 +353,9 @@ def main():
     ap.add_argument("--topics", default="")
     ap.add_argument("--homepage", default="")
     args = ap.parse_args()
+
+    if not batch_gate():
+        return 1
 
     token = load_token()
     if not token:
@@ -594,6 +649,32 @@ def main():
                 gh.create_ref("tags/" + name, target)
             if i % 10 == 0 or i == len(todo):
                 log("  进度 %d/%d（API %d 次）" % (i, len(todo), gh.calls))
+    # ---- 清 CDN 缓存（jsDelivr）----
+    # ★ 为什么：jsDelivr 对 @tag 内容有缓存，且**同名标签重建后长期给旧内容**，
+    #   实测 purge 接口也不立即生效。正常发布（版本号递增、标签永不重推）
+    #   没这个问题（新标签 = 新 URL = 无缓存）；这里 purge 是尽力而为的加速，
+    #   即使没刷干净，扩展端也有"CDN 内容长度不符 → 降级 API"的防御兜底。
+    if args.single:
+        log("\n[5.5/5] 清 jsDelivr CDN 缓存（尽力而为）")
+        import json as _json
+        try:
+            mf = _json.load(open(os.path.join(REPO_ROOT, "update-manifest.json"),
+                                 encoding="utf-8"))
+            paths = [f["path"] for f in mf.get("files", [])]
+            purged = 0
+            for pp in paths:
+                try:
+                    urllib.request.urlopen(
+                        "https://purge.jsdelivr.net/gh/%s/%s@%s/%s"
+                        % (args.owner, args.repo, tag, pp), timeout=15).read()
+                    purged += 1
+                except Exception:
+                    pass
+            log("  purge 完成 %d/%d（失败忽略 —— 扩展端有长度防御兜底）"
+                % (purged, len(paths)))
+        except Exception as e:
+            log("  [跳过] 读不到 update-manifest.json：%s" % e)
+
     # ---- 校验 ----
     log("\n校验")
     final_main = gh.get_ref("heads/main")
