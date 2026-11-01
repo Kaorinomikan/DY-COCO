@@ -25,7 +25,7 @@
     {
       "path": "src/background/service-worker.js",
       "size": 66801,
-      "sha256": "ff48bd6181a76eab6d3f9a9a1eb0307e36d405f1b251b36c88cc2bdf897cf1f6"
+      "sha256": "645ac647b8ed64d4b40ec668394c0ac2751494ce40a88b489e5e32f6812e89bf"
     },
     {
       "path": "src/content/anchor.js",
@@ -344,8 +344,8 @@
     },
     {
       "path": "src/shared/gitee.js",
-      "size": 43126,
-      "sha256": "da3fdf43e2e512301a4dc8a19b5ae530d2619706d1a936cb59e47b9f2b0595e9"
+      "size": 45195,
+      "sha256": "adefc9ca7dfcb0e207ed77bdf4757f87d4fed82db04c0df40b5d971bce20939c"
     },
     {
       "path": "src/update/update.css",

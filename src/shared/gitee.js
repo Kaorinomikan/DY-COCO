@@ -332,7 +332,9 @@
       api: 'https://api.github.com/repos/' + o + '/' + r,
       web: 'https://github.com/' + o + '/' + r,
       codeload: 'https://codeload.github.com/' + o + '/' + r,
-      jsdelivrData: 'https://data.jsdelivr.com/v1/packages/gh/' + o + '/' + r
+      jsdelivrData: 'https://data.jsdelivr.com/v1/packages/gh/' + o + '/' + r,
+      /* CDN 读内容用 fastly（gcore 备用）。@tag 直取文件，无配额。 */
+      jsdelivrCdn: 'https://fastly.jsdelivr.net/gh/' + o + '/' + r
     };
   }
 
@@ -413,12 +415,25 @@
   }
 
   /**
-   * 【备用源·读单文件】GitHub contents API，返回原始字节。
+   * 【备用源·读单文件】混合读法：jsDelivr CDN 优先，contents API 兜底。
    *
-   * 为什么走 API 而不是 jsDelivr CDN：
-   *   实测 jsDelivr 只对 .js/.json 直出，.md/.html/.png/.css 一律 301 到
-   *   raw.githubusercontent.com（本机 TLS 被重置 → 000）。
-   *   本工程扩展本体含 .html/.png/.css，走 CDN 必然断在半路。
+   * ── 为什么必须混着走（2026-11-01 实测踩到的配额坑）──
+   *   GitHub 匿名 API 配额是 **60 次/小时**（按 IP 计）。
+   *   一次全量更新要下 72 个文件，若全走 contents API：
+   *     72 > 60 ⇒ 第 61 个文件起必 403（rate limit exceeded），
+   *     更新**必然中途失败** —— 实测逐文件校验时第 46 个就开始 403
+   *     （前面还消耗了检测+清单的调用）。
+   *
+   * ── 实测的分流依据（本仓库 @tag 逐类型试）──
+   *   .js/.json/.css  → jsDelivr 直出 200（**无配额**，走 CDN）
+   *   .html/.png      → jsDelivr 301 到 raw.githubusercontent.com
+   *                     （部分网络不可达，走 contents API）
+   *   72 文件分流结果：65 走 CDN（0 配额）+ 7 走 API ⇒ 单次更新 7 次配额，
+   *   多商家同时更新也不挤兑。
+   *
+   * ── jsDelivr 的同步延迟与兜底 ──
+   *   新推的标签 jsDelivr 可能还没同步（404）⇒ 自动降级 contents API。
+   *   所以 CDN 失败不是错误，是正常分支；API 永远是兜底。
    *
    * @param {string} tag   版本标签（形如 v26.11.01.2）
    * @param {string} path  仓库内相对路径（形如 src/content/main.js）
@@ -436,27 +451,51 @@
       .join('/');
     if (!t || !p) throw new Error('GitHub 备用源路径参数不完整：' + tag + ' / ' + path);
 
-    var url = c.api + '/contents/' + p + '?ref=' + t;
-    return fetch(url, { cache: 'no-store' }).then(function (res) {
-      if (res.status === 403) {
-        // 匿名配额耗尽。这是 GitHub 侧最常见的失败，别只报状态码。
-        throw new Error('GitHub 备用源访问额度用完了（403），请稍后再试');
-      }
-      if (res.status === 404) {
-        var e404 = new Error('GitHub 备用源里没有这个文件（' + path + '）');
-        e404.noRetry = true;
-        throw e404;
-      }
-      if (!res.ok) {
-        throw new Error('GitHub 备用源读取失败（HTTP ' + res.status + '）：' + path);
-      }
-      return res.json();
-    }).then(function (data) {
-      if (!data || data.type !== 'file' || !data.content) {
-        throw new Error('GitHub 备用源返回的内容不完整：' + path);
-      }
-      return base64ToBytes(data.content).buffer;
-    });
+    // 按扩展名分流：CDN 直出类型先用 CDN（无配额），其余直接 API（少绕路）。
+    var base = p.slice(p.lastIndexOf('/') + 1);
+    var dot = base.lastIndexOf('.');
+    var ext = dot >= 0 ? base.slice(dot + 1).toLowerCase() : '';
+    var viaCdn = (ext !== 'html' && ext !== 'png' && ext !== 'md');
+
+    var viaApi = function () {
+      var url = c.api + '/contents/' + p + '?ref=' + t;
+      return fetch(url, { cache: 'no-store' }).then(function (res) {
+        if (res.status === 403) {
+          // 匿名配额耗尽。这是 GitHub 侧最常见的失败，别只报状态码。
+          throw new Error('GitHub 备用源访问额度用完了（403），请稍后再试');
+        }
+        if (res.status === 404) {
+          var e404 = new Error('GitHub 备用源里没有这个文件（' + path + '）');
+          e404.noRetry = true;
+          throw e404;
+        }
+        if (!res.ok) {
+          throw new Error('GitHub 备用源读取失败（HTTP ' + res.status + '）：' + path);
+        }
+        return res.json();
+      }).then(function (data) {
+        if (!data || data.type !== 'file' || !data.content) {
+          throw new Error('GitHub 备用源返回的内容不完整：' + path);
+        }
+        return base64ToBytes(data.content).buffer;
+      });
+    };
+
+    if (!viaCdn) return viaApi();
+
+    // CDN 路径：任何失败（404 未同步 / 301 后 raw 不可达 / 网络错误）都降级 API。
+    // 注意 fetch 默认跟随重定向 —— 301 到 raw 后若 raw 不可达，这里会 reject。
+    var cdnUrl = c.jsdelivrCdn + '@' + t + '/' + p + '?t=' + Date.now();
+    return fetch(cdnUrl, { redirect: 'follow', cache: 'no-store' })
+      .then(function (res) {
+        if (!res.ok) {
+          throw new Error('jsDelivr 无此内容（HTTP ' + res.status + '）：' + path);
+        }
+        return res.arrayBuffer();
+      })
+      .catch(function () {
+        return viaApi();
+      });
   }
 
   /**
