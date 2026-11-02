@@ -90,6 +90,65 @@ if not GIT:
     GIT = "git"
 
 
+WORDS_NAME = ".dyc-sensitive-words.json"
+
+
+def word_candidates():
+    """词表候选路径，按优先级排好。
+
+    ★ 为什么需要多候选（2026-11-02 立）：
+      「词表放在仓库的父目录」这条约定在**工作树**下会失效 ——
+      工作树位于 `<父目录>/DY-COCO-wt/<任务名>`，它的父目录是 `DY-COCO-wt`，
+      而不是放词表的 `<父目录>`。于是工作树里跑自测会直接判「词表缺失」，
+      以前靠人工把词表拷进 `DY-COCO-wt/` 才能跑（拷贝那份还会过期）。
+
+      ⇒ 先用 git 的 common dir 反推**主仓库**位置，再取其父目录：
+        主仓库 C:/Develop project/DY-COCO  →  common dir 的上一级就是它
+        → 父目录 C:/Develop project → 词表就在这里。
+        工作树与主仓库因此**共用同一份词表**，不会各存一份、也不会过期。
+
+      优先级：显式环境变量 → 主仓库父目录 → 本仓库父目录 → 逐级上溯。
+    """
+    cands = []
+    env = os.environ.get("DYC_SENSITIVE_WORDS")
+    if env:
+        cands.append(env)
+    try:
+        proc = subprocess.run([GIT, "rev-parse", "--git-common-dir"], cwd=REPO,
+                              capture_output=True, text=True, encoding="utf-8",
+                              errors="replace")
+        common = (proc.stdout or "").strip()
+        if common:
+            if not os.path.isabs(common):
+                common = os.path.abspath(os.path.join(REPO, common))
+            main_repo = os.path.dirname(os.path.normpath(common))   # 去掉 /.git
+            cands.append(os.path.join(os.path.dirname(main_repo), WORDS_NAME))
+    except Exception:
+        pass
+    cands.append(os.path.join(os.path.dirname(REPO), WORDS_NAME))
+    probe = REPO
+    for _ in range(3):
+        probe = os.path.dirname(probe)
+        cands.append(os.path.join(os.path.dirname(probe), WORDS_NAME))
+
+    seen, ordered = set(), []
+    for c in cands:
+        c = os.path.normpath(c)
+        if c not in seen:
+            seen.add(c)
+            ordered.append(c)
+    return ordered
+
+
+def default_words():
+    """按优先级返回第一个真实存在的词表路径；都不存在时返回首选候选（供报错用）。"""
+    cands = word_candidates()
+    for c in cands:
+        if os.path.isfile(c):
+            return c
+    return cands[0] if cands else DEFAULT_WORDS
+
+
 # ============================================================
 # 词表（★ 工程外，见文件头说明）
 # ============================================================
@@ -127,22 +186,34 @@ def pending_commit_log_args():
       把它算进阻断项 = 本次发布永远过不去。
       而机器审核只会看到**新推上去的提交**，历史提交早就在线上了。
 
-    ⇒ 基准取「最近一个发布标签」：
-      没有 upstream 时用它（最贴近「已上线」的边界），
-      连标签都没有才退回最近 50 条（此时仓库本就没发过版，全是新提交）。
+    ★ 2026-11-02 修（这是「自测总是红」的一条暗线）：
+      旧逻辑取不到 upstream 和标签时会退回 `-50`（最近 50 条）。
+      于是**每一轮发布都在重扫几十条早就上线的历史提交**，
+      历史里改不动的措辞就成了持久红灯 —— 上一轮的处理方式是
+      把那个词整条加进白名单，结果拦截表里那一行永久失效（更糟）。
+
+      ⇒ 现在四级递进，**最后一级也只扫最新一条**，绝不回头扫历史：
+        ① `@{u}..HEAD`  —— 有 upstream（正常情况，publish 前一定成立）
+        ② `标签..HEAD`   —— 无 upstream 时用最近发布标签做边界
+        ③ `origin/main..HEAD` —— 远端分支名可推断时兜底
+        ④ 只扫 `HEAD`    —— 以上都没有（仓库刚初始化）时才走到这里，
+                           并在输出里显式说明「只检查了最新一条」。
     """
-    code, out, _ = run_git(["log", "--format=%H%x1f%s%x1f%b", "@{u}..HEAD"])
+    fmt = ["--format=%H%x1f%s%x1f%b"]
+    code, out, _ = run_git(["log", *fmt, "@{u}..HEAD"])
     if code == 0 and out.strip():
-        return ["log", "--format=%H%x1f%s%x1f%b", "@{u}..HEAD"]
-    # 无 upstream → 用最近一个标签作基准
+        return ["log", *fmt, "@{u}..HEAD"]
     code, out, _ = run_git(["describe", "--tags", "--abbrev=0"])
     if code == 0 and out.strip():
         tag = out.strip()
-        code2, out2, _ = run_git(["log", "--format=%H%x1f%s%x1f%b",
-                                  "%s..HEAD" % tag])
+        code2, _, _ = run_git(["log", *fmt, "%s..HEAD" % tag])
         if code2 == 0:
-            return ["log", "--format=%H%x1f%s%x1f%b", "%s..HEAD" % tag]
-    return ["log", "--format=%H%x1f%s%x1f%b", "-50"]
+            return ["log", *fmt, "%s..HEAD" % tag]
+    for remote_ref in ("origin/main", "origin/master"):
+        code3, _, _ = run_git(["rev-parse", "--verify", "--quiet", remote_ref])
+        if code3 == 0:
+            return ["log", *fmt, "%s..HEAD" % remote_ref]
+    return ["log", *fmt, "-1", "HEAD"]
 
 
 def run_git(args):
@@ -172,7 +243,7 @@ def _as_dict(value):
 
 def load_words(path):
     """加载工程外词表。缺失或损坏 → 返回 None（调用方据此中止）。"""
-    p = path or DEFAULT_WORDS
+    p = path or default_words()
     if not os.path.isfile(p):
         print("=" * 68)
         print("❌ 敏感词词表缺失，闸门无法工作 —— 中止。")
@@ -234,6 +305,50 @@ def load_whitelist(words):
                 if word:
                     wl[word] = reason
     return wl
+
+
+def validate_tables(words, wl, quiet=False):
+    """词表自相矛盾检查：同一个词**既**在拦截表**又**在白名单 ⇒ 中止。
+
+    ★ 为什么必须有这一条（2026-11-02 实测踩坑）：
+      上一轮为了让闸门变绿，有人把 "自动续发" 整个词加进了白名单 ——
+      而它同时还在 block_words 里。后果有两层：
+
+        ① 闸门对那个词**永久失效**（扫到就 continue），
+           源码里再出现也拦不住 —— 这是真漏洞，不是噪音；
+        ② 它的回归自测随即永久变红（样本要求「必须拦下」，
+           实际被白名单放行），于是「自测总是红」变成常态。
+
+      而且它藏得很深：白名单那一行写的理由看着很正当（「商家发侧功能」），
+      不把它和 block_words 摆在一起看，根本发现不了。
+
+    ⇒ 两表冲突属于**配置错误**，直接中止并要求二选一：
+      真要放行某词，就把它从拦截表里**删掉**（并写清为什么不再拦），
+      而不是用白名单去压 —— 压住的那一份检查永远不会再响。
+    """
+    blocked = {w for w, _ in words["block_words"]}
+    conflicts = sorted(blocked & set(wl))
+    if not conflicts:
+        return True
+    if quiet:                      # 自测里要验证「冲突会被拦下」，不必刷屏
+        return False
+    print("=" * 68)
+    print("❌ 词表自相矛盾：下面的词**既在拦截表又在白名单** —— 闸门中止。")
+    print("")
+    for w in conflicts:
+        print("   词：%s" % w)
+        print("     拦截表理由：%s" % next(r for x, r in words["block_words"] if x == w))
+        print("     白名单理由：%s" % wl[w])
+    print("")
+    print("   为什么不能就这样跑：白名单会让这个词被**永久放行**，")
+    print("   拦截表里那一行从此永远不响（= 假绿灯），它自己的回归自测也会一直红。")
+    print("")
+    print("   处理（二选一，都必须写清理由）：")
+    print("     ① 确实不该再拦 ⇒ 从词表的 block_words 里删掉该词；")
+    print("     ② 确实该拦 ⇒ 从白名单里删掉该词，把源码/文案改成中性说法。")
+    print("   ⛔ 不允许「把词加进白名单」当作消红手段。")
+    print("=" * 68)
+    return False
 
 
 
@@ -700,6 +815,10 @@ def main():
     FIX_RULES = words["fix_rules"]
 
     wl = load_whitelist(words)
+
+    # ★ 两表冲突 ⇒ 立即中止（详见 validate_tables 里的实测教训）
+    if not validate_tables(words, wl):
+        return 2
 
     print("=" * 68)
     print("敏感词检测闸门")

@@ -668,7 +668,7 @@
      * (重叠 ≥ 控件面积 35%),面板大小无关。
      * 共享模块缺席时(注入顺序异常 / 独立自测)退回本地旧判据,不让灯因此常显。 */
     var g = window.dycOverlayGuard;
-    if (g && typeof g.covers === 'function' && typeof g.enabled === 'function' && g.enabled()) {
+    if (g && typeof g.covers === 'function') {
       return g.covers(rect);
     }
     var list = overlayListFast();

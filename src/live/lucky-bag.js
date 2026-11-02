@@ -84,6 +84,41 @@
  *   停机期间读到「进行中」= 别人续上了或平台恢复 ⇒ 立即回到 live，补发计数清零。
  *   自测口径随之更新：⑧⑨㊞ 由「phase=stopped」改「phase=halted」；
  *   「失败不重试」语义收窄为「不立即连点」，冷却后的补发是用户新拍板的另一件事。
+ *
+ * 【2026-11-02 晚 · 手动发福袋按钮（用户原话见 manualStart 注释）】
+ *   面板「手动刷新」下面加一行「手动发福袋」：
+ *     · 先确认有没有福袋在进行中（本拍结果 + 即时重扫，含常驻卡片）——
+ *       有就不发、把开着的抽屉关掉、提示原话「已经有福袋在进行中了」；
+ *     · 没有才开抽屉点一次「开始活动」（clickStart 同一条校验链路，
+ *       轮数/播报/失败停机行为与自动发福袋完全一致）；
+ *     · 开抽屉后还有一道二次确认（预检与开抽屉之间平台可能刚出进行中）；
+ *     · 不受「自动发福袋」开关与开播判据约束（手动口径，同手动刷新）。
+ *   候选选取抽成 findFirstPending，主循环与手动发福袋共用（单一来源）。
+ *
+ * 【2026-11-02 深夜 · 抽屉读数轮询（真机「手动刷新还是没检测到」）】
+ *   抽屉外壳点开就出现，表格/活动卡片要等服务端回包才渲染 ——
+ *   固定等 1.6 秒读一次，读到的常常是空壳，于是把「还没渲染」误报成
+ *   「没有进行中的福袋」（真机明明有福袋在跑）。改为每 300ms 读一次、
+ *   最多等 3 秒（PANEL_READ_MAX_MS）；并且严格区分：
+ *     · 读到行且无 running → 「没有进行中的福袋」（有资格下这个结论）；
+ *     · 读到平台空态「没有进行中的福袋活动」→ 同上；
+ *     · 什么都没读到 → 「没读到（抽屉还没渲染出内容）」，绝不替平台断言没有。
+ *   手动刷新（force）与定时确认共用这一套；抽屉是你自己开的（keepOpen）
+ *   就绝不替你关。
+ *
+ * 【2026-11-02 深夜 · 逐张读进行中卡片（真机「两个福袋了，能读最早的那个吗」
+ *   +「已有一个福袋，点手动发福袋还是发出了第二个」）】
+ *   真机 23:17 抽屉开着：福袋活动1 / 福袋活动2 两张卡都在跑，但行扫描把
+ *   「说明文字 + 两张卡 + 状态页签」认成一个 895×833 的大框，页签里的
+ *   「已结束」三个字让它被判成 drawn ⇒ 进行中 0、圆钮「未开始」、
+ *   防双开闸失效、手动发福袋照发第二个。
+ *   现在：
+ *     · scanRunningCards() 以「…后结束」为锚逐张读，「X 分 Y 秒」→ 结束时刻，
+ *       多卡并行按剩余升序，**圆钮显示最早结束的那张**（用户问的就是这个）；
+ *     · runningCount 让汇报能说「有 2 个福袋进行中，最早剩 X 分 Y 秒」；
+ *     · 手动发福袋的预检与二次确认都接上卡片判据 —— 有卡就不发；
+ *     · 行扫描加高度守卫（>420px 视为整块容器，不当一行），从根上避免
+ *       页签里的「已结束」把整块内容带成 drawn。
  * ============================================================
  */
 
@@ -105,7 +140,12 @@
   var FLAG_GATE = 'luckyBag';
 
   var TICK_MS = 2500;          // 常规拍：开始是分钟级，2.5 秒足够
-  var VERIFY_MS = 3000;        // 点完多久内必须看到「进行中」
+  /* 点完多久内必须看到「进行中」。
+   * 2026-11-03 凌晨试过放到 6 秒（想让平台慢慢回包），但自动补发链路的
+   * 节奏（停机补发、连续 3 次失败判停）全挂在它上面，一放长整条链就拖慢
+   * —— 真机问题的根子是「看不见行就永不结案」而不是窗口太短，
+   * 所以这里保持 3 秒，超时后文案直接给出「点手动刷新复核」的出路。 */
+  var VERIFY_MS = 3000;
   var CLICK_LOCK_MS = 2000;    // 点完 2 秒内不重复点
   var CONFIRM_TICKS = 2;       // 「确实没可点了」要连续几拍
   var DRIFT_MS = 5000;         // 平台倒计时与本地预测差超过它就以平台为准
@@ -122,6 +162,14 @@
   var PANEL_CLOSE_STREAK = 2;      // 连续几拍「有进行中 + 抽屉开着」才收（≈5 秒缓冲）
   var PANEL_CLOSE_COOLDOWN = 30000; // 收完多久内不再收（用户马上重开不被秒关）
 
+  /* 收尾冷却（2026-11-02 用户定）：倒计时走完后的 15 秒左右，
+   * 自动确认（开抽屉看结果）与续福袋（点「开始活动」）都让路 ——
+   * 结果公布瞬间平台自己在收尾（结果动画、卡片收走、列表刷新），
+   * 这时候动手容易冲突。「15s 左右」取整 15 秒。
+   * 锚点 = lastRunningAt（最后一次扫到「进行中/开奖中」的时刻），
+   * 它一消失就从「最后见到它」起算冷静期，不猜平台收尾要多久。 */
+  var AFTER_DRAW_LAG_MS = 15 * 1000;
+
   /* ── 悬浮窗刷新 ────────────────────────────────────────────
    * 2026-11-01 用户改口径：**不要插件自己开福袋弹窗** ——
    * 弹窗带遮罩，自动开合会打断直播操作，属于骚扰。
@@ -134,7 +182,7 @@
   /* 状态词（2026-11-01 晚补）：真机抽屉里状态列的写法比截图多，
    * 「待开始」既不含「奖励」也不含「参与」，早期版本会把整行漏掉；
    * 补进来的是**读**用的词，不参与点击，判错也只是少一条播报。 */
-  var RE_RUNNING = /进行中|距结束|倒计时|剩余时间|距开奖|开奖中/;
+  var RE_RUNNING = /进行中|距结束|倒计时|剩余时间|距开奖|开奖中|后结束|后开奖/;
   var RE_DRAWN = /已开奖|已结束|活动结束|已抢完|已完成/;
   /* 「待开始」这类还没跑的行：只用来确认「这一行确实是个活动」 */
   var RE_PENDING = /待开始|未开始|未到时间|预热中/;
@@ -142,7 +190,7 @@
    * 比旧版多了「待开始 / 已开始 / 距结束」—— 真机里一个还没开始的活动
    * 行可能只有「奖励名 + 参与条件 + 待开始 + 开始活动」，
    * 旧词表靠「开始活动」勉强命中，一旦链接文案变了就整行消失。 */
-  var RE_ROWISH = /奖品|中奖|福袋|红包|优惠券|开始活动|进行中|待开始|已开奖|已结束|距结束/;
+  var RE_ROWISH = /奖品|中奖|福袋|红包|优惠券|开始活动|进行中|待开始|未开始|已开奖|已结束|距结束/;
   /* …………………………………………………………………………………………………………………………
    * 异常词（2026-11-01 用户选「遇异常即停」）
    *
@@ -160,9 +208,25 @@
    * 一旦平台改标题，panelPresent() 就永远 false —— 表现是「读不到、圆钮一直未开始」。
    * 现在认四种写法，任一命中即算在。 */
   var RE_PANEL = /管理超级福袋活动|超级福袋[·\-—\s]*活动管理|福袋活动管理|没有进行中的福袋活动/;
+  /* 诊断线索词（2026-11-02 晚，「已经上了福袋但读不到」的探针词表）：
+   *   强相关 = 出现就记（定位福袋那块在页面哪一层）；
+   *   状态词 = 只有祖先里含「福袋」才记（页面满地「进行中」，不贴福袋没意义）。 */
+  var RE_CLUE = /福袋|开始活动|后结束|距结束/;
+  var RE_CLUE_STATE = /进行中|待开始|已结束|已开奖|未开始/;
   /* 抽屉里那个搜索框的 placeholder —— 比标题稳（标题常是图片/图标），
-   * 只要含「奖励名称 / 活动名称」就算。 */
-  var RE_SEARCH_PH = /奖品名称|奖品名|活动名称/;
+   * 只要含「奖励名称 / 活动名称」就算。
+   * 2026-11-02 深夜放宽：平台改版后（buyin-* 组件库）搜索框文案不再带
+   * 「名称」二字也可能不带「奖品」，只要同时沾「活动/奖品/福袋」就已够窄
+   *（全站能同时出现在抽屉搜索框里的机会极少）。 */
+  var RE_SEARCH_PH = /奖品名称|奖品名|活动名称|(?:活动|奖品|福袋)[^,，。]{0,8}(?:名称|ID|id)/;
+  /* 抽屉内容标记（2026-11-02 深夜，真机实证后的第四路锚点）：
+   * 平台把标题/空态渲染成**多个节点**（「没有进行中的福袋活动」在整页
+   * textContent 里有、叶子级正则却找不到），于是"整串落在一个元素"的
+   * 老锚点全部失配 ⇒ 抽屉认不出 ⇒ 行数 0 ⇒ 倒计时无从读起。
+   * 这里改用**容器级**判据：一个贴右、够大的容器里出现下面任一词，
+   * 就当抽屉开着。词挑的是只在抽屉内部才出现的那几个。 */
+  var DRAWER_MARKS = ['创建活动', '开始活动', '没有进行中的福袋', '暂无进行中的活动',
+    '活动状态', '奖品信息'];
   /* 卡片上如果直接写着倒计时（mm:ss），用它当真实开始时间；
    * 读不到才退回面板里的固定时长。用户 2026-11-01 选的就是这条。 */
   var RE_MMSS = /(?:距(?:离)?开奖|开奖倒计时|剩余)?\s*(\d{1,2}):([0-5]\d)/;
@@ -176,8 +240,18 @@
    * 分钟只收两位：整卡 textContent 会把标题与倒计时粘在一起
    * （「福袋活动1」+「04 分 58 秒」→「104 分 58 秒」），限两位后
    * 贪婪回溯恰好落回真实的「04 分」；福袋时长不会超过 99 分钟。 */
-  var RE_MSS_TAIL = /(\d{1,2})\s*分\s*(\d{1,2})\s*秒\s*后\s*结束/;
-  var RE_CARD_CD = /\d{1,3}\s*分\s*\d{1,2}\s*秒\s*后\s*结束/;
+  var RE_MSS_TAIL = /(\d{1,2})\s*分\s*(\d{1,2})\s*秒\s*后\s*(?:结束|开奖)/;
+  var RE_CARD_CD = /\d{1,3}\s*分\s*\d{1,2}\s*秒\s*后\s*(?:结束|开奖)/;
+  /* 2026-11-02 深夜补：平台换写法时兜住。
+   *   · 「时:分:秒」—— 老的 mm:ss 正则会把 01:02:03 读成 1 分 2 秒，
+   *     剩余时间直接错一小时（倒计时看着"读到了"其实全错）；
+   *   · 「剩 4 分钟」不带秒、「剩 45 秒」只有秒；
+   *   · 「1 小时 5 分」这种长时长福袋（老代码 30 分钟上限会整段丢掉）。 */
+  var RE_HMS_TAG = /(?:距结束|距开奖|距活动结束|剩余|倒计时|开奖倒计时)[^0-9]{0,6}(\d{1,2})\s*[:：]\s*([0-5]\d)\s*[:：]\s*([0-5]\d)/;
+  var RE_HMS_TAIL = /(\d{1,2})\s*[:：]\s*([0-5]\d)\s*[:：]\s*([0-5]\d)\s*(?:后|剩余)/;
+  var RE_HM = /(?:距结束|距开奖|剩余|倒计时)?[^0-9]{0,6}(\d{1,2})\s*小时\s*(\d{1,2})\s*分/;
+  var RE_MIN_ONLY = /(?:距结束|距开奖|距活动结束|剩|倒计时)[^0-9]{0,6}(\d{1,3})\s*分(?:钟)?/;
+  var RE_SEC_ONLY = /(?:距结束|距开奖|距活动结束|剩|倒计时)[^0-9]{0,6}(\d{1,2})\s*秒/;
   /* 卡片身份：真机截图卡片上写着「活动ID:7702886904815681835」。
    * 与「进行中活动」标签一样只作锚点用 —— 行身份仍按框 uid（用户定）。 */
   var RE_CARD_ID = /活动\s*ID\s*[:：]\s*\d{6,}/;
@@ -244,9 +318,32 @@
   var CHECK_MAX = 10;
   var CHECK_DEF = 5;
   var CHECK_REC = 5;
+  /* 滑条左右各留的余量（2026-11-02 用户「按钮拉到最左边最右边会轻微出界」）。
+   * 轨道撑满整宽，但圆钮圆心只能在 [R, W-R] 里跑 —— R 取放大态半径 10px
+   * （常态 9px、hover/拖动 10px），两端外沿才恰好与轨道端点相切、不出界。
+   * 刻度、圆钮共用这个内缩域，拖动映射也用同一套，指针与圆心严格对齐。 */
+  var SLIDE_INSET = 10;
   var CONFIRM_OPEN_WAIT = 1200;   // 点开抽屉后等它渲染
   var CONFIRM_READ_WAIT = 400;    // 面板出来后到读数之间再留一拍
   var CONFIRM_HARD_GAP = 60000;   // 硬上限：一分钟内绝不再开第二次
+  /* 抽屉读数轮询（2026-11-02 深夜真机「手动刷新还是没检测到」）：
+   * 抽屉外壳是瞬间出现的，表格/活动卡片要等服务端回包才渲染 ——
+   * 原来固定等 1.6 秒只读一次，读到的常常是空壳，于是把「还没渲染」
+   * 误报成「没有进行中的福袋」。改成每 300ms 读一次、最多等 3 秒。 */
+  var PANEL_READ_POLL_MS = 300;
+  var PANEL_READ_MAX_MS = 3000;
+  /* 「没有」结论的复核间隔（2026-11-02 23:50 真机：刷新网页后**第一次**
+   * 点手动刷新必定报「没有进行中的福袋」，再点一次就拿到 10 分 58 秒）。
+   * 页面重载后福袋数据要重新回包，首读拿到的多是空壳或历史行 ——
+   * 「有」读到了就直接给结论，「没有」是**否定结论**，多等这一拍再读一次
+   * 抽屉与常驻卡片，两次都是否定才落结论。 */
+  var NEG_RECHECK_MS = 1500;
+  /* 手动发福袋前的确认窗口（2026-11-03 00:15 真机：刷新网页后第一次直接
+   * 点手动发福袋，会无视进行中的福袋直接再发一个）。
+   * 平台开抽屉后**表格先回、进行中卡片后回**，读到行不等于数据回全 ——
+   * 所以发之前要多看几眼：窗口内任何一拍见到卡片或进行中行就拦下，
+   * 全程干净才允许点「开始活动」。1.5 秒不够（真机 3 秒左右卡片才齐）。 */
+  var START_PRECHECK_MS = 3000;
 
   /* 抽屉入口文案候选（按具体度从高到低，依次试）。
    * 精确相等匹配（tight 后），避免点到旁边「推荐使用超级福袋」那条运营提示
@@ -321,6 +418,39 @@
   var errSaid = {};         // 行键 → 异常已播报过（去重，不刷屏）
   var liveRunning = false;  // 本拍有没有活动在跑（圆钮显示「进行中」）
   var drawAt = 0;           // 汇总值 = 所有进行中行里最早的开始时刻；0 = 不知道
+  var cardDrawAt = {};      // 卡片键 → 该卡片的结束时刻（每拍由「X分Y秒后结束」重算）
+  var runningCount = 0;     // 本拍认出的进行中卡片张数（多卡并行时报「2 个」）
+  var lastRunningAt = 0;    // 最后一次扫到「进行中/开奖中」的时刻（开奖收尾冷却锚点）
+  /* 最近一次**手动刷新**读到的到期时刻（2026-11-03 00:13 真机）。
+   * 抽屉一关、页面又不渲染进行中卡片时，下一拍什么都看不见 —— 旧版在
+   * 「空现场」分支把 drawAt 清零，圆钮 20 秒后回到「未开始」，可福袋还在跑。
+   * 现在只要这份读数还没到期，就继续用它算倒计时；任何一拍读到平台现场
+   * 就立刻丢掉它、交给真实数据校准。起点是平台给的真值，不是凭空编的。
+   *
+   * 同时**持久化到 sessionStorage**（2026-11-03 00:15 真机，用户判为恶性）：
+   * 刷新网页后内存全清，插件就「忘了刚才有福袋在跑」，手动发福袋于是
+   * 无视进行中的福袋再发一个。刷新不会让平台的福袋消失，这份读数也不该
+   * 跟着消失 —— 存进会话存储，刷新后接着用，直到到期或读到平台新数据。 */
+  var HOLD_KEY = 'dycBagHoldDrawAt';
+  var holdDrawAt = 0;       // 由 readHoldDraw() 在 boot 时填
+
+  function readHoldDraw() {
+    var v = 0;
+    try { v = parseInt(sessionStorage.getItem(HOLD_KEY) || '0', 10) || 0; } catch (e) { v = 0; }
+    /* 只认「还没到期」的；顺手给 6 小时上限，防脏数据把圆钮钉死。 */
+    if (!v || v <= Date.now() || v > Date.now() + 6 * 3600 * 1000) return 0;
+    return v;
+  }
+
+  function setHoldDraw(v) {
+    v = (v && v > Date.now()) ? v : 0;
+    if (v === holdDrawAt) return;
+    holdDrawAt = v;
+    try {
+      if (v) sessionStorage.setItem(HOLD_KEY, String(v));
+      else sessionStorage.removeItem(HOLD_KEY);
+    } catch (e) { /* 隐私模式等取不到就算了，内存里仍然有效 */ }
+  }
   var badgeHost = null;     // 悬浮窗宿主
   var badgeTimer = 0;
   var badgeShadow = null;
@@ -349,6 +479,20 @@
    * 走 maybeConfirm(force=true) 的同一套开抽屉→读→关流程，只是不受
    * 间隔与「卡片在读」守卫约束。3 秒短防抖防手抖连点。 */
   var manualAt = 0;
+  /* 手动发福袋（2026-11-02 晚 用户「加一个按钮，手动发福袋，放在手动刷新的下面。
+   * 但是发福袋是要先确认有没有福袋在进行中，有的话就不发并且关闭浮层。
+   * 弹出提示【已经有福袋在进行中了】」）：
+   * 预检（liveRunning 本拍结果 + forceRunningNow 即时重扫，含常驻卡片）
+   * → 有进行中就不发、把开着的抽屉关掉、提示原话；
+   * → 没有才开抽屉找「开始活动」点一次（走 clickStart 同一条校验链路，
+   *   与自动发福袋完全同款，轮数/播报/失败停机行为一致）。
+   * 开抽屉后还有一道二次确认：预检与开抽屉之间平台可能刚好出了进行中。
+   * 不受「自动发福袋」开关约束（手动动作，同手动刷新口径）；3 秒防抖。 */
+  var manualStartAt = 0;         // 上次点「手动发福袋」的时刻（3 秒防抖）
+  var manualStartBusy = false;   // 开抽屉→点链接的执行窗（面板按钮忙态）
+  var MANUAL_START_SCAN_MS = 2500; // 手动发福袋：开抽屉后等行渲染出的上限
+                                   // （超过就判「读不到」，不发 —— 防误发，
+                                   //  2026-11-02 晚真机「已有进行中还发了下一个」）
   var liveState = 'unknown';     // live | idle | unknown（开播判据）
 
   /* 防双开 + 自动收抽屉（用户 2026-11-01 定稿）：
@@ -636,6 +780,14 @@
       if (isExtNode(el)) return;
       if (seenSet.indexOf(el) >= 0) return;
       if (!hasBox(el)) return;
+      /* 整块容器不是「一行」（2026-11-02 深夜真机 23:17）：把「说明文字 +
+       * 两张进行中卡 + 状态页签」认成 895×833 的一行，页签里的「已结束」
+       * 让这行被判成 drawn —— 进行中就此全灭。真机单行 111px、卡片 180px，
+       * 420 是安全边界；超过即视为容器，交给卡片扫描逐张读。 */
+      try {
+        var rr = el.getBoundingClientRect();
+        if (rr && rr.height > 420) return;
+      } catch (eR) {}
       var t = tight(text(el));
       if (t.length < 6 || t.length > 1200) return;
       // 表头：四列标题连在一起、且没有「开始活动/进行中」
@@ -656,10 +808,10 @@
      * 表格正常时走 ① 之外的路径完全够用。 */
     var hasLink = false;
     for (var q = 0; q < out.length && !hasLink; q++) {
-      if (findExactLeaf(out[q], START_TEXT, 1).length) hasLink = true;
+      if (findStartish(out[q], 1).length) hasLink = true;
     }
     if (!out.length || !hasLink) {
-      var links = findExactLeaf(document.body, START_TEXT, 12);
+      var links = findStartish(document.body, 12);
       var linkRows = [];
       for (var k = 0; k < links.length; k++) {
         var r = rowOf(links[k]);
@@ -721,7 +873,7 @@
       if (!t || t.length > 40) continue;         // 锚点都是短节点
       var isCd = RE_CARD_CD.test(t);
       var isId = RE_CARD_ID.test(t);
-      var isTag = t === '进行中活动' || t === '进行中';
+      var isTag = t === '进行中活动' || t === '进行中' || t === '进行中的活动';
       if (!isCd && !isId && !isTag) continue;
       var card = cardRootOf(el, isCd);
       if (card && out.indexOf(card) < 0) out.push(card);
@@ -756,6 +908,91 @@
   }
 
   /**
+   * 进行中活动卡片**逐张**读数（2026-11-02 深夜，用户两个问题同源：
+   * 「现在有两个福袋了，你能读取到最少时间的那一个吗」
+   * +「本身已有一个福袋的情况下点手动发福袋，依然发出了第二个」）。
+   *
+   * 真机证据（23:17 诊断，抽屉开着）：
+   *   · 现场线索里 `福袋活动1` / `福袋活动2` 各带一个「秒后结束」，
+   *     说明确实有两张卡在跑；
+   *   · 可是行扫描只认出 3 条 pending + 一个 895×833 的大框，
+   *     那个大框是「说明文字 + 两张卡 + 状态页签」整块，
+   *     页签上有「已结束」三个字 ⇒ statusOf 判成 drawn；
+   *   · 结果：进行中 0、圆钮「未开始」、防双开闸失效、手动发福袋照发第二个。
+   *
+   * 所以卡片的读法不能再「先收卡片根再判状态」，而是**以倒计时为锚**：
+   *   每张卡有且只有一个「…后结束」尾词 ⇒ 从它向上找最近一个
+   *   「文本里含完整倒计时、且长度 ≤160 字（= 单张卡，不跨卡聚合）」的框。
+   *   多张卡各读各的，按剩余时间升序返回，头部就是最早结束的那一张。
+   *
+   * 分钟只认 1~2 位：真机文本是紧贴的（「福袋活动1」+「02分52秒」连成
+   * 「福袋活动102分52秒」），3 位会把卡片名末尾的数字吞进分钟里。
+   */
+  function scanRunningCards() {
+    var out = [];
+    var all;
+    try { all = document.querySelectorAll('span, div, em, i, b, strong, p'); }
+    catch (e) { return out; }
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (isExtNode(el) || !hasBox(el)) continue;
+      var t = tight(text(el));
+      if (!t || t.length > 24) continue;
+      if (!/后\s*结束$/.test(t)) continue;      // 卡片倒计时的固定尾词
+      var card = null;
+      var cardTxt = '';
+      var p = el;
+      for (var j = 0; j < 6 && p; j++) {
+        p = p.parentElement;
+        if (!p || p === document.body) break;
+        var pt = tight(text(p));
+        if (pt.length > 160) break;             // 再往上就是多卡容器/说明块
+        if (remainMsOf(pt)) { card = p; cardTxt = pt; break; }
+      }
+      if (!card) continue;
+      var key = keyOf(card);
+      if (!key) continue;
+      out.push({
+        el: card,
+        key: key,
+        remain: remainMsOf(cardTxt),
+        name: cardNameOf(cardTxt)
+      });
+    }
+    /* 去重：同一张卡会被多个锚点各收一次（「后结束」叶 → 卡头；卡头本身
+     * 也是以「后结束」结尾的短节点 → 整张卡），彼此是包含关系 ⇒ 只留
+     * 最外层那张（含「进行中活动」标签与活动ID的完整卡）。两张并行的卡
+     * 是兄弟关系、互不包含，不会被误并。 */
+    for (var a = out.length - 1; a >= 0; a--) {
+      for (var b = 0; b < out.length; b++) {
+        if (a === b) continue;
+        if (out[b].el.contains && out[b].el.contains(out[a].el)) { out.splice(a, 1); break; }
+      }
+    }
+    out.sort(function (x, y) { return x.remain - y.remain; });
+    return out;
+  }
+
+  /** 从一段文本里抠剩余毫秒：优先「X 分 Y 秒」，其次「mm:ss」。读不到 = 0（不编）。 */
+  function remainMsOf(t) {
+    if (!t) return 0;
+    var m = /(\d{1,2})\s*分\s*(\d{1,2})\s*秒/.exec(t);
+    if (m) return parseInt(m[1], 10) * 60000 + parseInt(m[2], 10) * 1000;
+    var m2 = /(\d{1,2})\s*[:：]\s*([0-5]\d)(?!\d)/.exec(t);
+    if (m2) return parseInt(m2[1], 10) * 60000 + parseInt(m2[2], 10) * 1000;
+    return 0;
+  }
+
+  /** 卡片名 = 倒计时前面那一截（「福袋活动1 02分52秒…」→「福袋活动1」）。 */
+  function cardNameOf(t) {
+    var m = /^(.*?)\d{1,2}\s*分/.exec(t || '');
+    var s = tight(m ? m[1] : '');
+    /* 收到整张卡时前面会带着标签「进行中活动」，那不是奖励名 */
+    s = s.replace(/^进行中活动/, '').replace(/^进行中/, '');
+    return s.length > 12 ? s.slice(0, 12) : s;
+  }
+
+  /**
    * 单行状态：pending / running / drawn / unknown
    * 顺序很重要 —— 先判「进行中」再判「已结束」，因为进行中的行里
    * 也可能出现「距结束」与「已开始 N 人」历史文案。
@@ -771,7 +1008,7 @@
     if (running && !drawn) return { kind: 'running' };
     if (drawn) return { kind: 'drawn' };
 
-    var links = findExactLeaf(row, START_TEXT, 3);
+    var links = findStartish(row, 3);
     for (var i = 0; i < links.length; i++) {
       if (clickable(links[i])) return { kind: 'pending', link: links[i] };
     }
@@ -800,22 +1037,129 @@
    * 从此这里必须交代「靠哪个锚点认出来的」，认不出也把线索带出去。
    */
   /**
+   * 「开始活动」的宽松识别（2026-11-02 深夜，真机实证后新增）。
+   *
+   * 精确匹配仍排第一（老路径不变）；只在它扑空时才退「文本含这四个字、
+   * 总长不超过 12 个字」—— 平台改版后按钮里的字常被拆成几段
+   *（图标 + 文本、或若干 span），"整串落在一个叶子"就不再成立，
+   * 表现为 startLinks=0、行数 0、抽屉认不出，功能整体哑掉。
+   *
+   * **只用于识别与计数，不放松点击**：点击目标仍要过 clickable()，
+   * 且行内唯一性校验（countExact / countStatusLeaves）照旧。
+   */
+  function findStartish(root, limit, skipExact) {
+    var cap = limit || 20;
+    var out = skipExact ? [] : findExactLeaf(root, START_TEXT, cap);
+    if (out.length || !root || !root.querySelectorAll) return out;
+    var all = root.querySelectorAll('a, button, span, div, p, em, i, label');
+    for (var j = 0; j < all.length && out.length < cap; j++) {
+      var el = all[j];
+      if (isExtNode(el)) continue;
+      var t = tight(text(el));
+      if (!t || t.length > 12) continue;          // 一行活动的整块文本远超 12 字
+      if (t.indexOf(START_TEXT) < 0) continue;
+      if (/没有|暂无|无法|不可|不能|不可用/.test(t)) continue;
+      /* 子元素只允许图标 —— 例外是**整块去空白后恰好等于「开始活动」**：
+       * 平台把按钮拆成 <span>开始</span><span>活动</span> 时就是这种形状，
+       * 而「开始活动+复制」这种并排操作块会变成 6 个字，天然被排除。 */
+      var kids = el.children || [];
+      var textKid = false;
+      for (var c = 0; c < kids.length; c++) {
+        var kt = String(kids[c].tagName || '').toLowerCase();
+        if (kt !== 'svg' && kt !== 'i' && kt !== 'img' && kt !== 'use') { textKid = true; break; }
+      }
+      if (textKid && t !== START_TEXT) continue;
+      if (!hasBox(el)) continue;
+      var cand = hitTarget(el, t);
+      /* 去重：拆节点时内外两层会同时命中，只留归一后的那个 */
+      var dup = false;
+      for (var d = 0; d < out.length; d++) {
+        if (out[d] === cand || out[d].contains(cand) || cand.contains(out[d])) { dup = true; break; }
+      }
+      if (!dup) out.push(cand);
+    }
+    return out;
+  }
+
+  /**
+   * 贴右抽屉根：**容器级**识别（2026-11-02 深夜真机实证后新增的第四路锚点）。
+   *
+   * 为什么必须补这一路：真机诊断里出现了一对自相矛盾的读数 ——
+   *   · 手动刷新报「没有进行中的福袋」⇒ 代码认的是「读到行」或「读到平台空态」；
+   *   · 同一份报告里「抽屉：没认出 · 行 0 个 · 开始活动链接 0 个」。
+   * 唯一能同时成立的解释：那串字**在整页 textContent 里有、在叶子级找不到**。
+   * 平台（buyin-* 组件库）把标题/空态拆成多个节点渲染，于是
+   * findLeafByRe（要求整串落在一个元素）与 findExactLeaf 双双失配。
+   *
+   * 判据只用几何 + 一段弱文本，不认类名（与本文件同一纪律）：
+   *   · 容器够大（≥380×260）且**贴视口右边**（抽屉是从右侧推出来的）；
+   *   · 内容里出现只在抽屉内部才有的词（DRAWER_MARKS）。
+   * 命中多个取**面积最小**的那个 = 最贴合的抽屉根，避免收成整页容器。
+   */
+  function drawerRootByText() {
+    var vw = 0;
+    try {
+      vw = window.innerWidth || (document.documentElement && document.documentElement.clientWidth) || 0;
+    } catch (e0) { vw = 0; }
+    var all = document.querySelectorAll('div, section, aside, form');
+    var n = all.length > 9000 ? 9000 : all.length;
+    var best = null, bestArea = 0;
+    for (var i = 0; i < n; i++) {
+      var el = all[i];
+      if (isExtNode(el)) continue;
+      var t = '';
+      try { t = el.textContent || ''; } catch (e1) { continue; }
+      if (t.length < 6 || t.length > 6000) continue;   // 整页/主工作区一律不要
+      var hit = false;
+      for (var k = 0; k < DRAWER_MARKS.length; k++) {
+        if (t.indexOf(DRAWER_MARKS[k]) >= 0) { hit = true; break; }
+      }
+      if (!hit) continue;
+      /* 再加一道弱约束：这一块里得真有"奖品/中奖/福袋"这类业务词。
+       * 只靠「活动状态」四个字，容易把运营后台里别的面板也算成抽屉。 */
+      if (t.indexOf('福袋') < 0 && t.indexOf('奖品') < 0 && t.indexOf('中奖') < 0) continue;
+      var r;
+      try { r = el.getBoundingClientRect(); } catch (e2) { continue; }
+      /* 关着的抽屉（display:none / 卸载）矩形为 0，天然被这条挡掉 */
+      if (r.width < 380 || r.height < 260) continue;
+      if (vw && r.right < vw - 24) continue;           // 右缘必须贴着视口右边
+      if (vw && r.left < vw * 0.25) continue;          // 左缘不许伸到左半屏
+      var area = r.width * r.height;
+      if (!best || area < bestArea) { best = el; bestArea = area; }
+    }
+    return best;
+  }
+
+  /**
    * 「抽屉是不是开着」的轻量判据（只查输入框的 placeholder）。
    *
    * 为什么单独抽一个：这个值每一拍都要算，还得交给「小黄车自动刷新」决定
    * 这一轮要不要让路（见 bagYieldToRefresh）。完整的 panelInfo() 里还有一次
    * 全页文字扫描，每 2.5 秒跑一次不值当；而抽屉里的搜索框是**只在抽屉里**才有的，
    * 用它当判据既准又便宜。
+   *
+   * 2026-11-02 深夜：placeholder 也在失配之列，补容器级兜底 + 120ms 缓存
+   *（同一拍里会被问好几次，重复全页扫没必要）。
+   * 缓存窗口必须**很短**：它一旦跨过「抽屉关闭」那一刻，
+   * 对外公布的「抽屉开着」就会滞后，让路标记跟着卡住
+   *（自测 ㊦⑤ / ㊭① 就是这么红的）。120ms 只够合并同一拍的重复调用。
    */
+  var fastCache = { at: 0, open: false };
   function isDrawerOpenFast() {
     var ins = document.querySelectorAll('input[placeholder]');
     for (var i = 0; i < ins.length; i++) {
       var el = ins[i];
       if (isExtNode(el) || !hasBox(el)) continue;
       var ph = String(el.getAttribute('placeholder') || '');
-      if (ph && RE_SEARCH_PH.test(ph)) return true;
+      if (ph && RE_SEARCH_PH.test(ph)) {
+        fastCache = { at: Date.now(), open: true };
+        return true;
+      }
     }
-    return false;
+    if (fastCache.at && Date.now() - fastCache.at < 120) return fastCache.open;
+    var open = !!drawerRootByText();
+    fastCache = { at: Date.now(), open: open };
+    return open;
   }
 
   /**
@@ -834,7 +1178,7 @@
   }
 
   function panelInfo() {
-    var out = { open: false, by: '', searchPh: '', startLinks: 0 };
+    var out = { open: false, by: '', searchPh: '', startLinks: 0, drawerCls: '', drawerBox: '' };
 
     var ins = document.querySelectorAll('input[placeholder]');
     for (var i = 0; i < ins.length; i++) {
@@ -859,9 +1203,31 @@
       }
     }
 
+    /* 第四路（2026-11-02 深夜）：容器级内容判定。
+     * 前三路都要求"某一串字整整齐齐落在一个元素里"，平台改版后不再成立；
+     * 这一路只看"贴右的大容器里有没有抽屉专属词"，拆成多少节点都不影响。 */
+    if (!out.open) {
+      var root = drawerRootByText();
+      if (root) {
+        out.open = true;
+        out.by = '抽屉容器';
+        out.drawerCls = clampCls(root.className);
+        try {
+          var rr = root.getBoundingClientRect();
+          out.drawerBox = Math.round(rr.width) + 'x' + Math.round(rr.height) +
+            '@' + Math.round(rr.left) + ',' + Math.round(rr.top);
+        } catch (e3) { out.drawerBox = ''; }
+      }
+    }
+
     /* 「开始活动」只存在于活动行里 —— 它在页面上，就是抽屉开着的最硬证据。
-     * 顺便把条数带出去当诊断读数（0 = 没有可点的活动）。 */
+     * 顺便把条数带出去当诊断读数（0 = 没有可点的活动）。
+     * 2026-11-02 深夜：精确匹配扑空且抽屉已认出来时，再走一次宽松识别
+     *（只影响"识别/计数"，点击仍走严格校验）。 */
     out.startLinks = findExactLeaf(document.body, START_TEXT, 12).length;
+    if (!out.startLinks && out.open) {
+      out.startLinks = findStartish(document.body, 12, true).length;
+    }
     if (!out.open && out.startLinks) {
       out.open = true;
       out.by = '活动行链接';
@@ -916,8 +1282,10 @@
    *
    * 用户 2026-11-01 05:29：「福袋按钮不应该在各种抽屉框中浮在最上层」。
    * 判据不在本文件里重复实现 —— 直接问 `overlay-guard`（那是全工程唯一真源，
-   * 上滑/下滑/搜索/指示灯/讲解胶囊都用它）。返回 false 的三种情况都必须
-   * **不隐藏**：guard 不在场、浮层让位开关被关掉、自己量不到尺寸。
+   * 上滑/下滑/搜索/指示灯/讲解胶囊都用它）。返回 false 的两种情况都必须
+   * **不隐藏**：guard 不在场、自己量不到尺寸。
+   * 让位本身没有开关（2026-11-02 撤掉「浮层让位」菜单项），所以能被关掉这条
+   * 退路已不存在。
    *
    * 为什么不自已 bind() 给 guard、而要在这里问：
    *   本模块自己有一套 visibility 状态机（未开播、进页面骨架屏、开播后再露脸）。
@@ -929,7 +1297,6 @@
     try {
       var g = window.dycOverlayGuard;
       if (!g || typeof g.covers !== 'function') return false;
-      if (typeof g.enabled === 'function' && !g.enabled()) return false;
       if (!badgeHost) return false;
       var r = badgeHost.getBoundingClientRect();
       if (!r || !(r.width > 0) || !(r.height > 0)) return false;
@@ -985,10 +1352,25 @@
       return;
     }
     /* 自动执行下一轮正在点「开始活动」/等校验结果的那几秒，绝不去开抽屉 ——
-     * 打开抽屉会改变列表渲染，把校验拍搅乱（会误判成「点了没反应」）。 */
+     * 打开抽屉会改变列表渲染，把校验拍搅乱（会误判成「点了没反应」）。
+     *
+     * 2026-11-03 凌晨：**手动刷新**这条路要能自救。上一轮点击的确认可能因为
+     * 「看不见行」被无限挂着，而手动刷新正是唯一能救回来的动作，不能也被
+     * 这道闸挡死（真机：手动发福袋后点手动刷新，回「自动发福袋正在执行」）。
+     * 注意结案只能放在 force 分支里：自动节拍若在这里结案并 doStop，
+     * 本拍 tick 会带着「已停机」继续往下跑到补发分支，白白多点一次
+     *（自测 ⑨ / ㊫④ 就是这么红的）。 */
     if (phase === 'starting' || pendingClick) {
-      if (force) sayManual('自动发福袋正在执行，等它完成再刷新');
-      return;
+      if (!force) return;
+      try { settlePendingClick(scanRows(), scanRunningCards()); } catch (eS) { /* 结不了案也不能崩 */ }
+      if (phase === 'starting' || pendingClick) {
+        var leftMs = pendingClick ? Math.max(0, VERIFY_MS - (Date.now() - pendingClick.at)) : 0;
+        var waitMs = Math.max(leftMs, 900);
+        sayManual('正在确认上一轮是否发上，' + Math.ceil(waitMs / 1000) + ' 秒后自动刷新');
+        manualAt = 0;                    // 绕开 3 秒防抖，让补的那一次真跑起来
+        setTimeout(function () { maybeConfirm(true); }, waitMs + 200);
+        return;
+      }
     }
     var now = Date.now();
     /* 卡片正在读时绝不开抽屉（2026-11-01 深夜用户方案：
@@ -1013,7 +1395,17 @@
       manualAt = now;
     } else {
       var due = nextConfirmAt;
-      if (drawAt && now >= drawAt + 3000) due = now;
+      /* 到点即看结果（原定稿「不能傻等到下一个 N 分钟」），但起点从
+       * 「倒计时到期」顺延为「到期 + 3 秒缓冲 + 15 秒收尾冷却」
+       * （2026-11-02 用户定：结果公布瞬间平台在收尾，立刻开抽屉容易冲突）。 */
+      if (drawAt && now >= drawAt + 3000) due = drawAt + 3000 + AFTER_DRAW_LAG_MS;
+      /* 卡片收走后 drawAt 会清零（rowDrawAt 一并删），冷却由「最后一次
+       * 见到进行中」兜底 —— 没有运行信息 ≠ 没有刚结束，刚结束的
+       * 15 秒里同样不开抽屉。两个锚点取更晚的那个。 */
+      if (lastRunningAt && now - lastRunningAt < AFTER_DRAW_LAG_MS) {
+        var lagDue = lastRunningAt + AFTER_DRAW_LAG_MS;
+        if (lagDue > due) due = lagDue;
+      }
       if (now < due) return;
       if (lastConfirmAt && now - lastConfirmAt < CONFIRM_HARD_GAP) return;
     }
@@ -1021,11 +1413,9 @@
       lastConfirmAt = now;
       nextConfirmAt = now + checkMin * 60000;
       if (force) {                       // 手动刷新也一样：读数就在眼前
-        try { tick(); } catch (eT) {}
-        var stat = runningStat();
-        confirmStat = '手动刷新｜' + stat;
-        sayManual(stat);
-        paintPanel();
+        /* 读数就在眼前，但「眼前」也可能是刚弹出还没渲染的空壳 ——
+         * 走同一套轮询，读到行才算数（keepOpen：你开的抽屉绝不替你关）。 */
+        readPanelThenReport(true, true);
       }
       return;
     }
@@ -1054,36 +1444,118 @@
     catch (e) { confirmStat = '点入口失败'; }
 
     setTimeout(function () {
-      // 抽屉渲染有延迟，再等一拍读状态；读完立刻关（只关自己开的）
-      /* 这里**直接跑一整拍 tick**，而不是只数行数：
-       * 倒计时/在跑标记都由 tick 写进状态，只数行数的话读到的信息
-       * 会在 1.2 秒后关抽屉时全部作废（下一拍既看不见表格、也没有新读数）。
-       * confirmBusy 此时为 true，tick 里再进 maybeConfirm 会被自己挡掉。
-       *
-       * 汇报口径（2026-11-02 凌晨 用户定）：「不要看下面，看上面才是
-       * 决定有没有在进行的福袋」—— 抽屉表格（下面）混着历史/待开始行，
-       * 「读到 X 行」会让人误以为行数 = 进行中的福袋数；进行中的唯一
-       * 判据是上面的常驻活动卡片。开抽屉只是兜底确认手段，汇报只说上面。 */
-      try {
-        tick();
-        if (force && !liveRunning && liveState === 'idle') {
-          /* 未开播时的手动刷新：正常循环「未开播不生效」，开播闸会把本拍
-           * 读数清掉 —— 但手动刷新的口径是「人点了就是要现在抓，跟开没
-           * 开播无关」（maybeConfirm 开头同款）。抽屉刚刚还在眼前，按
-           * 上面卡片 + 行重判一次，别把真话吞成「没有进行中」。 */
-          liveRunning = forceRunningNow();
-        }
-        confirmStat = runningStat();
-      } catch (e2) { confirmStat = '读数失败'; }
-      if (force) confirmStat = '手动刷新｜' + confirmStat;
-      closeBagPanel();
-      confirmBusy = false;
-      markBagBusy(600);            // 关闭动画期间的余量，之后按真实状态走
-      note((force ? '手动刷新｜' : '确认节拍｜') + confirmStat + '｜间隔 ' + checkMin + ' 分钟');
-      if (force) sayManual(confirmStat.replace(/^手动刷新｜/, ''));
+      readPanelThenReport(force, false);
+    }, CONFIRM_OPEN_WAIT);
+  }
+
+  /**
+   * 抽屉读数（2026-11-02 深夜，真机「手动刷新还是没检测到」）：
+   * 抽屉外壳点开就出现（buyin-drawer-open），但表格/活动卡片要等服务端
+   * 回包才渲染 —— 固定等 1.6 秒读一次，读到的经常是空壳。
+   * 现在改为轮询：每 300ms 扫一次，扫到行 / 看到「没有进行中的福袋活动」
+   * 空态 / 用满 PANEL_READ_MAX_MS 才收工。
+   *
+   * 关键口径：**读不到 ≠ 没有**。一行都没读到又没有任何空态证据时，
+   * 只能说「没读到」，不能替平台断言「没有进行中的福袋」——真机上这句
+   * 假话会让用户以为福袋掉了，也可能让防双开闸失效。
+   *
+   * keepOpen：抽屉是你自己开着的（手动刷新时人就在看），绝不替你关。
+   */
+  function readPanelThenReport(force, keepOpen) {
+    var t0 = Date.now();
+    var sawOpen = false;
+    (function poll() {
+      var rows = [];
+      try { rows = scanRows(); } catch (e) { rows = []; }
+      var opened = false;
+      try { opened = panelInfo().open; } catch (e2) {}
+      if (opened) sawOpen = true;
+      var empty = !rows.length && hasEmptyBagTextNow();
+      var spent = Date.now() - t0;
+      /* 抽屉压根没开出来（点入口失败）：别傻等满 3 秒，1.2 秒后收工 */
+      var neverOpened = !sawOpen && spent >= CONFIRM_OPEN_WAIT;
+      if (rows.length || empty || spent >= PANEL_READ_MAX_MS || neverOpened) {
+        finishConfirm(force, rows, empty, keepOpen);
+        return;
+      }
+      setTimeout(poll, PANEL_READ_POLL_MS);
+    })();
+  }
+
+  /**
+   * 读数收尾（原 setTimeout 里那一段，逻辑不变）：
+   * 这里**直接跑一整拍 tick**，而不是只数行数 —— 倒计时/在跑标记都由
+   * tick 写进状态，只数行数的话读到的信息会在关抽屉时全部作废。
+   * confirmBusy 此时为 true，tick 里再进 maybeConfirm 会被自己挡掉。
+   *
+   * 汇报口径（2026-11-02 凌晨 用户定）：「不要看下面，看上面才是决定有
+   * 没有在进行的福袋」—— 表格（下面）混着历史/待开始行，「读到 X 行」
+   * 会让人误以为行数 = 进行中的福袋数；进行中的唯一判据是上面的活动
+   * 卡片。开抽屉只是兜底确认手段，汇报只说上面。
+   */
+  function finishConfirm(force, rows, emptyRead, keepOpen, recheck) {
+    var sawRows = !!(rows && rows.length);
+    var stat = '';
+    /* 本条读数是否「一切正常」（真读到进行中）。决定消息点色（2026-11-03）：
+     * 绿色＝有福袋在跑，灰色＝没跑 / 没读到 / 读失败（要人多看一眼）。 */
+    var sawRunning = false;
+    try {
+      tick();
+      if (force && !liveRunning && liveState === 'idle') {
+        /* 未开播时的手动刷新：正常循环「未开播不生效」，开播闸会把本拍
+         * 读数清掉 —— 但手动刷新的口径是「人点了就是要现在抓，跟开没
+         * 开播无关」（maybeConfirm 开头同款）。抽屉刚刚还在眼前，按
+         * 上面卡片 + 行重判一次，别把真话吞成「没有进行中」。 */
+        liveRunning = forceRunningNow();
+      }
+      if (liveRunning) { stat = runningStat(); sawRunning = true; }
+      else if (sawRows || emptyRead) stat = '没有进行中的福袋';
+      else stat = '没读到（抽屉还没渲染出内容）';
+    } catch (e2) { stat = '读数失败'; sawRunning = false; }
+
+    /* 2026-11-02 23:50 真机（用户反馈）：**刷新网页后第一次点手动刷新
+     * 必定失败**，报「没有进行中的福袋」，第二次才读到 10 分 58 秒。
+     * 页面重载后福袋数据要重新回包，首读那一拍拿到的是空壳或历史行；
+     * 「没有」是否定结论，一次读不到不该替平台拍板。
+     * 处理：只有 force（人点了手动刷新）且本轮没读到任何进行中时，**先
+     * 不落结论**，隔 NEG_RECHECK_MS 再读一次抽屉行与常驻卡片，两次都
+     * 否定才报「没有」。读到「有」立即出结果，不延迟。
+     * 复核期间抽屉保持原状（用户自己开的不关；我们自己开的也等复核完再关），
+     * 且**不播报**——复核中还没有结论，消息盒子不该先多一条「没有」。 */
+    if (force && !recheck && !liveRunning) {
+      confirmStat = '手动刷新｜复核中…';
       paintBadge();
       paintPanel();
-    }, CONFIRM_OPEN_WAIT + CONFIRM_READ_WAIT);
+      setTimeout(function () {
+        var r2 = [], e2 = false;
+        try { r2 = scanRows(); } catch (eR) { r2 = []; }
+        try { e2 = !r2.length && hasEmptyBagTextNow(); } catch (eE) { e2 = false; }
+        finishConfirm(true, r2, e2, keepOpen, true);
+      }, NEG_RECHECK_MS);
+      return;
+    }
+
+    /* 记下这次读到的到期时刻，供「看不见现场」时续用（见 tick 的空现场
+     * 分支）；明确读到「没有」就把旧读数清掉，免得它继续冒领。 */
+    if (force) {
+      if (liveRunning && drawAt && drawAt > Date.now()) setHoldDraw(drawAt);
+      else if (!liveRunning) setHoldDraw(0);
+    }
+
+    confirmStat = force ? ('手动刷新｜' + stat) : stat;
+    if (!keepOpen) closeBagPanel();
+    confirmBusy = false;
+    markBagBusy(600);            // 关闭动画期间的余量，之后按真实状态走
+    /* note 自带「手动刷新｜」前缀，这里只传 stat，别叠成两遍 */
+    note((force ? '手动刷新｜' : '确认节拍｜') + stat + '｜间隔 ' + checkMin + ' 分钟');
+    if (force) {
+      /* 有进行中 = 一切正常 → 绿点；没跑 / 没读到 → 灰点（要人留意）。
+       * 绿点走 sayReading：显式 keepHistory:false，读数不进消息盒子。 */
+      if (sawRunning) sayReading(stat);
+      else sayManual(stat);
+    }
+    paintBadge();
+    paintPanel();
   }
 
   /**
@@ -1099,11 +1571,13 @@
    */
   function runningStat() {
     if (!liveRunning) return '没有进行中的福袋';
+    var head = runningCount > 1 ? ('有 ' + runningCount + ' 个福袋进行中') : '有进行中的福袋';
     if (drawAt && Date.now() < drawAt) {
       var left = Math.max(0, Math.round((drawAt - Date.now()) / 1000));
-      return '有进行中的福袋，剩 ' + Math.floor(left / 60) + ' 分 ' + (left % 60) + ' 秒';
+      return head + (runningCount > 1 ? '，最早剩 ' : '，剩 ') +
+        Math.floor(left / 60) + ' 分 ' + (left % 60) + ' 秒';
     }
-    return '有进行中的福袋';
+    return head;
   }
 
   /**
@@ -1113,6 +1587,9 @@
    * 只在手动刷新读完的那一拍调用，不在正常循环里跑。
    */
   function forceRunningNow() {
+    /* 卡片优先（2026-11-02 深夜）：多卡并行时行扫描可能整块认错，
+     * 但每张卡的「X分Y秒后结束」是稳的 —— 读得到就不许说没有。 */
+    if (scanRunningCards().length) return true;
     var rows = scanRows();
     for (var i = 0; i < rows.length; i++) {
       if (statusOf(rows[i]).kind === 'running') return true;
@@ -1178,6 +1655,11 @@
    */
   function forceClosePanel() {
     try { dispatchEsc(); } catch (e) {}
+    /* 2026-11-02 深夜：Esc 发出去就作废抽屉判定的短缓存。
+     * 否则同一拍里（读数是关抽屉之前算的）缓存还写着"开着"，
+     * 紧接着公布的让路标记会停在 true，自动刷新被多挡一拍
+     *（自测 ㊦⑤ / ㊭①）。 */
+    fastCache.at = 0;
     setTimeout(function () {
       if (!panelInfo().open) return;
       var closer = findCloseButton();
@@ -1350,46 +1832,51 @@
 
     var rows = scanRows();
 
-    /* ---- 弹窗/表格都不在 ----
+    /* 进行中卡片单独读一次（2026-11-03 凌晨真机）：
+     * 平台点完「开始活动」常常把抽屉收起，表格行随之消失，但进行中卡片
+     * （带「X 分 Y 秒 后结束」）可能还在 —— 旧版第一个守卫是
+     * `if (!rows.length) return`，卡片连看都不看，于是
+     * 「手动发福袋点了 → 读不到倒计时 → 圆钮一直『未开始』」。
+     * 现在卡片与行各读各的，任一个有结果都继续往下走。 */
+    var cardsNow = [];
+    try { cardsNow = scanRunningCards(); } catch (eCard) { cardsNow = []; }
+
+    /* ---- 弹窗/表格/卡片都不在 ----
      * 用户 2026-11-01 明确：**不要自己开窗**（会打断直播操作，太骚扰）。
      * 所以这里只静默等待 —— 不打开、不播报、不停机、不打日志。
-     * 弹窗由用户自己开；他不开的那段时间，本功能什么也不做。
-     * 悬浮窗会显示「未开始」提示他去开，这是唯一的提示渠道。 */
-    if (!rows.length) {
+     *
+     * 2026-11-03 凌晨补齐（真机「点完手动发福袋就再也不知道成不成」）：
+     * 旧版在这里直接 return，把**上一次点击的校验**也一并跳过。抽屉一关，
+     * 行数归零，pendingClick 就永远挂着 —— phase 停在 starting，
+     * 手动发福袋回「等它完成」，手动刷新也被同一条闸挡住，
+     * 人既不知道发没发上，也没有任何出路。现在先结案再走。 */
+    if (!rows.length && !cardsNow.length) {
       quietSince = 0;
       noneStreak = 0;
-      liveRunning = false;   // 看不见表格，不能再声称「进行中」
+      settlePendingClick([], []);
+      /* 2026-11-03 00:13 真机：手动刷新刚读到「有 2 个福袋进行中，最早剩
+       * 9 分 17 秒」，抽屉一关（我们自己关的）、页面又不渲染进行中卡片，
+       * 下一拍就什么都看不见 —— 旧版在这里无条件清零，圆钮约 20 秒后回到
+       * 「未开始」，人以为福袋没了。
+       * 现在：这份读数没到期就继续用它走秒，到期自然停。
+       * 注意 hold 不在这里续期，也不在「读到现场」时丢掉 —— 见下面汇总处。 */
+      if (holdDrawAt && Date.now() < holdDrawAt) {
+        liveRunning = true;
+        drawAt = holdDrawAt;
+      } else {
+        setHoldDraw(0);
+        runningCount = 0;
+        liveRunning = false;   // 看不见任何现场，也不能声称「进行中」
+        drawAt = 0;
+      }
       return;
     }
     quietSince = 0;
 
     /* ---- 校验上一次点击 ---- */
-    if (pendingClick) {
-      var prow = findRowByKey(pendingClick.key);
-      var pst = prow ? statusOf(prow) : { kind: 'unknown' };
-      if (pst.kind === 'running') {
-        pendingClick = null;
-        round += 1;
-        sayStart(false, null, resumePending ? '已补发' : '');
-        resumePending = false;
-        haltedAt = 0;            // 补发成功 ⇒ 停机监视结束
-        resumeCount = 0;
-        resumeLastAt = 0;
-        // 开始时刻不在这里预设：交给下面「逐行扫描」的 running 分支每拍校准。
-        // 读不到就是读不到，不编数字（2026-11-01 重新设计）。
-        phase = 'live';              // 从 starting 复位（悬浮窗不再有「开启中」这种态）
-        paintPanel();
-        paintBadge();
-        // 注意：这里**不关窗** —— 弹窗是用户自己开的，插件不动它。
-      } else if (Date.now() - pendingClick.at > VERIFY_MS) {
-        pendingClick = null;
-        doStop('no-effect');
-        return;
-      }
-    }
+    if (settlePendingClick(rows, cardsNow) === 'fail') return;
 
     /* ---- 逐行比对状态迁移 ---- */
-    var pendingCand = null;
     var anyRunning = false;
     var anyPending = false;
     var anyRunningNow = false;
@@ -1441,12 +1928,11 @@
       }
 
       seen[key] = { kind: st.kind, name: prizeOf(row) };
-
-      // ③ 待开始且可点：记为本拍候选
-      if (st.kind === 'pending' && st.link && !clicked[key]) {
-        if (!pendingCand) pendingCand = { row: row, key: key, link: st.link };
-      }
     }
+
+    /* ③ 待开始且可点：记为本拍候选（选取逻辑与手动发福袋同源，
+     *    见 findFirstPending —— 异常行不参与、取第一个可点的） */
+    var pendingCand = findFirstPending(rows);
 
     // 清理已经消失的行（防止内存里攒一堆旧键）。
     // 2026-11-01 深夜重写：旧写法 `if (!seen[k].alive) seen[k].alive = false`
@@ -1484,8 +1970,33 @@
       }
     }
 
+    /* ---- 进行中卡片逐张读数（2026-11-02 深夜）----
+     * 真机 23:17：两张卡在跑，却因为「整块容器被当成一行 + 页签里有已结束」
+     * 而一个「进行中」都没认出来。这里以倒计时为锚逐张读，与行判定互不
+     * 依赖 —— 行判错了也不影响这里的结论。
+     * 每拍用 Date.now() + 剩余 重算，平台延长/重置自然跟上。
+     * cardsNow 已在拍子开头读过一次（那次还要服务「没有行也先结案点击」），
+     * 这里直接复用，别重复扫全页。 */
+    for (var cd in cardDrawAt) {
+      if (Object.prototype.hasOwnProperty.call(cardDrawAt, cd)) delete cardDrawAt[cd];
+    }
+    runningCount = cardsNow.length;
+    if (cardsNow.length) {
+      anyRunning = true;
+      anyRunningNow = true;
+      var nowCard = Date.now();
+      for (var ci = 0; ci < cardsNow.length; ci++) {
+        cardDrawAt[cardsNow[ci].key] = nowCard + cardsNow[ci].remain;
+      }
+    }
+
     /* ---- 汇总本轮预计开始时刻：多行并行时取最早的那个 ---- */
     liveRunning = anyRunningNow;
+    /* 开奖收尾冷却的锚点：进行中/开奖中每一拍都在刷新；一旦消失，
+     * 从「最后见到它」起算 15 秒冷静期（AFTER_DRAW_LAG_MS，2026-11-02 用户定）。
+     * 不在 sayDraw / 卡片收走播报处另记时刻 —— 那两处有抽屉开关等前置条件，
+     * 这里是唯一每拍必经的汇总点，语义就是「最后一次确认它还在跑」。 */
+    if (anyRunningNow) lastRunningAt = Date.now();
     /* 停机监视中读到「进行中」= 平台自己缓过来了或别人续上了 ⇒ 立即回到 live，
      * 补发计数一并清零（平台在跑就不算失败）。doStop 已清 rowDrawAt，
      * 这里重读到的只会是新鲜倒计时，不会立刻又误判卡死。 */
@@ -1502,10 +2013,26 @@
       if (!rowDrawAt[rk]) continue;
       if (!earliest || rowDrawAt[rk] < earliest) earliest = rowDrawAt[rk];
     }
+    /* 卡片也算进汇总：多卡并行时圆钮显示**最早结束**的那一张（用户 23:17
+     * 原话「现在有两个福袋了，你能读取到最少时间的那一个吗」）。 */
+    for (var ck2 in cardDrawAt) {
+      if (!Object.prototype.hasOwnProperty.call(cardDrawAt, ck2)) continue;
+      if (!cardDrawAt[ck2]) continue;
+      if (!earliest || cardDrawAt[ck2] < earliest) earliest = cardDrawAt[ck2];
+    }
     if (earliest !== drawAt) {
       drawAt = earliest;
       paintBadge();
     }
+    /* 兜底读数跟着现场一起刷新（2026-11-03 00:20 真机「获取到倒计时，但是
+     * 一两秒后直接变回未开始」）：
+     * 旧版在「读到现场」那一拍就把 hold 清成 0，以为现场会一直在 —— 可是
+     * 插件一读到进行中就会替用户关抽屉，卡片随之消失，下一拍什么都不看见，
+     * 于是圆钮回「未开始」。
+     * 现在反过来：**现场读数就是最新真值**，每拍有 running 就把它记进 hold；
+     * 现场消失后由这份读数继续走秒，读到平台新数据再覆盖。
+     * 只有「明确否定」（手动刷新复核完仍无活动 / 停机）才清。 */
+    if (anyRunningNow && earliest && earliest > Date.now()) setHoldDraw(earliest);
 
     /* ---- 有进行中就替用户收抽屉（防双开闸的姊妹动作，2026-11-01 定稿）---- */
     maybeAutoClosePanel(anyRunningNow);
@@ -1547,6 +2074,11 @@
         skipRunningNote();
         return;
       }
+      /* 开奖收尾冷却：进行中/开奖中刚消失的 15 秒内不点「开始活动」，
+       * 等平台把开奖收尾做完再续（2026-11-02 用户定「不然容易冲突」）。
+       * lastRunningAt 为 0 = 本场从没见过进行中（含停机补发的常态），
+       * 冷却对补发时效无影响 —— 补发场景 lastRunningAt 早已久远。 */
+      if (lastRunningAt && Date.now() - lastRunningAt < AFTER_DRAW_LAG_MS) return;
       if (Date.now() < lockUntil) return;
       if (!clickable(pendingCand.link)) return;
       if (phase === 'halted') {
@@ -1565,8 +2097,16 @@
     /* ---- 无可点判定（只在自动执行下一轮模式下停机；halted 中保持已停） ---- */
     if (flags.auto && phase !== 'halted') {
       if (!anyPending && !anyRunning) {
-        noneStreak += 1;
-        if (noneStreak >= CONFIRM_TICKS) doStop('no-activity');
+        /* 开奖收尾冷静期内不累积：开奖后候选（新一轮「待开始」的行）
+         * 要等平台刷新列表才出现，列表在换页 ≠ 没有活动 —— 若照旧
+         * 2 拍就判「已无可用福袋」停机，冷却刚过本该点的那一轮就漏了。
+         * 冷静期清零重计，冷却后再按 CONFIRM_TICKS 正常判。 */
+        if (lastRunningAt && Date.now() - lastRunningAt < AFTER_DRAW_LAG_MS) {
+          noneStreak = 0;
+        } else {
+          noneStreak += 1;
+          if (noneStreak >= CONFIRM_TICKS) doStop('no-activity');
+        }
       } else {
         noneStreak = 0;
       }
@@ -1602,24 +2142,48 @@
     var t = text(row);
     if (RE_ABSOLUTE.test(t)) return 0;
 
+    /* labeled = 这个时长前面（或后面）带着明确的倒计时标签。
+     * 带标签的写法可以放心放宽上下限；裸 mm:ss 仍按老规矩严进
+     *（它可能是「开始时间 12:30」，不能随便当真）。 */
     var ms = 0;
-    var m = RE_MMSS_TAG.exec(t);
-    if (m) ms = mmssMs(m);
-    if (!ms) {
-      m = RE_MSS.exec(t);
-      if (m) ms = parseInt(m[1], 10) * 60000 + parseInt(m[2], 10) * 1000;
+    var labeled = false;
+    var m = RE_HMS_TAG.exec(t) || RE_HMS_TAIL.exec(t);
+    if (m) {
+      ms = (parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60 + parseInt(m[3], 10)) * 1000;
+      labeled = true;
+    }
+    if (!ms && (m = RE_MMSS_TAG.exec(t))) { ms = mmssMs(m); labeled = true; }
+    if (!ms && (m = RE_MSS.exec(t))) {
+      ms = parseInt(m[1], 10) * 60000 + parseInt(m[2], 10) * 1000;
+      labeled = true;
     }
     /* 卡片后置倒计时「04 分 58 秒 后结束」（2026-11-01 深夜）：标签在数字后面，
      * 上面的前置标签正则碰不到它。「后结束」本身就是运行词，无需再验。 */
-    if (!ms) {
-      m = RE_MSS_TAIL.exec(t);
-      if (m) ms = parseInt(m[1], 10) * 60000 + parseInt(m[2], 10) * 1000;
+    if (!ms && (m = RE_MSS_TAIL.exec(t))) {
+      ms = parseInt(m[1], 10) * 60000 + parseInt(m[2], 10) * 1000;
+      labeled = true;
     }
+    if (!ms && (m = RE_HM.exec(t))) {
+      ms = (parseInt(m[1], 10) * 3600 + parseInt(m[2], 10) * 60) * 1000;
+      labeled = true;
+    }
+    if (!ms && (m = RE_MIN_ONLY.exec(t))) { ms = parseInt(m[1], 10) * 60000; labeled = true; }
+    if (!ms && (m = RE_SEC_ONLY.exec(t))) { ms = parseInt(m[1], 10) * 1000; labeled = true; }
     if (!ms && RE_RUNNING.test(t)) {
       m = RE_MMSS.exec(t);
       if (m) ms = mmssMs(m);
     }
-    if (ms < 60000 || ms > 30 * 60000) return 0;
+    if (!ms) return 0;
+    if (labeled) {
+      /* 2026-11-02 深夜改口径（真机「读不到倒计时」）：
+       * 旧版一刀切 `ms < 60000 || ms > 30*60000` 直接 return 0 ——
+       *   · 剩余不足 1 分钟时倒计时**必然消失**，正好是最该看的收尾阶段；
+       *   · 福袋时长超过 30 分钟时整段都读不到。
+       * 带标签的写法本来就是倒计时，放宽到 5 秒 ~ 6 小时。 */
+      if (ms < 5000 || ms > 6 * 3600 * 1000) return 0;
+    } else if (ms < 60000 || ms > 30 * 60000) {
+      return 0;
+    }
     return Date.now() + ms;
   }
 
@@ -1638,10 +2202,12 @@
     return h > 0 ? (h + ':' + p(m) + ':' + p(ss)) : (p(m) + ':' + p(ss));
   }
 
-  function clickStart(cand) {
+  function clickStart(cand, manual) {
     lockUntil = Date.now() + CLICK_LOCK_MS;
     clicked[cand.key] = Date.now();
-    pendingClick = { key: cand.key, at: Date.now() };
+    /* manual：这次点击是人点的（手动发福袋）——校验失败时不停机，
+     * 只报一条并继续扫描（2026-11-02 晚「发了之后不检测倒计时」）。 */
+    pendingClick = { key: cand.key, at: Date.now(), manual: !!manual };
     phase = 'starting';
 
     note('点击开始活动', {
@@ -1654,6 +2220,68 @@
     paintPanel();
   }
 
+  /**
+   * 上一次「开始活动」点击的结案（2026-11-03 凌晨从 tick 里抽出来的）。
+   *
+   * 为什么必须单独一个函数：原逻辑长在 tick 中段，前面有一道
+   * `if (!rows.length) return` —— 抽屉一关（或平台点完就收起）行数归零，
+   * 这段永远跑不到，pendingClick 就一直挂着。后果是连锁的：
+   *   ① phase 停在 starting，圆钮永远「未开始」；
+   *   ② 手动发福袋回「自动发福袋正在执行，等它完成再发」；
+   *   ③ 手动刷新也被同一条闸挡住 —— 人既不知道发没发上，也救不回来。
+   * 所以现在：**没有行也要能结案**，卡片也算证据（进行中卡片出现 =
+   * 这次点击生效了，抽屉收起也不影响）。
+   *
+   * 返回：
+   *   'ok'   —— 读到「进行中」，点击确认成功（继续走本拍扫描）
+   *   'fail' —— 超时仍未读到，已结案（调用方按原逻辑结束本拍）
+   *   ''     —— 还在确认窗口内，什么都没发生
+   */
+  function settlePendingClick(rows, cards) {
+    if (!pendingClick) return '';
+    var byCard = !!(cards && cards.length);
+    var prow = null;
+    try { prow = findRowByKey(pendingClick.key); } catch (e0) { prow = null; }
+    var pst = prow ? statusOf(prow) : { kind: 'unknown' };
+
+    if (pst.kind === 'running' || byCard) {
+      pendingClick = null;
+      round += 1;
+      sayStart(false, null, resumePending ? '已补发' : '');
+      resumePending = false;
+      haltedAt = 0;              // 补发成功 ⇒ 停机监视结束
+      resumeCount = 0;
+      resumeLastAt = 0;
+      /* 开始时刻不在这里预设：交给逐行/逐卡扫描每拍校准。
+       * 读不到就是读不到，不编数字（2026-11-01 重新设计）。 */
+      phase = 'live';
+      paintPanel();
+      paintBadge();
+      /* 不关窗 —— 弹窗是用户自己开的，插件不动它。 */
+      return 'ok';
+    }
+
+    if (Date.now() - pendingClick.at <= VERIFY_MS) return '';
+
+    /* 2026-11-02 晚：手动发起的点击失败**不停机**。
+     * 纯监视模式（自动发福袋关着）下 doStop 会把扫描彻底停掉，
+     * 之后手动发了福袋也没人读倒计时。人的动作失败只该报一条。 */
+    var wasManual = !!pendingClick.manual;
+    pendingClick = null;
+    if (wasManual) {
+      phase = 'live';
+      clicked = {};                  // 允许下一次重新点
+      /* 文案要给下一步（2026-11-03 用户原话「他自己又不知道有没有成功发」）：
+       * 只说不确定没用，得告诉人怎么查 —— 抽屉已被平台收起时按一次手动刷新就行。 */
+      sayManual('没读到「进行中」，这次可能没发上；点「手动刷新」再确认一次');
+      paintPanel();
+      paintBadge();
+      return 'fail';
+    }
+    doStop('no-effect');
+    return 'fail';
+  }
+
   function findRowByKey(key) {
     if (!key) return null;
     var rows = scanRows();
@@ -1661,6 +2289,308 @@
       if (keyOf(rows[i]) === key) return rows[i];
     }
     return null;
+  }
+
+  /**
+   * 本拍可点候选：第一个「待开始 + 有开始链接 + 还没点过」的行。
+   * 主循环 tick 与手动发福袋共用这一个选取逻辑（单一来源，防两处漂移）。
+   * 与 tick 行循环同一条规则：异常行不参与候选竞争。
+   */
+  function findFirstPending(rows) {
+    if (!rows) return null;
+    for (var i = 0; i < rows.length; i++) {
+      var key = keyOf(rows[i]);
+      if (!key) continue;
+      var st = statusOf(rows[i]);
+      if (st.kind === 'error') continue;     // 异常行不参与候选（同 tick）
+      if (st.kind === 'pending' && st.link && !clicked[key]) {
+        return { row: rows[i], key: key, link: st.link };
+      }
+    }
+    return null;
+  }
+
+  /**
+   * 手动发福袋（2026-11-02 晚）：面板「手动发福袋」按钮的执行体。
+   *
+   * 流程：
+   *   ① 3 秒防抖；正在刷新/自动发福袋执行中 → 提示后让路；
+   *   ② 预检进行中（本拍结果 + 即时重扫）→ 有就不发、关掉开着的抽屉、
+   *      提示原话「已经有福袋在进行中了」；
+   *   ③ 没有 → 开抽屉（confirmBusy 占用，自动刷新让路）→ 等渲染 →
+   *      二次确认（预检到开抽屉之间平台可能刚出进行中）→
+   *      有「开始活动」候选就点（clickStart，进校验链路）；
+   *      没有 → 提示「没有可发的福袋」。
+   * 不查开播判据（手动口径：人点了就是要现在做，同手动刷新）；
+   * 不查「自动发福袋」开关（手动动作，auto 关着也能发这一轮）。
+   */
+  function manualStart() {
+    var now = Date.now();
+    if (now - manualStartAt < 3000) return;
+    manualStartAt = now;
+    ensureScanning();                // 扫描停了就先救回来，否则发完没人读
+    if (confirmBusy) { sayManual('正在刷新中，请稍候'); return; }
+    if (phase === 'starting' || pendingClick) {
+      /* 2026-11-03 凌晨：先结案再拦（同 maybeConfirm 的理由）。
+       * 真机原话：「重新点手动发福袋，就提示等他结束再发，但是他自己又
+       * 不知道有没有成功发」—— 确认窗口早过了却永远挂着，人只能干等。 */
+      try { settlePendingClick(scanRows(), scanRunningCards()); } catch (eS2) { /* 同上 */ }
+      if (phase === 'starting' || pendingClick) {
+        var waitS = Math.ceil(Math.max(pendingClick ? (VERIFY_MS - (Date.now() - pendingClick.at)) : 0, 900) / 1000);
+        sayManual('上一轮还在确认结果，' + waitS + ' 秒后再点；想立刻知道结果就点「手动刷新」');
+        return;
+      }
+    }
+    /* 预检三道（2026-11-03 00:15 真机「刷新后无视进行中的福袋直接发」）：
+     *   ① liveRunning —— 本拍缓存；
+     *   ② holdDrawAt 未到期 —— 刷新前读到、还没结束的那个福袋。它存在
+     *      sessionStorage 里，跨页面重载仍然有效，是刷新场景唯一救得回来
+     *      的一条证据（平台上的福袋不会因为刷新就消失）；
+     *   ③ forceRunningNow() —— 按同一套扫描即时重判。
+     * 任一说「有」就不发：宁可这次发不出去（人会再点一次），
+     * 也不能多发一个（平台照发奖，用户直接亏钱）。 */
+    if (liveRunning || (holdDrawAt && holdDrawAt > now) || forceRunningNow()) {
+      closeDrawerForManualStart();
+      sayManual('已经有福袋在进行中了');
+      return;
+    }
+    /* 抽屉已经开着（用户自己开的）：眼前的行就是操作现场 —— 直接扫行干活，
+     * 不再点「超级福袋」入口（2026-11-02 晚审评修复：bagEntry 的设计前提是
+     * 「只在抽屉关闭时调用」，开着时入口被遮罩挡着点不到、抽屉标题还会掺和
+     * 匹配，白点一次还会误报「没找到福袋抽屉入口」）。判断口径与手动刷新
+     * 同源（panelInfo().open）。 */
+    if (panelInfo().open) {
+      manualStartInPlace();
+      return;
+    }
+    var entry = bagEntry();
+    if (!entry) { sayManual('没找到福袋抽屉入口'); return; }
+    confirmBusy = true;
+    openedByUs = true;
+    manualStartBusy = true;
+    /* 从现在起到读完关掉，自动刷新一律让路（与确认节拍同一套余量） */
+    try {
+      window.__dycBagBusyUntil = now + CONFIRM_OPEN_WAIT + CONFIRM_READ_WAIT + 900;
+      window.__dycBagPanelOpen = true;
+    } catch (e0) {}
+    try { fireClickOnly(entry); } catch (e1) {}
+    setTimeout(function () {
+      /* 2026-11-02 晚修「已经有一个福袋了还发下一个」：
+       * 原来只读一次（开抽屉后 1.6 秒）——平台渲染慢一点就读到空页面，
+       * 空页面被判成「没有进行中」，于是找到待开始行就发了。
+       * 现在：轮询等行出现（最多 MANUAL_START_SCAN_MS），
+       *       读不到行 + 页面上却有「进行中活动」字样 = 识别对不上 → 也按有进行中处理；
+       *       连字样都没有 → 读不到就不动，不发。
+       * 2026-11-03 00:15 又加一道 startPrecheck（见下）：读到行 ≠ 数据已回全。 */
+      readBagRowsAsync(function (r) {
+        try {
+          if (manualStartBlocked(r)) {
+            closeBagPanel();
+            finishManualStart('已经有福袋在进行中了');
+            return;
+          }
+          if (!r.rows.length) {
+            /* 开抽屉后一行都没渲染出来：读不到就不动（不猜）。 */
+            closeBagPanel();
+            finishManualStart('没有可发的福袋');
+            return;
+          }
+          startPrecheck(r.rows, function (pc) {
+            var said = '';
+            try {
+              if (pc.verdict === 'running') {
+                closeBagPanel();
+                said = '已经有福袋在进行中了';
+              } else {
+                var cand = findFirstPending(pc.rows);
+                if (cand) {
+                  clickStart(cand, true);
+                  said = '已点「开始活动」，等平台确认';
+                } else {
+                  closeBagPanel();
+                  said = '没有可发的福袋';
+                }
+              }
+            } catch (e3) {
+              try { closeBagPanel(); } catch (e4) {}
+              said = '手动发福袋没成功，稍后再试';
+            }
+            finishManualStart(said);
+          });
+        } catch (e2) {
+          try { closeBagPanel(); } catch (e3) {}
+          finishManualStart('手动发福袋没成功，稍后再试');
+        }
+      });
+    }, CONFIRM_OPEN_WAIT + CONFIRM_READ_WAIT);
+  }
+
+  /**
+   * 手动发福袋 · 抽屉已开着时的就地执行体（2026-11-02 晚审评修复）：
+   * 不点入口、不重开、不占用「开抽屉」的等待窗 —— 眼前的行直接当成
+   * 扫描现场。关闭语义与既有定稿一致：
+   *   · 有进行中 → 关浮层（用户口径「有的话就不发并且关闭浮层」）；
+   *   · 发成功/无候选 → **用户自己开的抽屉不关**（红线：用户开着的绝不关，
+   *     与手动刷新「抽屉已开着就用眼前读数、不重开」同源）。
+   */
+  function manualStartInPlace() {
+    /* 与开抽屉路径共用同一套「轮询等行 + 字样兜底 + 否定复核」判据
+     * （2026-11-02 晚 / 2026-11-03 00:15）：用户刚点开抽屉时行也可能还没
+     * 渲染，同步单读同样会误判。 */
+    confirmBusy = true;              // 复核这一拍别让自动节拍插进来
+    readBagRowsAsync(function (r) {
+      try {
+        if (manualStartBlocked(r)) {
+          forceClosePanel();
+          markBagBusy(900);
+          finishManualStart('已经有福袋在进行中了', '（抽屉已开，未重复点入口）');
+          return;
+        }
+        if (!r.rows.length) {
+          finishManualStart('没有可发的福袋', '（抽屉已开，未重复点入口）');   // 读不到就不动
+          return;
+        }
+        startPrecheck(r.rows, function (pc) {
+          var said = '';
+          try {
+            if (pc.verdict === 'running') {
+              forceClosePanel();
+              markBagBusy(900);
+              said = '已经有福袋在进行中了';
+            } else {
+              var cand = findFirstPending(pc.rows);
+              if (cand) {
+                clickStart(cand, true);
+                said = '已点「开始活动」，等平台确认';
+              } else {
+                said = '没有可发的福袋';
+              }
+            }
+          } catch (e) {
+            said = '手动发福袋没成功，稍后再试';
+          }
+          finishManualStart(said, '（抽屉已开，未重复点入口）');
+        });
+      } catch (e) {
+        finishManualStart('手动发福袋没成功，稍后再试', '（抽屉已开，未重复点入口）');
+      }
+    });
+  }
+
+  /** 手动发福袋的统一收尾：放锁、播报、刷圆钮/面板。 */
+  function finishManualStart(said, detail) {
+    confirmBusy = false;
+    manualStartBusy = false;
+    markBagBusy(600);                // 关闭动画/点击余量，之后按真实状态走
+    confirmStat = '手动发福袋｜' + said;
+    note('手动发福袋', { detail: detail ? (said + detail) : said });
+    sayManual(said);
+    paintBadge();
+    paintPanel();
+  }
+
+  /**
+   * 发福袋前的「多看几眼」（2026-11-03 00:15 真机，用户原话「太过草率了，
+   * 是恶性的行为」）：刷新网页后第一次直接点「手动发福袋」，会无视正在
+   * 跑的福袋直接再发一个。
+   *
+   * 根因：readBagRowsAsync 一读到表格行就回调，而页面重载后平台数据是
+   * **表格先回、进行中卡片后回** —— 行里找不到「进行中」就被当成「没有」，
+   * 待开始行随手被点掉，于是多出一个福袋。
+   *
+   * 口径与手动刷新一致：说「有」立刻拦；说「没有」要看够时间。
+   * 在 START_PRECHECK_MS 窗口里每 300ms 扫一次，任一拍见到卡片 / running 行
+   * / 缓存说在跑 → 立刻按「有」拦下；全程干净才回「没有」。
+   * （更早一层还有 holdDrawAt 与 forceRunningNow 两道预检，见 manualStart。）
+   */
+  function startPrecheck(rows0, cb) {
+    var deadline = Date.now() + START_PRECHECK_MS;
+    var lastRows = rows0 || [];
+    (function poll() {
+      var cards = [];
+      try { cards = scanRunningCards(); } catch (e) { cards = []; }
+      var rows = [];
+      try { rows = scanRows(); } catch (e2) { rows = []; }
+      if (rows.length) lastRows = rows;
+      var runningRow = false;
+      for (var i = 0; i < rows.length; i++) {
+        try { if (statusOf(rows[i]).kind === 'running') { runningRow = true; break; } } catch (e3) {}
+      }
+      if (cards.length || runningRow || liveRunning) {
+        cb({ verdict: 'running', rows: lastRows });
+        return;
+      }
+      if (Date.now() >= deadline) {
+        cb({ verdict: 'none', rows: lastRows });
+        return;
+      }
+      setTimeout(poll, PANEL_READ_POLL_MS);
+    })();
+  }
+
+  /**
+   * 手动发福袋的两道防误发判据（2026-11-02 晚，用户真机「明明有一个在跑还发了下一个」）：
+   *   ① 扫到的行里有「进行中」→ 拦；
+   *   ② 一行都没扫到、但整页文本里有「进行中活动」→ 识别对不上（不是真没有）→ 也拦。
+   * 只有「扫到行且行里没有进行中」才放行。
+   */
+  function manualStartBlocked(r) {
+    if (liveRunning) return true;                    // 本拍缓存说在跑
+    /* 卡片逐张读（2026-11-02 深夜真机「本身已有一个福袋，点手动发福袋
+     * 依然发出了第二个」）：行扫描把多卡容器认成一条 drawn 行时，行里
+     * 找不到 running，但每张卡自己的倒计时读得到 —— 有卡就不许发。 */
+    if (scanRunningCards().length) return true;
+    var rows = r.rows || [];
+    for (var i = 0; i < rows.length; i++) {
+      try { if (statusOf(rows[i]).kind === 'running') return true; } catch (e) {}
+    }
+    return !rows.length && !!r.hasCardText;          // 读不到行却有字样 → 保守拦截
+  }
+
+  /**
+   * 开抽屉后的读数等待（2026-11-02 晚）：每 300ms 扫一次，直到扫到行
+   * 或超时（MANUAL_START_SCAN_MS）。超时也回一次结果（rows 空），
+   * 由调用方按「读不到就不动」处理。
+   * hasCardText = 整页文本里有没有「进行中活动」——用来区分
+   * 「平台没渲染」和「渲染了但我们认不出」。
+   */
+  function readBagRowsAsync(cb) {
+    var deadline = Date.now() + MANUAL_START_SCAN_MS;
+    (function poll() {
+      var rows = [];
+      try { rows = scanRows(); } catch (e) { rows = []; }
+      if (rows.length) { cb({ rows: rows, hasCardText: hasCardTextNow(), timedOut: false }); return; }
+      if (Date.now() >= deadline) { cb({ rows: [], hasCardText: hasCardTextNow(), timedOut: true }); return; }
+      setTimeout(poll, 300);
+    })();
+  }
+
+  /** 整页文本里有没有「进行中活动」（只看有没有，不做识别） */
+  function hasCardTextNow() {
+    try {
+      var s = (document.body && document.body.textContent) || '';
+      return s.indexOf('进行中活动') >= 0;
+    } catch (e) { return false; }
+  }
+
+  /**
+   * 抽屉里有没有「一条活动都没有」的空态文案。
+   * 用途：区分「真的没有福袋可看」（空态文案在，说没有是对的）和
+   * 「内容还没渲染出来」（什么都没有，只能说没读到）。
+   */
+  function hasEmptyBagTextNow() {
+    try {
+      var s = (document.body && document.body.textContent) || '';
+      return s.indexOf('没有进行中的福袋活动') >= 0;
+    } catch (e) { return false; }
+  }
+
+  /** 有进行中就不发时的收尾：开着的抽屉替用户关掉（挡视线），没开就不动。 */
+  function closeDrawerForManualStart() {
+    if (confirmBusy || openedByUs) return;   // 我们确认节拍刚开的 1.2 秒内自会关
+    if (!isDrawerOpenFast()) return;
+    forceClosePanel();
+    markBagBusy(900);
   }
 
   /** 点击序列（与 campaign-channel-tick / auto-loop-lecture 同一套） */
@@ -1688,28 +2618,38 @@
 
   var confirmClickedAt = 0;
 
+  /**
+   * 二次确认框（平台可能要求再点一下「确定」/「确认开始」）。
+   *
+   * 2026-11-02 晚修「手动发了福袋却没生效」：原来只在点击后 350ms 查一次，
+   * 平台弹框稍慢（真机流水里第一次点击就没记录到「点了确认框」）就漏点，
+   * 活动没真正开始，3 秒后又被判「点了没反应」停机。
+   * 现在按 350 / 1200 / 2500 / 4000ms 重试四次，点到即止（confirmClickedAt
+   * 记 1.5 秒防重，多次 fireClick 不会连点同一个框）。
+   */
   function tryClickConfirmOnce() {
-    var now = Date.now();
-    if (now - confirmClickedAt < 1500) return;
-    setTimeout(function () {
-      var dlg = null;
-      var ds = document.querySelectorAll('[role="dialog"], [role="alertdialog"]');
-      for (var i = 0; i < ds.length; i++) {
-        if (hasBox(ds[i]) && !isExtNode(ds[i])) { dlg = ds[i]; break; }
-      }
-      if (!dlg) return;
-      var texts = ['确定', '确认开始', '确认'];
-      for (var k = 0; k < texts.length; k++) {
-        var leaves = findExactLeaf(dlg, texts[k], 3);
-        for (var j = 0; j < leaves.length; j++) {
-          if (!clickable(leaves[j])) continue;
-          confirmClickedAt = Date.now();
-          note('点了确认框', { text: texts[k] });
-          fireClickOnly(leaves[j]);
-          return;
+    [350, 1200, 2500, 4000].forEach(function (delay) {
+      setTimeout(function () {
+        if (Date.now() - confirmClickedAt < 1500) return;   // 已经点过了
+        var dlg = null;
+        var ds = document.querySelectorAll('[role="dialog"], [role="alertdialog"]');
+        for (var i = 0; i < ds.length; i++) {
+          if (hasBox(ds[i]) && !isExtNode(ds[i])) { dlg = ds[i]; break; }
         }
-      }
-    }, 350);
+        if (!dlg) return;
+        var texts = ['确定', '确认开始', '确认'];
+        for (var k = 0; k < texts.length; k++) {
+          var leaves = findExactLeaf(dlg, texts[k], 3);
+          for (var j = 0; j < leaves.length; j++) {
+            if (!clickable(leaves[j])) continue;
+            confirmClickedAt = Date.now();
+            note('点了确认框', { text: texts[k] });
+            fireClickOnly(leaves[j]);
+            return;
+          }
+        }
+      }, delay);
+    });
   }
 
   /**
@@ -1772,6 +2712,18 @@
     paintPanel();
   }
 
+  /** 读数播报（「有进行中的福袋，剩 8 分 36 秒」这类正常态）：
+   *  2026-11-03 用户定 —— **绿点**（有福袋在跑就是正常），
+   *  但**不进消息盒子**：它只是当下读数，每点一次手动刷新就多一条，
+   *  盒子留给「结果」与「异常」，读数堆在里面只会把要紧的挤下去。
+   *  注意：绿点＝success 类型，而 success 默认是入盒的（见 setStatus
+   *  inHistory），所以这里必须显式 keepHistory:false —— 删了这一行就回退。 */
+  function sayReading(text) {
+    if (!canSay()) return;
+    setStatus(text, 'success', { source: SOURCE, keepHistory: false });
+    paintPanel();
+  }
+
   function sayCardDone(name) {
     if (!canSay()) return;
     setStatus((name || '福袋活动') + ' 这一轮已结束', 'info', {
@@ -1822,6 +2774,35 @@
     bindUserTakeover();
     tickTimer = setInterval(tick, TICK_MS);
     tick();
+  }
+
+  /**
+   * 手动操作前先确保扫描在跑（2026-11-02 晚）。
+   *
+   * 真机踩坑：纯监视模式（自动发福袋关着）下，手动点击校验失败会走
+   * doStop('no-effect') —— keepWatch=false ⇒ stopLoop() 把定时器清掉、
+   * phase='stopped'，tick 开头直接 return。之后用户再点「手动发福袋」，
+   * 点完没人校验、没人读倒计时，圆钮永远「未开始」。
+   *
+   * 所以任何手动动作（手动发福袋 / 手动刷新）之前先调这里：
+   *   · 定时器没挂 → 把 stopped/starting 拉回 live、作废卡住的校验与旧点击
+   *     记录，再 startLoop()；
+   *   · 定时器在跑但 phase 卡在 stopped → 直接拉回 live。
+   * 只读的看护（总闸关着）不唤醒：flags.watch 为假时什么也不做。
+   */
+  function ensureScanning() {
+    if (!flags.watch) return;
+    if (!tickTimer) {
+      if (phase === 'stopped' || phase === 'starting') phase = 'live';
+      pendingClick = null;       // 卡死的校验作废，否则首拍会立刻判失败
+      clicked = {};              // 旧点击记录作废，允许重新点同一行
+      startLoop();
+      note('恢复扫描', { detail: '手动操作前把已停的扫描重新挂上' });
+      paintPanel();
+      paintBadge();
+      return;
+    }
+    if (phase === 'stopped') phase = 'live';
   }
 
   /* ==========================================================
@@ -1888,6 +2869,7 @@
     phase = keepWatch ? 'halted' : 'stopped';
     lastReason = reason;
     pendingClick = null;
+    setHoldDraw(0);            // 停机/停下就别再拿旧读数走秒了
     drawAt = 0;
     liveRunning = false;
     rowDrawAt = {};
@@ -1968,6 +2950,9 @@
       prevGate = !(f && f[FLAG_GATE] === false);
       flags.watch = prevGate;
       flags.auto = prevGate && autoOn;
+      /* 刷新网页后把「上一轮读到还没到期」的读数接回来（见 holdDrawAt）：
+       * 平台上的福袋不会因为刷新就消失，插件也不该一刷新就失忆。 */
+      holdDrawAt = readHoldDraw();
       if (flags.watch) {
         phase = 'live';
         startBadge();
@@ -2043,30 +3028,106 @@
    * 现在的功能必须抽屉开着才读得到，用户关掉抽屉圆钮就显示「未开始」——
    * 要改成「关着也能看」，就得先知道页面上还有没有别的读数点。
    * 这里只读文本、不点任何东西，节点预算与深度都有限。
+   *
+   * 2026-11-02 晚扩（真机「已经上了福袋，圆钮还是未开始」）：
+   *   原来只认含「福袋」二字的叶子，卡片标题万一不带福袋字样就整条漏掉，
+   *   也看不出「进行中/后结束」这些状态词落在哪个容器里。现在两档：
+   *     ① 强相关词（福袋 / 管理超级福袋 / 开始活动 / 后结束 / 距结束）直接记；
+   *     ② 状态词（进行中 / 待开始 / 已结束 / 已开奖）只在**祖先含「福袋」**时记
+   *        —— 光记页面上满地的「进行中」没有意义，要能定位到福袋那块。
+   *   每条带上 tag / class 片段 / 尺寸 / 祖先摘要，用于判断它挂在哪一层、
+   *   是不是在某个隐藏容器里（尺寸 0x0 = 不可见）。
    */
   function pageClues() {
     var out = [];
-    var budget = 6000;
+    var budget = 9000;
     var nodes;
     try {
-      nodes = document.querySelectorAll('a, button, span, div, p, li, em, i');
+      nodes = document.querySelectorAll('a, button, span, div, p, li, em, i, b, strong');
     } catch (e) { return out; }
-    for (var i = 0; i < nodes.length && budget > 0 && out.length < 8; i++) {
+    for (var i = 0; i < nodes.length && budget > 0 && out.length < 20; i++) {
       budget--;
       var el = nodes[i];
       if (el.children && el.children.length) continue;   // 只看叶子，省开销
       if (isExtNode(el)) continue;
       var t = tight(text(el));
-      if (!t || t.length > 30) continue;
-      if (t.indexOf('福袋') < 0) continue;
-      var m = RE_MMSS.exec(t);
+      if (!t || t.length > 40) continue;
+      var strong = RE_CLUE.test(t);
+      var state = !strong && RE_CLUE_STATE.test(t);
+      if (!strong && !state) continue;
+      if (state && !ancestorHasBag(el, 3)) continue;     // 状态词要贴著福袋才算
+      var m = RE_MMSS_TAG.exec(t) || RE_MSS.exec(t) || RE_MSS_TAIL.exec(t) || RE_MMSS.exec(t);
+      var box = '?';
+      try {
+        var r = el.getBoundingClientRect();
+        box = r && (r.width || r.height)
+          ? (Math.round(r.width) + 'x' + Math.round(r.height) +
+             '@' + Math.round(r.left) + ',' + Math.round(r.top))
+          : '0x0';
+      } catch (e1) {}
       out.push({
         t: t,
         time: m ? (m[1] + ':' + m[2]) : '',
-        kind: RE_RUNNING.test(t) ? 'running' : (RE_DRAWN.test(t) ? 'drawn' : '')
+        kind: RE_RUNNING.test(t) ? 'running' : (RE_DRAWN.test(t) ? 'drawn' : (RE_PENDING.test(t) ? 'pending' : '')),
+        tag: String(el.tagName || '').toLowerCase(),
+        cls: clampCls(el.className),
+        box: box,
+        anc: ancestorDigest(el, 3)
       });
     }
     return out;
+  }
+
+  /** 状态词是否「贴着福袋」：往上几层里有没有「福袋」字样 */
+  function ancestorHasBag(el, depth) {
+    var p = el;
+    for (var i = 0; i < depth && p; i++) {
+      p = p.parentElement;
+      if (!p || !p.textContent) continue;
+      if (p.textContent.length > 4000) return false;   // 顶层容器不算（整页都含）
+      if (p.textContent.indexOf('福袋') >= 0) return true;
+    }
+    return false;
+  }
+
+  /** 祖先摘要：tag.class 往上三层，用于在报告里定位容器 */
+  function ancestorDigest(el, depth) {
+    var seg = [];
+    var p = el;
+    for (var i = 0; i < depth && p && p.parentElement; i++) {
+      p = p.parentElement;
+      seg.push(String(p.tagName || '').toLowerCase() + (p.className ? '.' + clampCls(p.className) : ''));
+    }
+    return seg.join(' < ');
+  }
+
+  function clampCls(c) {
+    var s = String(c == null ? '' : c).trim().replace(/\s+/g, '.');
+    return s ? s.slice(0, 28) : '';
+  }
+
+  /**
+   * 全页文本里有没有福袋的关键串（2026-11-02 晚 诊断补强）。
+   * 与 pageClues 互补：clues 只扫可见叶子，这里问的是「整页文本里到底有没有」
+   * —— 有但 clues 扫不到 = 在不可见/Shadow 容器里；整页都没有 = 平台确实
+   * 没往页面上渲染（抽屉关着），只能开抽屉读。
+   * 只读一次 body.textContent（几百万字），indexOf 几次，开销可忽略。
+   */
+  function pageTextBrief() {
+    var s = '';
+    try { s = (document.body && document.body.textContent) || ''; } catch (e) { return null; }
+    if (!s) return null;
+    return {
+      len: s.length,
+      card: s.indexOf('进行中活动') >= 0,
+      tail: s.indexOf('后结束') >= 0,
+      start: s.indexOf('开始活动') >= 0,
+      bag: s.indexOf('福袋') >= 0,
+      /* 平台空态文案（2026-11-02 深夜补）：手动刷新报「没有」的直接依据
+       * 就是它 —— 真机上页面重载后先渲染空态、数据回包后才换成卡片，
+       * 首读命中空态就会误判。定位时先看这一项。 */
+      empty: s.indexOf('没有进行中的福袋活动') >= 0
+    };
   }
 
   /* ==========================================================
@@ -2481,6 +3542,13 @@
       '.tk{position:relative;height:28px;margin:12px 0 0;cursor:pointer;touch-action:none;outline:none}',
       '.rail{position:absolute;left:0;right:0;top:12px;height:8px;border-radius:4px;background:#f0ede8;',
       'box-shadow:inset 0 1px 2px rgba(31,35,41,.07)}',
+      /* 圆钮/刻度的定位域：轨道撑满整宽（.rail 是它自己的坐标系），
+       * 但圆钮圆心必须**内缩一个半径**，否则端点的圆心压在轨道极点上、
+       * 圆钮有半个身子伸到轨道外（2026-11-02 用户截图指出「最左最右轻微
+       * 出界」）。这里把刻度与圆钮统一装进 .in，left/right 各让 SLIDE_INSET，
+       * 于是 p=0 / p=100 时圆钮外沿正好与轨道端点相切。
+       * 填充条仍从轨道最左端起（起点 0），宽度靠 calc 算到圆钮圆心。 */
+      '.in{position:absolute;left:10px;right:10px;top:0;bottom:0}',
       '.fill{position:absolute;left:0;top:12px;height:8px;border-radius:4px;',
       'background:linear-gradient(90deg,#ff5a33,#ff005c);box-shadow:inset 0 1px 0 rgba(255,255,255,.35);pointer-events:none}',
       /* 每 1 分钟一根细刻度；推荐值（5）那根加粗上色 —— 用户要的「刻度线」 */
@@ -2497,7 +3565,9 @@
       'margin:-2.5px 0 0 -2.5px;border-radius:50%;background:#ff3a4a}',
       '.tk:hover .thumb,.tk.on .thumb{width:20px;height:20px;margin:-10px 0 0 -10px;',
       'box-shadow:0 2px 8px rgba(255,58,74,.42),0 0 0 5px rgba(255,58,74,.16)}',
-      '.labs{position:relative;height:13px;color:#9aa1ab;font-size:10px;margin-top:2px}',
+      /* 标签与刻度严格对齐：.labs 也缩进同一个 SLIDE_INSET，否则「3」「10」
+       * 会贴面板边缘、跟轨道上的刻度差 10px。 */
+      '.labs{position:relative;height:13px;color:#9aa1ab;font-size:10px;margin:2px 10px 0}',
       '.labs span{position:absolute;transform:translateX(-50%);white-space:nowrap}',
       '.labs span.f{transform:translateX(0)}',
       '.labs span.l{transform:translateX(-100%)}',
@@ -2728,9 +3798,13 @@
         mh += '<div class="mk' + (mv === CHECK_REC ? ' rec' : '') + '" style="left:' + pctOf(mv) + '%"></div>';
       }
       marks.innerHTML = mh;                       // 一次写入，不逐个 appendChild
-      tk.appendChild(marks);
+      /* 刻度与圆钮装进内缩域 .in（见 CSS 注释）：两者的 left:% 都相对 .in
+       * 的宽度算，圆心因此被限制在轨道内缩一个半径的区间里。 */
+      var tin = document.createElement('div'); tin.className = 'in';
+      tin.appendChild(marks);
       var thumb = document.createElement('div'); thumb.className = 'thumb';
-      tk.appendChild(thumb);
+      tin.appendChild(thumb);
+      tk.appendChild(tin);
       box.appendChild(tk);
 
       var labs = document.createElement('div'); labs.className = 'labs';
@@ -2793,13 +3867,34 @@
       fbtn.setAttribute('aria-label', '手动刷新：重新打开抽屉抓一次进行中的活动，读完自动关上。');
       fbtn.addEventListener('click', function (e) {
         e.stopPropagation();
+        ensureScanning();          // 扫描停了先救回来（2026-11-02 晚）
         maybeConfirm(true);
         paintPanel();
       });
       frow.appendChild(fbtn);
       box.appendChild(frow);
 
-      pRefs = { val: v1, unit: u1, min: v2, tk: tk, fill: fill, thumb: thumb, sw: asw, fbtn: fbtn };
+      /* ── 「手动发福袋」按钮行（2026-11-02 晚 用户原话）──
+       * 「加一个按钮，手动发福袋，放在手动刷新的下面。但是发福袋是要先
+       * 确认有没有福袋在进行中，有的话就不发并且关闭浮层。弹出提示
+       * 【已经有福袋在进行中了】」：预检有进行中 → 不发 + 关抽屉 + 原话
+       * 提示；没有才开抽屉点一次「开始活动」（与自动发福袋同一条校验
+       * 链路）。发送中禁用防连点。 */
+      var mrow = document.createElement('div'); mrow.className = 'frow';
+      var mbtn = document.createElement('button');
+      mbtn.type = 'button';
+      mbtn.className = 'fbtn';
+      mbtn.textContent = '手动发福袋';
+      mbtn.setAttribute('aria-label', '手动发福袋：先确认没有进行中的福袋，然后开抽屉点一次「开始活动」；有进行中就不发并关掉抽屉。');
+      mbtn.addEventListener('click', function (e) {
+        e.stopPropagation();
+        manualStart();
+        paintPanel();
+      });
+      mrow.appendChild(mbtn);
+      box.appendChild(mrow);
+
+      pRefs = { val: v1, unit: u1, min: v2, tk: tk, fill: fill, thumb: thumb, sw: asw, fbtn: fbtn, mbtn: mbtn };
       pRefs.sw.classList.toggle('on', autoOn);
       slide.cur = slide.target = checkMin;
       paintSlide();
@@ -2814,10 +3909,17 @@
     }
     if (pRefs.val.textContent !== txt) pRefs.val.textContent = txt;
     pRefs.unit.style.display = drawAt ? '' : 'none';
-    /* 手动刷新按钮（2026-11-02 凌晨）：忙时禁用换文案，闲时恢复 */
+    /* 手动刷新按钮（2026-11-02 凌晨）：忙时禁用换文案，闲时恢复。
+     * 手动发福袋（2026-11-02 晚）同款：发送中禁用；手动刷新被发福袋
+     * 占用期间也一并显示忙（抽屉正被用，两个动作互斥）。 */
     var ft = confirmBusy ? '刷新中…' : '手动刷新';
     if (pRefs.fbtn.textContent !== ft) pRefs.fbtn.textContent = ft;
     if (pRefs.fbtn.disabled !== confirmBusy) pRefs.fbtn.disabled = confirmBusy;
+    var mt = manualStartBusy ? '发送中…' : (confirmBusy ? '刷新中…' : '手动发福袋');
+    if (pRefs.mbtn.textContent !== mt) pRefs.mbtn.textContent = mt;
+    if (pRefs.mbtn.disabled !== (confirmBusy || manualStartBusy)) {
+      pRefs.mbtn.disabled = confirmBusy || manualStartBusy;
+    }
 
     if (!sliderDrag) {
       var mtxt = checkMin + ' 分钟';
@@ -2861,7 +3963,12 @@
   function paintSlide() {
     if (!pRefs) return;
     var p = pctOf(slide.cur);
-    pRefs.fill.style.width = p + '%';
+    /* 填充条在轨道全宽坐标系里：起点固定轨道最左端，终点 = 圆钮圆心。
+     * 圆钮圆心在 .in 内的位置是 (100% - 2R) * p，绝对坐标再加一个 R，
+     * 所以宽度 = R + (100% - 2R) * (p/100)。p=0 时那 R 段被圆钮自己盖住，
+     * 看不出来；p=100 时正好停在右端点圆心。 */
+    pRefs.fill.style.width = 'calc(' + SLIDE_INSET + 'px + (100% - '
+      + (SLIDE_INSET * 2) + 'px) * ' + (p / 100) + ')';
     pRefs.thumb.style.left = p + '%';
     if (pRefs.tk) pRefs.tk.setAttribute('aria-valuenow', String(Math.round(slide.cur)));
     /* 拖动中数字跟着走（用户截图里「6 分钟」那一行就是实时值）——
@@ -2933,8 +4040,12 @@
     function valueAt(clientX) {
       var r = slide.rect;
       if (!r || !r.width) return slide.target;
-      var x = Math.min(Math.max(clientX - r.left, 0), r.width);
-      return CHECK_MIN + (x / r.width) * (CHECK_MAX - CHECK_MIN);
+      /* 圆钮圆心的行程不是轨道全宽，而是两端各内缩一个 SLIDE_INSET ——
+       * 不这么算的话，指针压到轨道极左/极右时值已经到头、圆心却还差
+       * 10px 没跟上，「拖到头」和「看到的顶端」对不上。 */
+      var usable = Math.max(1, r.width - SLIDE_INSET * 2);
+      var x = Math.min(Math.max(clientX - r.left - SLIDE_INSET, 0), usable);
+      return CHECK_MIN + (x / usable) * (CHECK_MAX - CHECK_MIN);
     }
 
     function onMove(e) {
@@ -3104,6 +4215,18 @@
         })(),
         drawIn: drawAt ? Math.max(0, drawAt - Date.now()) : 0,
         badge: badgeText(),
+        /* 多卡并行时的观测口（自测与真机排查都用得到）：
+         * 认出的张数 + 每张剩余毫秒（升序，第一条 = 最早结束）。 */
+        runningCards: runningCount,
+        cardLeft: (function () {
+          var o = [];
+          for (var ck in cardDrawAt) {
+            if (!Object.prototype.hasOwnProperty.call(cardDrawAt, ck)) continue;
+            o.push(Math.max(0, cardDrawAt[ck] - Date.now()));
+          }
+          o.sort(function (a, b) { return a - b; });
+          return o;
+        })(),
         live: liveState,
         check: {
           min: checkMin,
@@ -3123,12 +4246,24 @@
         panel: info.open,
         by: info.by || '(没认出抽屉)',
         searchPh: info.searchPh,
+        drawerCls: info.drawerCls || '',
+        drawerBox: info.drawerBox || '',
         startLinks: info.startLinks,
         live: liveState,
         checkMin: checkMin,
         rows: rows.length,
         detail: rows.slice(0, 10).map(rowDigest),
+        /* 逐张读到的进行中卡片（2026-11-02 深夜）：名称 + 剩余秒。
+         * 行扫描认错时，这里能直接看出「其实有几张卡在跑」。 */
+        cards: (function () {
+          try {
+            return scanRunningCards().map(function (c) {
+              return { name: c.name, left: Math.round(c.remain / 1000) };
+            });
+          } catch (eC) { return []; }
+        })(),
         clues: pageClues(),
+        pageText: pageTextBrief(),
         ring: ring.slice(-12)
       };
     },
@@ -3152,14 +4287,19 @@
     expireDrawForTest: function () {
       /* 模拟「倒计时走完」要两层一起拨：rowDrawAt（逐行）+ drawAt（汇总）。
        * 真实中二者天然同步到期；只拨底层的话，tick 里 maybeConfirm 读到的
-       * 汇总值还是未来，会被「卡片在读」分支顺延 —— 用例就测不到真实链路。 */
+       * 汇总值还是未来，会被「卡片在读」分支顺延 —— 用例就测不到真实链路。
+       * hold 也要一起拨掉：真实世界到点后卡片就被收走，那份兜底读数跟着过期；
+       * 测试里时间没真的走，不拨它就会一直撑在「进行中」。 */
       for (var k in rowDrawAt) {
         if (Object.prototype.hasOwnProperty.call(rowDrawAt, k)) rowDrawAt[k] = Date.now() - 10000;
       }
       if (drawAt) drawAt = Date.now() - 10000;
+      setHoldDraw(0);
     },
     confirmNow: function () { nextConfirmAt = 0; maybeConfirm(); },
-    manualRefresh: function () { maybeConfirm(true); },
+    manualRefresh: function () { ensureScanning(); maybeConfirm(true); },
+    manualStart: manualStart,
+    manualStartState: function () { return { busy: manualStartBusy }; },
     liveState: function () { return liveState; },
     tick: tick,
     setTimingForTest: function (o) {
@@ -3167,6 +4307,9 @@
       if (typeof o.verify === 'number') VERIFY_MS = o.verify;
       if (typeof o.quiet === 'number') QUIET_LIMIT_MS = o.quiet;
       if (typeof o.resume === 'number') RESUME_COOLDOWN_MS = o.resume;
+      if (typeof o.afterDrawLag === 'number') AFTER_DRAW_LAG_MS = o.afterDrawLag;
+      if (typeof o.scanMs === 'number') MANUAL_START_SCAN_MS = o.scanMs;
+      if (typeof o.panelReadMs === 'number') PANEL_READ_MAX_MS = o.panelReadMs;
       // 改锁时顺便清掉已经生效的那一把 —— 否则上一拍留下的 2 秒锁
       // 会把紧接着的用例挡在外面，看起来像「功能不点」
       if (typeof o.lock === 'number') { CLICK_LOCK_MS = o.lock; lockUntil = 0; }

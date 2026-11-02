@@ -254,7 +254,10 @@ function remove(env, id) {
   ok(drew[0].standalone === true, '⑥ 带 count 必须 standalone（否则会被合并掉）');
   ok(drew[0].histKey === 'bagDraw', '⑥ 开奖消息用固定 histKey 原位刷新');
 
-  /* ---------- ⑦ 开奖后续发下一轮：点的是同一活动 ---------- */
+  /* ---------- ⑦ 开奖后续发下一轮：点的是同一活动 ----------
+   * （开奖收尾 15 秒冷却不在这验 —— ㊴ 专验；这里把冷却归零，
+   *   保持「开奖后立即续发」的原始用例意图。） */
+  env.api.setTimingForTest({ afterDrawLag: 0 });
   setText(env, 'st1', '● 活动待开始');
   const td = env.doc.querySelector('#r1 td:last-child');
   if (td) {
@@ -868,6 +871,28 @@ function remove(env, id) {
   ok(clues.some(function (c) { return /福袋/.test(c.t) && c.time === '03:12'; }),
     '㊥⑦ 抽屉外的「福袋」读数被采集（诊断用，暂不参与判断）');
 
+  /* ㊥⑧ 探针加强（2026-11-02 晚 真机「已经上了福袋，圆钮还是未开始」）：
+   * ① 整页文本检查：clues 扫不到时能回答「页面里到底有没有」——
+   *    有 = 在不可见/Shadow 容器；没有 = 平台没渲染，只能开抽屉读；
+   * ② 线索带 tag / 尺寸 / 祖先，用来定位状态词挂在哪一层。 */
+  d = await bootDrawer(drawerHtml({ rows: ROW_RUNNING })
+    + '<div id="bar2"><span>超级福袋 开始活动</span></div>');
+  var pr8 = d.api.probe();
+  ok(pr8.pageText && pr8.pageText.bag === true && pr8.pageText.start === true,
+    '㊥⑧ 整页文本检查：能报「含福袋」「含开始活动」');
+  ok(pr8.pageText && pr8.pageText.card === false,
+    '㊥⑧ 整页文本检查：页面没有卡片时明确报 false（⇒ 只能开抽屉）');
+  var c8 = (pr8.clues || [])[0] || {};
+  ok(typeof c8.tag === 'string' && !!c8.box && !!c8.anc,
+    '㊥⑧ 线索带 tag / 尺寸 / 祖先（定位层级用）：' + JSON.stringify(c8).slice(0, 80));
+
+  /* ㊥⑨ 页面上真有「进行中活动」卡片时，整页文本检查要报 true */
+  d = await bootDrawer(drawerHtml({ rows: ROW_RUNNING })
+    + '<div id="bar3"><span>进行中活动</span><span>04 分 58 秒 后结束</span></div>');
+  var pr9 = d.api.probe();
+  ok(pr9.pageText && pr9.pageText.card === true && pr9.pageText.tail === true,
+    '㊥⑨ 卡片在页面上时：整页文本检查报「含进行中活动」「含后结束」');
+
   /* ============================================================
    * ㊦ 面板改版 + 确认节拍 + 开播判据（2026-11-01 05:0x 用户定）
    * ------------------------------------------------------------
@@ -904,10 +929,30 @@ function remove(env, id) {
     const win = dom.window;
     const doc = win.document;
     win.Element.prototype.getBoundingClientRect = function () {
+      /* display:none 的元素给 0 尺寸（2026-11-02 晚：㊸ 用例要模拟
+       * 「整页文本有字样、但元素不可见所以扫不成行」） */
+      if (this.style && this.style.display === 'none') {
+        return { width: 0, height: 0, top: 0, left: 0, right: 0, bottom: 0, x: 0, y: 0, toJSON: function () {} };
+      }
+      /* 显式写死高度的元素按写死的来（2026-11-02 深夜：㊻④ 要模拟真机
+       * 那种 895×833 的整块容器，验证「超高容器不当行」的守卫） */
+      const hp = this.style && this.style.height;
+      if (hp && /^\d+px$/.test(hp)) {
+        const h = parseInt(hp, 10);
+        return { width: 800, height: h, top: 100, left: 0, right: 800, bottom: 100 + h, x: 0, y: 100, toJSON: function () {} };
+      }
       return { width: 250, height: 180, top: 300, left: 900, right: 1150, bottom: 480, x: 900, y: 300, toJSON: function () {} };
     };
     const messages = [];
-    win.setStatus = function (t, ty, o) { o = o || {}; messages.push({ text: t, type: ty || 'info', source: o.source || '', count: o.count || '' }); };
+    win.setStatus = function (t, ty, o) {
+      o = o || {};
+      messages.push({
+        text: t, type: ty || 'info', source: o.source || '', count: o.count || '',
+        /* keepHistory 原样透传：㊿ 要验「绿点但不落盒」，undefined 与 false
+         * 必须能区分（undefined = 按类型默认，success 默认是入盒的） */
+        keepHistory: o.keepHistory
+      });
+    };
     win.dycReadFlags = function () { return Promise.resolve({ luckyBag: true }); };
     win.dycWatchFlags = function () {};
     win.hasProductRows = function () { return true; };
@@ -915,20 +960,42 @@ function remove(env, id) {
     /* ★ 监听器必须在 eval 之前挂好：
      *   模块进页面就会做第一次确认（拨开即确认），晚挂就漏掉那一次点击，
      *   断言会误判成「没点入口」。 */
-    const clicks = { entry: 0, esc: 0 };
+    const clicks = { entry: 0, esc: 0, dstart: 0 };
     const drawerHtmlStr = '<div id="drawer">'
       + '<input id="q" placeholder="请输入奖品名称">'
       + '<table><tbody>'
-      + '<tr id="r1"><td><div>10元店铺红包 ID 8899</div></td><td>进行中 距结束 03:12</td></tr>'
+      + '<tr id="r1"><td><div>10元店铺红包 ID 8899</div></td><td>'
+      + (opts.drawerRowHtml !== undefined ? opts.drawerRowHtml : '进行中 距结束 03:12') + '</td></tr>'
       + '</tbody></table></div>';
     function openDrawer() {
       const host = doc.getElementById('host');
-      if (host && !doc.getElementById('drawer')) host.innerHTML = drawerHtmlStr;
+      if (host && !doc.getElementById('drawer')) {
+        /* opts.emptyDrawer：抽屉开了但里面什么都没有（模拟平台渲染慢 /
+         * 行还没出来 —— 2026-11-02 晚防误发用例需要这个状态） */
+        const shell = (opts.emptyDrawer
+          ? '<div id="drawer"><input id="q" placeholder="请输入奖品名称"></div>'
+          : drawerHtmlStr) + (opts.cardsHtml || '');
+        /* opts.renderDelayMs：抽屉外壳立刻出现、内容晚一点才渲染
+         * （2026-11-02 深夜真机「手动刷新还是没检测到」就是这样：
+         *  点开瞬间 shells 出现，表格要等服务端回包） */
+        if (opts.renderDelayMs) {
+          host.innerHTML = '<div id="drawer"><input id="q" placeholder="请输入奖品名称"></div>';
+          setTimeout(function () {
+            if (doc.getElementById('drawer')) host.innerHTML = shell;
+          }, opts.renderDelayMs);
+        } else {
+          host.innerHTML = shell;
+        }
+      }
     }
     const entryBtn = doc.getElementById('entry');
     if (entryBtn) entryBtn.addEventListener('click', function () {
       clicks.entry++;
       openDrawer();
+    });
+    /* 抽屉行里的「开始活动」链接是开抽屉时才插入的 —— 用事件委托计数 */
+    doc.addEventListener('click', function (e) {
+      if (e.target && e.target.id === 'dstart') clicks.dstart++;
     });
     doc.addEventListener('keydown', function (e) {
       if (e.key !== 'Escape') return;
@@ -937,6 +1004,12 @@ function remove(env, id) {
       if (host) host.innerHTML = '';
     });
 
+    /* opts.hold：模拟「刷新网页前读到、还没结束」的那份读数。
+     * 它存在 sessionStorage 里（不是内存），刷新后由 boot 接回 ——
+     * 2026-11-03 00:15「刷新后无视进行中的福袋直接发」的防误发就靠它。 */
+    if (opts.hold) {
+      try { win.sessionStorage.setItem('dycBagHoldDrawAt', String(opts.hold)); } catch (eH) {}
+    }
     win.eval(CODE);
     await sleep(30);
     const api = win.__DYC_LUCKY_BAG__;
@@ -976,6 +1049,32 @@ function remove(env, id) {
   const railTop = +( /\.rail\{[^}]*top:(\d+)px/.exec(cssText) || [0, 0])[1];
   const mkTop = +( /\.mk\{[^}]*top:(\d+)px/.exec(cssText) || [0, 0])[1];
   ok(mkTop < railTop, '㊦① 刻度线在轨道**上方**（刻度 top ' + mkTop + 'px < 轨道 top ' + railTop + 'px）');
+
+  /* ㊦① 两端不出界（2026-11-02 用户截图：「这个滑动条，按钮拉到最左边最右边
+   * 会轻微出界」）。几何：轨道撑满整宽，圆钮圆心只能在「两端各内缩 inset」
+   * 的区间里跑；p=0 时圆心 = inset、左沿 = inset − 半径，要 ≥ 轨道左沿 0。
+   * 判定取放大态半径（hover/拖动 20px），它才是最容易出界的那一态。 */
+  const tin = sh.querySelector('.tk > .in');
+  ok(!!tin && !!tin.querySelector('.thumb') && tin.querySelectorAll('.mk').length === 8,
+    '㊦① 刻度与圆钮同在一个内缩域里（.tk > .in），左沿才跟轨道对齐');
+  const insetM = /\.in\{[^}]*left:(\d+)px[^}]*right:(\d+)px/.exec(cssText);
+  const inset = insetM ? +insetM[1] : -1;
+  const rNorm = (+( /\.thumb\{[^}]*width:(\d+)px/.exec(cssText) || [0, 0])[1]) / 2;
+  const rBig = (+( /\.tk:hover \.thumb[^{]*\{[^}]*width:(\d+)px/.exec(cssText) || [0, 0])[1]) / 2;
+  ok(inset >= rBig && inset >= rNorm && rBig > 0,
+    '㊦① 内缩 ' + inset + 'px ≥ 圆钮半径（常态 ' + rNorm + 'px / 放大 ' + rBig + 'px），拉到头也不越过轨道端点');
+  const thumbNow = parseFloat(tin.querySelector('.thumb').style.left);
+  /* 不绑死 calc 的子句顺序：jsdom/cssstyle 会把 `A + k * (B)` 规范成
+   * `A + k * (B)` 或 `A + k*(B)` 之类，顺序也不保证与源码一致。
+   * 只认三个语义要件齐全：内缩起点、可变区间、以及 p 值本身。 */
+  const fillW = sh.querySelector('.fill').style.width;
+  ok(/^calc\(/.test(fillW)
+    && fillW.indexOf(inset + 'px') === 5
+    && fillW.indexOf('(100% - ' + (inset * 2) + 'px)') > 0
+    && /0\.2857/.test(fillW),
+    '㊦① 填充条从轨道最左端算到圆钮圆心（5 分钟内缩后仍对齐 28.6%，实测 ' + fillW + '）');
+  ok(Math.abs(thumbNow - 28.57142857142857) < 1e-6,
+    '㊦① 圆钮的 left 仍按内缩域百分比给（' + thumbNow + '%），圆心不会被二次偏移');
 
   /* ㊦① 问号说明（用户：确认间隔 + 问号 → 每隔设定的时间自动打开抽屉检查一次福袋状态。） */
   const qh = sh.querySelector('.qh');
@@ -1118,17 +1217,14 @@ function remove(env, id) {
   bp.api.tick();
   ok(badgeGate.style.visibility !== 'hidden', '㊦⑩ 没有浮层时圆钮正常露脸');
   let cover = true;
-  bp.win.dycOverlayGuard = { covers: function () { return cover; }, enabled: function () { return true; } };
+  /* 让位没有开关（2026-11-02 撤掉「浮层让位」菜单项），所以这里只演 covers：
+   * guard 一旦判定盖住就必须藏，不存在「用户关掉开关 ⇒ 不藏」这一档。 */
+  bp.win.dycOverlayGuard = { covers: function () { return cover; } };
   bp.api.tick();
   ok(badgeGate.style.visibility === 'hidden', '㊦⑩ 平台浮层盖住 → 圆钮藏起来');
   cover = false;
   bp.api.tick();
   ok(badgeGate.style.visibility !== 'hidden', '㊦⑩ 浮层关掉 → 圆钮自己回来（不用手动刷新）');
-  /* 浮层让位开关关掉时不许误藏 */
-  bp.win.dycOverlayGuard.enabled = function () { return false; };
-  cover = true;
-  bp.api.tick();
-  ok(badgeGate.style.visibility !== 'hidden', '㊦⑩ 浮层让位关着时不藏（用户可关这个开关）');
 
   /* ㊦⑩ 福袋抽屉自己开着时，圆钮同样不该压在抽屉上 */
   bp = await bootBagPage(null, { preOpen: true });
@@ -1204,6 +1300,7 @@ function remove(env, id) {
    *    其余 7 行永远进不了候选。行身份 = 行容器自己的 uid。
    * ============================================================ */
   env = await boot({ watch: true, auto: true, onStartClick: 'running' });
+  env.api.setTimingForTest({ afterDrawLag: 0 });   // 专验「框键不踩」的排队续发，冷却时机归 ㊴
   const tr2 = env.doc.createElement('tr');
   tr2.id = 'r2';
   tr2.innerHTML = '<td>10元店铺红包 ID</td><td>本次奖品数：1</td>' +
@@ -1326,6 +1423,7 @@ function remove(env, id) {
    * ③ 读完没有进行中了 → 回到按间隔确认（不变成连发骚扰）；
    * ④ 有进行中时点手动刷新 = 校准倒计时（㊲ 已覆盖入口路径）。 */
   bp = await bootBagPage();
+  bp.api.setTimingForTest({ afterDrawLag: 0 });  // ㊳ 专验「到点立即恢复确认」的分工，冷却时机归 ㊴
   const cardS = bp.doc.createElement('div');
   cardS.innerHTML = '<span>进行中活动</span><span>03 分 12 秒 后结束</span>' +
     '<div>10元店铺红包 ID 活动ID:7702886904815681838</div>';
@@ -1342,10 +1440,72 @@ function remove(env, id) {
   ok(/有进行中的福袋/.test(bp.api.snapshot().check.stat),
     '㊳ ② 确认汇报看上面进行中（到点重开后卡片倒计时重新读到）：' + bp.api.snapshot().check.stat);
   cardS.remove();                                // 平台把跑完的卡片收走
+  /* 真实世界里卡片是在「到点之后」被收走的，那份兜底读数这时也已过期；
+   * 用例里时间没真的走，得一起拨掉，否则它会把「进行中」多撑 3 分钟。 */
+  bp.api.expireDrawForTest();
   bp.api.tick();
   ok(bp.api.snapshot().running === false, '㊳ 铺垫：没有进行中了');
   ok(bp.api.snapshot().check.next > Date.now(),
     '㊳ ③ 没有进行中后回到按间隔确认（下轮在未来，不连发）');
+
+  /* ---------- ㊴ 开奖收尾冷却 15 秒（2026-11-02 用户定「倒计时走完，
+   * 延迟 15s 左右再去自动确认以及续福袋，不然容易冲突」）----------
+   * 开奖瞬间平台在收尾（开奖动画、卡片收走、列表刷新），立刻动手容易撞上。
+   * 冷却锚点 = 最后一次扫到「进行中/开奖中」的时刻（lastRunningAt）。
+   * 测试里把 15 秒压成几百毫秒（afterDrawLag），行为链路等价。 */
+  bp = await bootBagPage();
+  const cardL = bp.doc.createElement('div');
+  cardL.innerHTML = '<span>进行中活动</span><span>03 分 12 秒 后结束</span>' +
+    '<div>10元店铺红包 ID 活动ID:7702886904815681839</div>';
+  bp.doc.body.appendChild(cardL);
+  bp.api.setTimingForTest({ afterDrawLag: 400 });
+  bp.api.tick();
+  ok(bp.api.snapshot().running === true, '㊴ 铺垫：进行中活动在读');
+  bp.api.confirmNow();
+  ok(bp.clicks.entry === 0, '㊴ ① 倒计时未到 → 照旧顺延不开抽屉');
+  bp.api.expireDrawForTest();                  // 倒计时走完（开奖）
+  bp.api.confirmNow();
+  ok(bp.clicks.entry === 0, '㊴ ② 到点 + 冷却内 → 不立刻开抽屉（等平台收尾）');
+  await sleep(450);
+  bp.api.confirmNow();
+  ok(bp.clicks.entry === 1, '㊴ ③ 冷却过后 → 自动确认恢复开抽屉');
+  await sleep(2100);
+  ok(bp.clicks.esc >= 1 && !bp.doc.getElementById('drawer'), '㊴ ③ 读完自动关抽屉');
+
+  /* ㊴④⑤ 续福袋侧：开奖后冷却内不点「开始活动」，冷却过后恢复 */
+  env = await boot({ watch: true, auto: true, status: '活动进行中 · 距开奖 01:00' });
+  env.api.setTimingForTest({ afterDrawLag: 300 });
+  env.tick();                                  // running：冷却锚点刷新
+  env.api.expireDrawForTest();                 // 开奖
+  setText(env, 'st1', '● 活动待开始');          // 平台开新一轮
+  const tdL = env.doc.querySelector('#r1 td:last-child');
+  if (tdL) {
+    const aL = env.doc.createElement('a');
+    aL.id = 'sL'; aL.textContent = '开始活动';
+    aL.addEventListener('click', function () { env.clicks.s1++; });
+    tdL.appendChild(aL);
+  }
+  env.tick();
+  ok(env.clicks.s1 === 0, '㊴ ④ 开奖后冷却内不急着点「开始活动」');
+  ok(env.api.snapshot().phase === 'live', '㊴ ④ 冷却内不误判停机');
+  await sleep(350);
+  env.tick();
+  ok(env.clicks.s1 === 1, '㊴ ⑤ 冷却过后恢复续发');
+
+  /* ㊴⑥⑦ 无候选停机判定：冷却期内不累积（否则开奖后 2 拍就误停，
+   *       冷却刚过本该点的那一轮就漏了） */
+  env = await boot({ watch: true, auto: true, status: '活动进行中 · 距开奖 01:00', withStart: false });
+  env.api.setTimingForTest({ afterDrawLag: 200 });
+  env.tick();                                  // running
+  env.api.expireDrawForTest();
+  setText(env, 'st1', '● 活动已结束');          // 行结束、新候选还没刷出来
+  env.tick();                                  // 冷却内：不累积
+  env.tick();                                  // 冷却内：不累积
+  ok(env.api.snapshot().phase === 'live', '㊴ ⑥ 冷却内不判「已无可用福袋」停机');
+  await sleep(250);
+  env.tick();                                  // 冷却后第 1 拍：累积 1
+  env.tick();                                  // 第 2 拍：达到阈值 → 停
+  ok(env.api.snapshot().reason === 'no-activity', '㊴ ⑦ 冷却后仍无候选 → 正常转停机监视');
 
   /* ---------- ㊰ 倒计时拆多节点（2026-11-01 深夜 测试档真机读不到后放宽） ----------
    * 平台很可能把「04 分 58 秒 后结束」拆成多个元素（数字/单位各自节点），
@@ -1473,6 +1633,7 @@ function remove(env, id) {
 
   /* ㊬① 防双开闸：进行中 + 待开始并存 → 待开始的不点 */
   env = await boot({ watch: true, auto: true });
+  env.api.setTimingForTest({ afterDrawLag: 0 });   // ㊬② 要验「清零后下一拍就点」，冷却时机归 ㊴
   const tbA = env.doc.querySelector('#dlg tbody');
   tbA.insertAdjacentHTML('beforeend',
     '<tr id="r0"><td>10元店铺红包 ID0</td><td>本次奖品数：1</td>' +
@@ -1588,10 +1749,575 @@ function remove(env, id) {
    * 上面没有进行中卡片就直说没有。 */
   bp = await bootBagPage(null, { preOpen: true, rowStatus: '活动已结束' });
   bp.api.manualRefresh();                       // 抽屉开着 → 直接用眼前读数
+  /* 2026-11-02 深夜起：否定结论先复核一拍（NEG_RECHECK_MS），
+   * 所以这里等结论落地，不能读「复核中…」那一刻。 */
+  await waitBag(function () {
+    const s = bp.api.snapshot().check.stat;
+    return /手动刷新｜/.test(s) && !/复核中/.test(s);
+  }, 6000);
   ok(/没有进行中的福袋/.test(bp.api.snapshot().check.stat),
     '㊭⑤ 下面全是历史行、上面没卡片 → 报「没有进行中的福袋」：' + bp.api.snapshot().check.stat);
   ok(!/读到 \d+ 行/.test(bp.api.snapshot().check.stat),
     '㊭⑤ 历史行再多也不进汇报（行数≠进行中）');
+
+  /* ---------- ㊵ 手动发福袋按钮（2026-11-02 晚 用户原话）----------
+   * 「加一个按钮，手动发福袋，放在手动刷新的下面。但是发福袋是要先
+   * 确认有没有福袋在进行中，有的话就不发并且关闭浮层。弹出提示
+   * 【已经有福袋在进行中了】」 */
+  bp = await bootBagPage('<div id="bagCardM"><span>进行中活动</span>' +
+    '<span>03 分 12 秒 后结束</span>' +
+    '<div>10元店铺红包 ID 活动ID:7702886904815681841</div></div>', { preOpen: true });
+  ok(bp.clicks.entry === 0, '㊵ 铺垫：进页面没开过抽屉');
+  bp.api.manualStart();
+  await sleep(60);
+  ok(bp.clicks.entry === 0, '㊵ ① 有进行中 → 不发（连抽屉入口都不找）');
+  ok(/已经有福袋在进行中了/.test(bp.messages[bp.messages.length - 1].text),
+    '㊵ ① 提示原话「已经有福袋在进行中了」：' + bp.messages[bp.messages.length - 1].text);
+  ok(!bp.doc.getElementById('drawer'), '㊵ ① 开着的浮层（抽屉）被替用户关掉');
+
+  /* ㊵② 没有进行中 → 开抽屉点一次「开始活动」 */
+  bp = await bootBagPage(null, {
+    drawerRowHtml: '<span id="ds1">● 活动待开始</span><a id="dstart">开始活动</a>'
+  });
+  bp.api.manualStart();
+  /* 2026-11-03 00:15 起：点「开始活动」前要「多看几眼」（START_PRECHECK_MS），
+   * 从点按钮到真正发出最多约 5 秒 —— 这里等事件，不卡固定时长。 */
+  ok(await waitBag(function () { return bp.clicks.entry === 1; }, 5000),
+    '㊵ ② 没有进行中 → 开抽屉找「开始活动」');
+  ok(await waitBag(function () { return bp.clicks.dstart === 1; }, 9000),
+    '㊵ ② 「开始活动」链接被点了一次');
+  var m2 = bp.messages[bp.messages.length - 1] || {};
+  ok(/已点「开始活动」/.test(m2.text || ''),
+    '㊵ ② 反馈「已点「开始活动」，等平台确认」：' + m2.text);
+  ok(bp.api.snapshot().phase === 'starting', '㊵ ② 点击进入与自动发福袋同一条校验链路');
+
+  /* ㊵③ 抽屉里没有可发的（全已结束）→ 提示并关抽屉 */
+  bp = await bootBagPage(null, { drawerRowHtml: '● 活动已结束' });
+  bp.api.manualStart();
+  await waitBag(function () {
+    return bp.messages.some(function (m) { return /没有可发的福袋/.test(m.text); });
+  }, 9000);
+  ok(bp.clicks.entry === 1, '㊵ ③ 没有进行中 → 照常开抽屉确认');
+  ok(bp.clicks.dstart === 0, '㊵ ③ 没有可点候选 → 不点');
+  ok(bp.messages.some(function (m) { return /没有可发的福袋/.test(m.text); }),
+    '㊵ ③ 提示「没有可发的福袋」：' + (bp.messages[bp.messages.length - 1] || {}).text);
+  ok(!bp.doc.getElementById('drawer'), '㊵ ③ 读完自动关抽屉');
+
+  /* ㊵④ 二次确认：预检时没有进行中，开抽屉读到进行中 → 不点、关抽屉 */
+  bp = await bootBagPage(null, { drawerRowHtml: '● 活动进行中 · 距结束 02:00' });
+  bp.api.manualStart();
+  await waitBag(function () {
+    return bp.messages.some(function (m) { return /已经有福袋在进行中了/.test(m.text); });
+  }, 9000);
+  ok(bp.clicks.entry === 1, '㊵ ④ 预检无进行中 → 照常开抽屉');
+  ok(bp.clicks.dstart === 0, '㊵ ④ 开抽屉读到进行中 → 不发（二次确认拦住）');
+  ok(bp.messages.some(function (m) { return /已经有福袋在进行中了/.test(m.text); }),
+    '㊵ ④ 提示原话「已经有福袋在进行中了」：' + (bp.messages[bp.messages.length - 1] || {}).text);
+  ok(!bp.doc.getElementById('drawer'), '㊵ ④ 抽屉被关掉');
+
+  /* ---------- ㊶ 抽屉已开着：不重复点入口，直接用眼前行发 ----------
+   * 2026-11-02 晚审评修复：bagEntry 的前提是「只在抽屉关闭时调用」；
+   * 抽屉开着时点入口会被遮罩挡住、抽屉标题还掺和匹配 → 白点 + 误报
+   * 「没找到福袋抽屉入口」。现在抽屉已开就直接扫眼前的行。 */
+  bp = await bootBagPage(null, {
+    preOpen: true,
+    rowStatus: '<span id="ds2">● 活动待开始</span><a id="dstart">开始活动</a>'
+  });
+  ok(bp.clicks.entry === 0, '㊶ 铺垫：抽屉是用户自己开的（没点过入口）');
+  bp.api.manualStart();
+  ok(await waitBag(function () { return bp.clicks.dstart === 1; }, 9000),
+    '㊶ 直接用眼前的行点「开始活动」');
+  ok(bp.clicks.entry === 0, '㊶ 抽屉已开 → 不再点入口（不误报「没找到抽屉入口」）');
+  var m6 = bp.messages[bp.messages.length - 1] || {};
+  ok(/已点「开始活动」/.test(m6.text || ''),
+    '㊶ 反馈「已点「开始活动」，等平台确认」：' + m6.text);
+  ok(!!bp.doc.getElementById('drawer'), '㊶ 用户自己开的抽屉不被替用户关掉');
+
+  /* ㊷ 抽屉已开 + 已有进行中 → 按原口径：不发 + 关浮层 + 原话提示 */
+  bp = await bootBagPage(null, { preOpen: true, rowStatus: '● 活动进行中 · 距结束 02:00' });
+  bp.api.manualStart();
+  await waitBag(function () {
+    return bp.messages.some(function (m) { return /已经有福袋在进行中了/.test(m.text); });
+  }, 6000);
+  ok(bp.clicks.entry === 0 && bp.clicks.dstart === 0, '㊷ 抽屉已开 + 有进行中 → 什么都不点');
+  ok(bp.messages.some(function (m) { return /已经有福袋在进行中了/.test(m.text); }),
+    '㊷ 提示原话「已经有福袋在进行中了」：' + (bp.messages[bp.messages.length - 1] || {}).text);
+  ok(!bp.doc.getElementById('drawer'), '㊷ 浮层被关闭（用户口径：有进行中就关浮层）');
+
+  /* ---------- ㊸ 防误发：开抽屉后读不到行时的保守处理 ----------
+   * 2026-11-02 晚真机：「明明有一个福袋在跑，它还发了下一个」——
+   * 开抽屉后行还没渲染，空页面被误判成「没有进行中」。
+   * 现在：轮询等行出现（最多 MANUAL_START_SCAN_MS）；
+   *   等不到时 —— 整页有「进行中活动」字样 → 按有进行中拦下；
+   *              连字样都没有 → 读不到就不动。 */
+  /* 用 script[type=text/plain] 承载字样：进 body.textContent，但不会被
+   * 行扫描（只扫 a/button/tr/div…）当成一行 —— 精确模拟「整页有字样、
+   * 但行认不出」的真机状态。 */
+  bp = await bootBagPage('<script type="text/plain">进行中活动</script>', {
+    emptyDrawer: true
+  });
+  bp.api.setTimingForTest({ scanMs: 300 });
+  bp.api.manualStart();
+  await sleep(2300);            // 1.6 秒开抽屉窗 + 300ms 轮询超时
+  ok(bp.clicks.dstart === 0, '㊸ ① 读不到行、但有「进行中活动」字样 → 不发（保守拦截）');
+  ok(/已经有福袋在进行中了/.test(bp.messages[bp.messages.length - 1].text),
+    '㊸ ① 提示原话：' + bp.messages[bp.messages.length - 1].text);
+
+  bp = await bootBagPage(null, { emptyDrawer: true });
+  bp.api.setTimingForTest({ scanMs: 300 });
+  bp.api.manualStart();
+  await sleep(2300);
+  ok(bp.clicks.dstart === 0, '㊸ ② 读不到行、页面上也没有字样 → 不发（读不到就不动）');
+  ok(/没有可发的福袋/.test(bp.messages[bp.messages.length - 1].text),
+    '㊸ ② 提示「没有可发的福袋」：' + bp.messages[bp.messages.length - 1].text);
+
+  /* ---------- ㊹ 手动发福袋的生命周期（2026-11-02 晚真机两条反馈）----------
+   * ① 发了福袋之后不检测倒计时 —— 根因：纯监视模式下手动点击失败会
+   *    doStop('no-effect') → stopLoop() 彻底停扫描，之后再没人读；
+   * ② 点了「开始活动」却没生效 —— 确认框弹得慢，350ms 单次查找漏点。 */
+  bp = await bootBagPage(null, {
+    drawerRowHtml: '<span id="ds3">● 活动待开始</span><a id="dstart">开始活动</a>'
+  });
+  bp.api.setTimingForTest({ tick: 120, verify: 300, scanMs: 300 });
+  ok(bp.api.snapshot().timers.tick === true, '㊹ 铺垫：扫描在跑');
+  bp.api.manualStart();
+  await waitBag(function () {
+    return bp.messages.some(function (m) {
+      return /进行中/.test(m.text) && /手动刷新/.test(m.text);
+    });
+  }, 12000);
+  ok(bp.api.snapshot().phase !== 'stopped' && bp.api.snapshot().phase !== 'halted',
+    '㊹ ① 手动点击后没变「进行中」→ 不停机（人的动作不把监视干掉）');
+  /* 断言按语义要素断（不绑死整句文案）：既要说清"没读到进行中"，
+   * 也要给下一步（点手动刷新复核）—— 后者是 2026-11-03 用户
+   * 「他自己又不知道有没有成功发」的直接修复点。 */
+  var stepMsgs = bp.messages.filter(function (m) {
+    return /进行中/.test(m.text) && /手动刷新/.test(m.text);
+  });
+  ok(stepMsgs.length === 1,
+    '㊹ ① 失败只报一条（说明没读到「进行中」并给出复核出路）：' + stepMsgs.length);
+  ok(bp.api.snapshot().timers.tick === true, '㊹ ① 扫描仍在跑（之后还能读倒计时）');
+
+  /* ㊹② 确认框晚 900ms 才弹 → 靠重试（1200ms 那一档）点到 */
+  bp = await bootBagPage(null, {
+    drawerRowHtml: '<span id="ds4">● 活动待开始</span><a id="dstart">开始活动</a>'
+  });
+  let confirmClicks = 0;
+  bp.doc.addEventListener('click', function (e) {
+    if (!e.target || e.target.id !== 'dstart') return;
+    setTimeout(function () {
+      const d = bp.doc.createElement('div');
+      d.setAttribute('role', 'dialog');
+      d.innerHTML = '<button id="cfm">确认开始</button>';
+      bp.doc.body.appendChild(d);
+      bp.doc.getElementById('cfm').addEventListener('click', function () { confirmClicks++; });
+    }, 900);
+  });
+  bp.api.setTimingForTest({ tick: 3000, scanMs: 300 });
+  bp.api.manualStart();
+  await waitBag(function () { return confirmClicks >= 1; }, 12000);
+  ok(confirmClicks === 1, '㊹ ② 确认框晚 900ms 出现也能被点到（重试机制，实际 ' + confirmClicks + ' 次）');
+
+  /* ---------- ㊺ 手动刷新读数轮询（2026-11-02 深夜真机「手动刷新还是没
+   * 检测到」）----------
+   * 抽屉外壳点开就出现，表格/活动卡片要等服务端回包才渲染。原来固定等
+   * 1.6 秒读一次，读到空壳就报「没有进行中的福袋」——真机上明明有福袋
+   * 在跑，这句话就是假话。改成轮询等行出现，读不到也只说读不到。 */
+
+  /* ㊺① 内容晚 2 秒才渲染 → 轮询仍能读到「有进行中」 */
+  bp = await bootBagPage(null, { renderDelayMs: 2000 });
+  bp.api.manualRefresh();
+  ok(bp.clicks.entry === 1, '㊺ ① 手动刷新照常点入口开抽屉');
+  ok(!bp.doc.querySelector('#drawer tr'), '㊺ ① 铺垫：此刻抽屉里还没有行（空壳）');
+  await sleep(2700);                    // 1.2 秒首读 + 900ms 后才渲染出来
+  ok(/手动刷新｜有进行中的福袋/.test(bp.api.snapshot().check.stat),
+    '㊺ ① 内容晚 2 秒渲染也能读到：' + bp.api.snapshot().check.stat);
+  ok(!bp.doc.getElementById('drawer'), '㊺ ① 读完后照常关掉自己开的抽屉');
+
+  /* ㊺② 抽屉一直读不到内容、也没有空态文案 → 只说「没读到」，绝不说「没有」 */
+  bp = await bootBagPage(null, { emptyDrawer: true });
+  bp.api.setTimingForTest({ panelReadMs: 900 });
+  bp.api.manualRefresh();
+  await waitBag(function () {
+    const s = bp.api.snapshot().check.stat;
+    return /手动刷新｜/.test(s) && !/复核中/.test(s);
+  }, 8000);
+  ok(/没读到/.test(bp.api.snapshot().check.stat),
+    '㊺ ② 读不到内容 → 报「没读到」：' + bp.api.snapshot().check.stat);
+  ok(!/没有进行中的福袋/.test(bp.messages[bp.messages.length - 1].text),
+    '㊺ ② 不替平台断言「没有进行中的福袋」：' + bp.messages[bp.messages.length - 1].text);
+
+  /* ㊺③ 抽屉里是平台空态文案（确实没有活动）→ 这时说「没有」才是对的 */
+  bp = await bootBagPage('<script type="text/plain">没有进行中的福袋活动</script>', {
+    emptyDrawer: true
+  });
+  bp.api.manualRefresh();
+  await waitBag(function () {
+    const s = bp.api.snapshot().check.stat;
+    return /手动刷新｜/.test(s) && !/复核中/.test(s);
+  }, 8000);
+  ok(/手动刷新｜没有进行中的福袋/.test(bp.api.snapshot().check.stat),
+    '㊺ ③ 平台空态在 → 正常报「没有进行中的福袋」：' + bp.api.snapshot().check.stat);
+
+  /* ㊺④ 抽屉已开着（用户自己开的）时点手动刷新 → 也走轮询，且不替你关 */
+  bp = await bootBagPage(null, { renderDelayMs: 1500 });
+  bp.openDrawer();
+  ok(!!bp.doc.getElementById('drawer'), '㊺ ④ 铺垫：抽屉已开着（用户开的）');
+  bp.api.manualRefresh();
+  await sleep(2400);
+  ok(/有进行中的福袋/.test(bp.api.snapshot().check.stat),
+    '㊺ ④ 已开抽屉读不到时也等：' + bp.api.snapshot().check.stat);
+  ok(!!bp.doc.getElementById('drawer'), '㊺ ④ 用户自己开的抽屉不替你关');
+
+  /* ---------- ㊺⑤~⑦ 「没有」结论复核（2026-11-02 23:50 真机）----------
+   * 用户原话：「刷新网页，第一次点手动刷新福袋状态，第一次必定失败无法
+   * 获取福袋倒计时」。诊断报告流水两行互证：
+   *   23:49:57 手动刷新｜没有进行中的福袋
+   *   23:50:01 手动刷新｜有进行中的福袋，剩 10 分 58 秒
+   * 页面重载后平台福袋数据要重新回包，首读拿到的是空壳/历史行 ——
+   * 旧版一次读到否定证据就落结论并关抽屉，人必须点第二次。
+   * 现在：**读到「有」立刻出结果；读到「没有」先复核 NEG_RECHECK_MS
+   * 再看一眼抽屉行与常驻卡片**，两次都否定才报「没有」。 */
+
+  /* ㊺⑤ 首读只有历史行，卡片 1 秒后才渲染 → 复核读到「有」 */
+  bp = await bootBagPage(null, { preOpen: true, rowStatus: '活动已结束' });
+  setTimeout(function () {
+    const d = bp.doc.createElement('div');
+    d.innerHTML = '<span>进行中活动</span><span>03 分 12 秒 后结束</span>' +
+      '<div>10元店铺红包 ID 活动ID:7702886904815681901</div>';
+    bp.doc.body.appendChild(d);
+  }, 1000);
+  bp.api.manualRefresh();
+  ok(await waitBag(function () { return /有进行中/.test(bp.api.snapshot().check.stat); }, 6000),
+    '㊺ ⑤ 首读只有历史行、卡片 1 秒后才出现 → 复核读到「有」：' + bp.api.snapshot().check.stat);
+  ok(!/没有进行中的福袋/.test(bp.api.snapshot().check.stat),
+    '㊺ ⑤ 不把「还没渲染」说成「没有进行中的福袋」');
+
+  /* ㊺⑥ 首读命中平台空态，1.2 秒后卡片才渲染 → 复核同样读到「有」 */
+  bp = await bootBagPage('<script type="text/plain">没有进行中的福袋活动</script>', {
+    emptyDrawer: true
+  });
+  setTimeout(function () {
+    const d = bp.doc.createElement('div');
+    d.innerHTML = '<span>进行中活动</span><span>08 分 05 秒 后结束</span>' +
+      '<div>10元店铺红包 ID 活动ID:7702886904815681902</div>';
+    bp.doc.body.appendChild(d);
+  }, 1200);
+  bp.api.manualRefresh();
+  ok(await waitBag(function () { return /有进行中/.test(bp.api.snapshot().check.stat); }, 7000),
+    '㊺ ⑥ 空态先出现、卡片 1.2 秒后才渲染 → 复核读到「有」：' + bp.api.snapshot().check.stat);
+
+  /* ㊺⑦ 真的没有（空态常在）→ 复核完仍报「没有」，不因复核乱改口 */
+  bp = await bootBagPage('<script type="text/plain">没有进行中的福袋活动</script>', {
+    emptyDrawer: true
+  });
+  bp.api.manualRefresh();
+  await waitBag(function () {
+    const s = bp.api.snapshot().check.stat;
+    return /手动刷新｜/.test(s) && !/复核中/.test(s);
+  }, 8000);
+  ok(/手动刷新｜没有进行中的福袋/.test(bp.api.snapshot().check.stat),
+    '㊺ ⑦ 复核完仍无活动 → 照旧报「没有」：' + bp.api.snapshot().check.stat);
+  ok(!/复核中/.test(bp.api.snapshot().check.stat), '㊺ ⑦ 结论落地后不留「复核中」字样');
+
+  /* ---------- ㊻ 多卡并行：逐张读、取最早、已有就不发（2026-11-02 深夜）----------
+   * 真机 23:17：抽屉开着、福袋活动1/活动2 两张卡都在跑，行扫描却把「说明 +
+   * 两张卡 + 状态页签」认成一个 895×833 的大框（页签里有「已结束」）⇒
+   * 进行中 0、圆钮未开始、手动发福袋照发第二个。 */
+  const cardHtml = function (name, mm, ss, aid, h) {
+    return '<div' + (h ? (' style="height:' + h + '"') : '') + '>'
+      + '<div>进行中活动</div>'
+      + '<div>' + name + '<span>' + mm + '</span>分<span>' + ss + '</span>秒<span>后结束</span></div>'
+      + '<div>活动ID:' + aid + '</div></div>';
+  };
+
+  /* ㊻① 两张卡：认得出 2 张，圆钮与汇总取**最早结束**的那张 */
+  bp = await bootBagPage(null, {
+    cardsHtml: cardHtml('福袋活动1', '02', '52', 770288809940) +
+               cardHtml('福袋活动2', '01', '30', 770288809941)
+  });
+  bp.openDrawer();
+  bp.api.tick();
+  ok(bp.api.snapshot().running === true, '㊻ ① 两张卡在跑 → 进行中（行扫描认错也不影响）');
+  ok(bp.api.snapshot().runningCards === 2, '㊻ ① 认出的卡片张数 = 2');
+  let lefts = bp.api.snapshot().cardLeft;
+  ok(lefts.length === 2 && lefts[0] < lefts[1], '㊻ ① 逐张读数并按剩余时间升序');
+  ok(lefts[0] > 85000 && lefts[0] <= 90000,
+    '㊻ ① 最早那张 = 1 分 30 秒（实际 ' + Math.round(lefts[0] / 1000) + ' 秒）');
+  ok(bp.api.snapshot().drawIn <= 91000 && bp.api.snapshot().drawIn > 85000,
+    '㊻ ① 汇总取最早：drawIn = ' + bp.api.snapshot().drawIn);
+  ok(/^01:2\d$|^01:30$/.test(bp.api.snapshot().badge),
+    '㊻ ① 圆钮显示最早那张的倒计时：' + bp.api.snapshot().badge);
+
+  /* ㊻② 抽屉开着 + 已有卡在跑 → 手动发福袋不发、关浮层、原话提示 */
+  bp = await bootBagPage(null, { cardsHtml: cardHtml('福袋活动1', '02', '52', 770288809942) });
+  bp.openDrawer();
+  bp.api.tick();
+  bp.api.manualStart();
+  await waitBag(function () {
+    return bp.messages.some(function (m) { return /已经有福袋在进行中了/.test(m.text); });
+  }, 6000);
+  ok(bp.clicks.dstart === 0, '㊻ ② 已有进行中 → 一次「开始活动」都没点（不再发第二个）');
+  ok(/已经有福袋在进行中了/.test((bp.messages[bp.messages.length - 1] || {}).text || ''),
+    '㊻ ② 提示原话：' + (bp.messages[bp.messages.length - 1] || {}).text);
+  ok(!bp.doc.getElementById('drawer'), '㊻ ② 有进行中 → 替用户关掉浮层');
+
+  /* ㊻③ 卡片名末尾数字与倒计时紧贴（真机「福袋活动102分52秒」）→ 读 2 分 52 秒 */
+  bp = await bootBagPage(null, { cardsHtml: cardHtml('福袋活动1', '02', '52', 770288809943) });
+  bp.openDrawer();
+  bp.api.tick();
+  lefts = bp.api.snapshot().cardLeft;
+  ok(lefts[0] > 170000 && lefts[0] <= 172000,
+    '㊻ ③ 紧贴写法读成 2 分 52 秒（不是 102 分）：' + Math.round(lefts[0] / 1000) + ' 秒');
+
+  /* ㊻④ 超高整块容器（说明+页签）不再被当成一行 —— 真机误判 drawn 的根因 */
+  bp = await bootBagPage('<div style="height:833px">全部 待开始 进行中 已结束 异常 福袋活动说明</div>');
+  bp.api.tick();
+  ok(bp.api.probe().rows === 0, '㊻ ④ 895×833 的整块容器不再算作一行');
+  /* ============================================================
+   * ㊮ 抽屉锚点拆节点 + 倒计时窗口（2026-11-02 深夜真机）
+   *   真机两份报告互相矛盾：手动刷新报「没有进行中的福袋」（说明读到了
+   *   平台空态），同一份报告里抽屉却是「没认出 · 开始活动链接 0 个」。
+   *   唯一解释：那串字在整页 textContent 里有、在叶子级找不到 ——
+   *   平台把标题/空态/按钮都拆成了多个节点渲染。
+   * ============================================================ */
+
+  /* ㊮① 空态与「开始活动」都被拆成两段 → 仍认出抽屉、数得到链接 */
+  const SPLIT_DRAWER = '<div id="drawer">'
+    + '<div id="empty"><span>没有进行中的福袋</span><span>活动</span></div>'
+    + '<table><tbody><tr id="r1"><td>10元店铺红包 ID 8899</td>'
+    + '<td><button id="b1"><span>开始</span><span>活动</span></button></td></tr></tbody></table>'
+    + '</div>';
+  const db1 = await bootDrawer(SPLIT_DRAWER);
+  db1.win.Element.prototype.getBoundingClientRect = function () {
+    /* 抽屉：贴右、960 宽；其余元素维持小方块（不算抽屉） */
+    if (this.id === 'drawer') {
+      return { width: 960, height: 700, top: 0, left: 747, right: 1707, bottom: 700, x: 747, y: 0, toJSON: function () {} };
+    }
+    return { width: 120, height: 40, top: 200, left: 800, right: 920, bottom: 240, x: 800, y: 200, toJSON: function () {} };
+  };
+  var prA = db1.api.probe();
+  ok(prA.panel === true, '㊮① 文案拆成多节点时仍认出抽屉（旧版三路全灭）：' + prA.by);
+  ok(prA.startLinks >= 1, '㊮① 「开始活动」拆两段也数得到：' + prA.startLinks);
+  ok(db1.api.pure.scanRows().length >= 1, '㊮① 拆节点的行也扫得到');
+
+  /* ㊮② 抽屉关着、页面主区有抽屉专属词但几何不对 → 不许误认成抽屉开着
+   *     （误认的代价很重：确认节拍会以为你开着，从此一次都不开） */
+  const db2 = await bootDrawer('<div id="main"><div>活动状态 奖品信息 中奖条件 创建活动</div></div>');
+  ok(db2.api.probe().panel === false, '㊮② 主区出现抽屉词但几何不满足 → 不误认');
+
+  /* ㊮③ 拆开的「开始活动 + 复制」并排块不能被当成一条链接 */
+  const db3 = await bootDrawer('<div id="drawer"><div>8元红包 奖品数 1</div>'
+    + '<div id="blk"><span>开始</span><span>活动</span><span>复制</span></div></div>');
+  db3.win.Element.prototype.getBoundingClientRect = function () {
+    if (this.id === 'drawer') {
+      return { width: 960, height: 700, top: 0, left: 747, right: 1707, bottom: 700, x: 747, y: 0, toJSON: function () {} };
+    }
+    return { width: 120, height: 40, top: 200, left: 800, right: 920, bottom: 240, x: 800, y: 200, toJSON: function () {} };
+  };
+  var prB = db3.api.probe();
+  ok(prB.panel === true, '㊮③ 铺垫：抽屉认得出来（含「开始活动」字样）');
+  ok(db3.api.pure.findExactLeaf(db3.doc.body, '开始活动', 12).length === 0 &&
+     prB.startLinks === 0,
+    '㊮③ 「开始活动+复制」并排块不算链接：' + prB.startLinks);
+
+  /* ㊮④ 倒计时取值窗口（2026-11-02 深夜：旧版 <60 秒、>30 分钟一律丢） */
+  function cdOf(txt) {
+    const host = db1.doc.createElement('div');
+    host.textContent = txt;
+    db1.doc.body.appendChild(host);
+    const at = db1.api.pure.computeDrawAt(host);
+    host.parentNode.removeChild(host);
+    return at ? Math.round((at - Date.now()) / 1000) : 0;
+  }
+  const lA = cdOf('活动进行中 剩 45 秒');
+  ok(lA >= 40 && lA <= 50, '㊮④ 只剩 45 秒也读得到（旧版 <60 秒直接丢）：' + lA);
+  const lB = cdOf('距结束 00:03:12');
+  ok(lB > 180 && lB <= 195, '㊮④ 「时:分:秒」不再被读成 3 分：' + lB);
+  const lC = cdOf('剩余 45 分钟');
+  ok(lC > 2600 && lC <= 2760, '㊮④ 超过 30 分钟的长福袋也读得到：' + lC);
+  ok(cdOf('开奖时间 12:30') === 0, '㊮④ 绝对时间仍不当倒计时（不回归）');
+  ok(cdOf('04 分 58 秒 后结束') > 290, '㊮④ 卡片后置倒计时照旧（不回归）');
+
+  /* ---------- ㊿ 手动刷新的读数：绿点，但不进消息盒子（2026-11-03 用户定）----------
+   * 用户原话：「这个消息用绿色点，但是不存进消息盒子。」
+   *   ① 读到有福袋在跑 ⇒ 绿点（success），这条口气就是「一切正常」；
+   *   ② 读数只是当下快照，点几次刷新就来几条，不许写进历史盒子
+   *      （盒子留给结果与异常，否则正经消息会被读数挤下去）；
+   *   ③ 没跑 / 读不到仍是灰点 —— 只有「确有进行中」才配绿。
+   * 断言按「点色来源 + 是否落盒」断，不绑死整句文案与空格。 */
+  /* 轮询等目标状态：异步用例一律等状态，禁止固定 sleep 卡时间
+   * （2026-11-02 实测固定 4300ms 在并发下 5 轮红 2 轮）。 */
+  function waitBag(fn, ms) {
+    const t0 = Date.now();
+    return new Promise(function (resolve) {
+      (function loop() {
+        if (fn()) return resolve(true);
+        if (Date.now() - t0 > (ms || 3000)) return resolve(false);
+        setTimeout(loop, 50);
+      })();
+    });
+  }
+  bp = await bootBagPage(null, { cardsHtml: cardHtml('福袋活动1', '02', '52', 770288809960) });
+  bp.api.manualRefresh();
+  ok(await waitBag(function () {
+    return bp.messages.some(function (m) { return /进行中/.test(m.text); });
+  }, 3000), '㊿① 铺垫：手动刷新读到了「进行中」那条');
+  var readMsg = bp.messages.filter(function (m) { return /进行中/.test(m.text); }).pop();
+  ok(readMsg.type === 'success', '㊿① 有进行中 → 绿点（success）：' + readMsg.type);
+  ok(readMsg.keepHistory === false, '㊿② 读数不进消息盒子（keepHistory:false）');
+
+  /* ㊿③ 没有进行中 ⇒ 仍是灰点，别把「没跑」也说成正常 */
+  bp = await bootBagPage('<script type="text/plain">没有进行中的福袋活动</script>', { emptyDrawer: true });
+  bp.api.manualRefresh();
+  ok(await waitBag(function () {
+    return bp.messages.some(function (m) { return /没有进行中的福袋/.test(m.text); });
+  }, 3000), '㊿③ 铺垫：读到了「没有进行中」那条');
+  var noneMsg = bp.messages.filter(function (m) { return /没有进行中的福袋/.test(m.text); }).pop();
+  ok(noneMsg.type === 'info', '㊿③ 没有进行中 → 仍灰点（info）：' + noneMsg.type);
+
+  /* ============================================================
+   * ㊯ 点完「开始活动」之后的死锁（2026-11-03 凌晨真机）
+   *   用户原话：「点了手动发福袋，获取不到倒计时，然后重新点手动发福袋，
+   *   就提示等他结束再发，但是他自己又不知道有没有成功发。与此同时，
+   *   手动刷新也被拦截不能刷新」。
+   *   根因：tick 开头 `if (!rows.length) return` 在校验点击之前就返回 ——
+   *   平台点完把抽屉收起后行数归零，pendingClick 永远挂着，
+   *   phase 停在 starting，两条人工出路全被同一条闸挡住。
+   * ============================================================ */
+  async function waitBag(fn, ms) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < (ms || 3000)) {
+      if (fn()) return true;
+      await sleep(50);
+    }
+    return false;
+  }
+
+  /* ㊯① 点完平台把抽屉收起（行全没了）→ 必须结案，不能停在 starting */
+  bp = await bootBagPage(null, {
+    drawerRowHtml: '<span id="ds9">● 活动待开始</span><a id="dstart">开始活动</a>'
+  });
+  bp.openDrawer();
+  bp.api.setTimingForTest({ tick: 120, verify: 400, scanMs: 200 });
+  bp.api.manualStart();
+  /* 8000ms：手动发福袋现在要先过 START_PRECHECK_MS(3 秒) 才点得下去 */
+  ok(await waitBag(function () { return bp.clicks.dstart >= 1; }, 9000),
+    '㊯① 铺垫：点了「开始活动」');
+  bp.doc.getElementById('host').innerHTML = '';        // 平台收起抽屉
+  ok(await waitBag(function () { return bp.api.snapshot().phase !== 'starting'; }, 4000),
+    '㊯① 看不见行也要结案（旧版永远停在 starting）：' + bp.api.snapshot().phase);
+  ok(bp.messages.some(function (m) { return /进行中/.test(m.text) && /手动刷新/.test(m.text); }),
+    '㊯① 结案时一并给出复核出路');
+
+  /* ㊯② 确认窗口内点「手动刷新」：不再被「等它完成再刷新」挡死 */
+  bp = await bootBagPage(null, {
+    drawerRowHtml: '<span id="ds10">● 活动待开始</span><a id="dstart">开始活动</a>'
+  });
+  bp.openDrawer();
+  bp.api.setTimingForTest({ tick: 120, verify: 5000, scanMs: 200 });
+  bp.api.manualStart();
+  ok(await waitBag(function () { return bp.clicks.dstart >= 1; }, 9000),
+    '㊯② 铺垫：点了「开始活动」，正处于确认窗口');
+  bp.messages.length = 0;
+  bp.api.manualRefresh();
+  await sleep(150);
+  ok(bp.messages.some(function (m) { return /确认/.test(m.text) && /自动刷新/.test(m.text); }),
+    '㊯② 手动刷新给出「等 N 秒自动刷新」而不是死锁：' +
+      bp.messages.map(function (m) { return m.text; }).join(' / '));
+
+  /* ㊯③ 只有进行中卡片、行读不全时，卡片仍要能给出倒计时（独立读数） */
+  bp = await bootBagPage(null, { cardsHtml: cardHtml('福袋活动1', '02', '52', 770288809950) });
+  bp.openDrawer();
+  bp.api.tick();
+  ok(bp.api.snapshot().running === true, '㊯③ 卡片在跑 → 判得出「进行中」');
+  ok(/^0?2:\d{2}$|^\d{2}:\d{2}$/.test(String(bp.api.snapshot().badge)),
+    '㊯③ 圆钮显示卡片倒计时：' + bp.api.snapshot().badge);
+
+  /* ㊯④ 刷新网页后第一次直接点手动发福袋（2026-11-03 00:15 真机，用户原话
+   * 「直接点手动发福袋，他就会无视进行中的福袋直接发，太过草率了，是恶性的行为」）：
+   * 刷新后内存全清、页面又不渲染进行中卡片，插件「忘了」刚才有福袋在跑 ——
+   * 旧版看都不看就把待开始行点掉，多发一个。现在会话存储里那份还没到期的
+   * 读数就是第一道防线：预检直接拦，连抽屉入口都不找。 */
+  bp = await bootBagPage(null, {
+    drawerRowHtml: '<span id="ds11">● 活动待开始</span><a id="dstart">开始活动</a>',
+    hold: Date.now() + 9 * 60000
+  });
+  bp.api.tick();
+  ok(bp.api.snapshot().drawIn > 8 * 60000,
+    '㊯④ 铺垫：刷新后把「还没到期」的读数接回来（圆钮走秒）：' + bp.api.snapshot().drawIn);
+  bp.api.manualStart();
+  await waitBag(function () { return bp.messages.length > 0; }, 5000);
+  ok(bp.clicks.dstart === 0, '㊯④ 读数没到期 → 一次「开始活动」都没点（不再多发）');
+  ok(bp.clicks.entry === 0, '㊯④ 预检就拦下，连抽屉入口都不找');
+  ok(/已经有福袋在进行中了/.test((bp.messages[bp.messages.length - 1] || {}).text || ''),
+    '㊯④ 提示：' + (bp.messages[bp.messages.length - 1] || {}).text);
+
+  /* ㊯⑤ 读数到期后就别再冒充「进行中」（否则圆钮永远停在假倒计时上） */
+  bp = await bootBagPage(null, { hold: Date.now() + 400 });
+  bp.api.tick();
+  ok(bp.api.snapshot().running === true, '㊯⑤ 铺垫：还没到期 → 按读数走');
+  await sleep(600);
+  bp.api.tick();
+  ok(bp.api.snapshot().running === false, '㊯⑤ 到期后不再声称进行中');
+
+  /* ㊯⑥ 手动刷新读到「有」→ 写进会话存储（刷新后接回 + 防误发都靠它） */
+  bp = await bootBagPage(null, {});
+  bp.api.manualRefresh();
+  ok(await waitBag(function () { return bp.api.snapshot().running === true; }, 8000),
+    '㊯⑥ 手动刷新读到「有进行中」');
+  var holdRaw = bp.win.sessionStorage.getItem('dycBagHoldDrawAt');
+  ok(Number(holdRaw) > Date.now(), '㊯⑥ 读数写进会话存储（刷新后能接回）：' + holdRaw);
+
+  /* ㊯⑦ 抽屉一关、页面不渲染卡片刻画 → 仍按这份读数走秒
+   *（旧版下一拍就清零，圆钮约 20 秒后回到「未开始」，人以为福袋没了） */
+  bp.doc.getElementById('host').innerHTML = '';
+  bp.api.tick();
+  ok(bp.api.snapshot().running === true, '㊯⑦ 现场消失后仍按上次读数走秒');
+  ok(bp.api.snapshot().drawIn > 0, '㊯⑦ 圆钮倒计时不为 0：' + bp.api.snapshot().drawIn);
+
+  /* ㊯⑧ 读到倒计时 → 卡片还渲染了一两秒（这一拍读到现场）→ 卡片消失
+   *（插件读到进行中就会替用户关抽屉），圆钮必须还在走秒。
+   * 2026-11-03 00:20 真机：「获取到倒计时，但是一两秒后直接变回未开始」——
+   * 旧版在「读到现场」那一拍把读数兜底清掉了，等现场一消失就再没东西兜。 */
+  bp = await bootBagPage(null, {});
+  bp.api.manualRefresh();
+  ok(await waitBag(function () { return bp.api.snapshot().running === true; }, 8000),
+    '㊯⑧ 铺垫：手动刷新读到「有进行中」');
+  bp.doc.getElementById('host').innerHTML =
+    '<div><span>进行中活动</span><span>02 分 40 秒 后结束</span>' +
+    '<div>10元店铺红包 ID 活动ID:7702886904815681999</div></div>';
+  bp.api.tick();
+  ok(bp.api.snapshot().running === true, '㊯⑧ 铺垫：卡片还在，这一拍读到现场');
+  bp.doc.getElementById('host').innerHTML = '';          // 卡片消失
+  bp.api.tick();
+  ok(bp.api.snapshot().running === true,
+    '㊯⑧ 现场消失后仍按读数走秒（旧版这里回「未开始」）：' + bp.api.snapshot().badge);
+  ok(bp.api.snapshot().drawIn > 0, '㊯⑧ 倒计时不为 0：' + bp.api.snapshot().drawIn);
+
+  /* ---------- ㊿ 手动刷新的读数：绿点，但不进消息盒子（2026-11-03 用户定）----------
+   * 用户原话：「这个消息用绿色点，但是不存进消息盒子。」
+   *   ① 读到有福袋在跑 ⇒ 绿点（success），这条口气就是「一切正常」；
+   *   ② 读数只是当下快照，点几次刷新就来几条，不许写进历史盒子；
+   *   ③ 没跑 / 读不到仍是灰点 —— 只有「确有进行中」才配绿。
+   * 断言按「点色来源 + 是否落盒」断，不绑死整句文案与空格。 */
+  bp = await bootBagPage(null, { cardsHtml: cardHtml('福袋活动1', '02', '52', 770288809960) });
+  bp.api.manualRefresh();
+  ok(await waitBag(function () {
+    return bp.messages.some(function (m) { return /进行中/.test(m.text); });
+  }, 3000), '㊿① 铺垫：手动刷新读到了「进行中」那条');
+  var readMsg = bp.messages.filter(function (m) { return /进行中/.test(m.text); }).pop();
+  ok(readMsg.type === 'success', '㊿① 有进行中 → 绿点（success）：' + readMsg.type);
+  ok(readMsg.keepHistory === false, '㊿② 读数不进消息盒子（keepHistory:false）');
+
+  /* ㊿③ 没有进行中 ⇒ 仍是灰点，别把「没跑」也说成正常 */
+  bp = await bootBagPage('<script type="text/plain">没有进行中的福袋活动</script>', { emptyDrawer: true });
+  bp.api.manualRefresh();
+  ok(await waitBag(function () {
+    return bp.messages.some(function (m) { return /没有进行中的福袋/.test(m.text); });
+  }, 3000), '㊿③ 铺垫：读到了「没有进行中」那条');
+  var noneMsg = bp.messages.filter(function (m) { return /没有进行中的福袋/.test(m.text); }).pop();
+  ok(noneMsg.type === 'info', '㊿③ 没有进行中 → 仍灰点（info）：' + noneMsg.type);
 
   console.log('');
   console.log('通过 ' + pass + ' 项' + (failures.length ? '，失败 ' + failures.length + ' 项' : '，全部通过'));

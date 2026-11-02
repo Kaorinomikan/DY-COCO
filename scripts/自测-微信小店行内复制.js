@@ -43,6 +43,23 @@ function check(name, fn) {
 }
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+/* 等条件成立，最多等 timeoutMs。
+ * ★ 为什么不用固定 sleep（2026-11-02 修偶发失败）：
+ *   原来「取不到链接」那条用例靠 `sleep(4300)` 等「桥询问 1500ms + 面板 24 轮
+ *   (2.4s)」，余量只有 400ms。并发跑全量时定时器被推迟，实测 5 轮里红 2 轮，
+ *   而代码本身是对的 —— 这就是「自测总是红」里最难查的那一类：偶发、且与被测
+ *   功能无关。改成等**目标状态**之后，机器慢只会让它多等几秒，不会判错。
+ *   注意：这里的 timeoutMs 只是防呆上限，不是断言对象；
+ *   用例断言的始终是「最终状态对不对」，不是「几秒内完成」。 */
+async function waitFor(pred, timeoutMs, step) {
+  const limit = Date.now() + timeoutMs;
+  while (Date.now() < limit) {
+    if (pred()) return true;
+    await sleep(step || 50);
+  }
+  return false;
+}
+
 const LINK = 'https://store.weixin.qq.com/shop/a/XHEnL4JZ4AAkjyf';
 const CODE_OK = 'NE1C1162W';
 // 长名字末尾带款号 → 能取号；短名字末尾是中文 → 取不到号
@@ -312,7 +329,9 @@ function rowOf(sr, i) {
       const before = A.copied.length;
       const btn = rowOf(A.sr, 1).querySelector('[data-dyc-wx-btn]');   // 第 1 行是纯中文名
       btn.click();
-      await sleep(1200);
+      // 等剪贴板真的出现新内容（原先是固定等 1200ms）
+      await waitFor(() => A.copied.length > before, 12000);
+      await sleep(80);           // 让关弹层与提示收尾
       assert.equal(A.copied.length, before + 1, '没有复制');
       assert.equal(A.copied[A.copied.length - 1], 'NE1C1142W',
         '没切成第一段：' + A.copied[A.copied.length - 1]);
@@ -354,7 +373,9 @@ function rowOf(sr, i) {
       const before = A.copied.length;
       const btn = rowOf(A.sr, 0).querySelectorAll('[data-dyc-wx-btn]')[1];
       btn.click();
-      await sleep(1800);         // 先等桥询问超时(1500ms) → 再等面板第一轮轮询(100ms)
+      // 等按钮真的变「已复制」（原先是固定等 1800ms：桥询问 1500 + 首轮轮询 100）
+      await waitFor(() => btn.textContent === '已复制', 12000);
+      await sleep(80);           // 让复制与关面板的收尾走完
       assert.equal(A.copied.length, before + 1, '剪贴板没有新增');
       assert.equal(A.copied[A.copied.length - 1], LINK, '复制内容不对：' + A.copied[A.copied.length - 1]);
       assert.equal(A.doc.querySelectorAll('.share-popover').length, 0, '分享面板没关掉');
@@ -428,7 +449,8 @@ function rowOf(sr, i) {
   await (async () => {
     try {
       rowOf(H.sr, 0).querySelector('[data-dyc-wx-btn]').click();
-      await sleep(1000);
+      // 等剪贴板出现内容（原先是固定等 1000ms）
+      await waitFor(() => H.copied.length > 0, 12000);
       assert.equal(H.copied[0], 'AB11', '没取出现最多的：' + H.copied[0]);
       pass++; console.log('  ✓ 三个 SKU 里 AB11 出现两次 → 取 AB11，不取 CD22');
     } catch (e) {
@@ -464,7 +486,8 @@ function rowOf(sr, i) {
   await (async () => {
     try {
       rowOf(J.sr, 0).querySelector('[data-dyc-wx-btn]').click();
-      await sleep(1000);
+      // 等剪贴板出现内容（原先是固定等 1000ms）
+      await waitFor(() => J.copied.length > 0, 12000);
       assert.equal(J.copied[0], '12345678', '纯数字编码没取到：' + J.copied[0]);
       pass++; console.log('  ✓ 12345678-1-1 → 12345678');
     } catch (e) {
@@ -608,7 +631,10 @@ function rowOf(sr, i) {
       const before = B.copied.length;
       const btn = rowOf(B.sr, 0).querySelectorAll('[data-dyc-wx-btn]')[1];
       btn.click();
-      await sleep(4300);         // 桥询问 1500ms + 面板 24 轮(2.4s) 全等满
+      // 等按钮落到「取不到」（原先是固定等 4300ms：桥询问 1500 + 面板 24 轮 2400，
+      // 余量仅 400ms —— 并发时实测 5 轮红 2 轮）。上限 15s 只是防呆，不参与断言。
+      await waitFor(() => btn.textContent === '取不到', 15000, 100);
+      await sleep(120);          // 让最后一条提示落到状态条
       assert.equal(B.copied.length, before, '取不到时不该复制任何东西');
       assert.equal(btn.textContent, '取不到', '按钮应显示「取不到」：' + btn.textContent);
       const t = B.toasts[B.toasts.length - 1];
@@ -628,7 +654,9 @@ function rowOf(sr, i) {
     try {
       const btn = rowOf(E.sr, 0).querySelector('[data-dyc-wx-btn]');
       btn.click();
-      await sleep(2900);          // 弹层轮询 25 轮（2.5s）
+      // 等按钮落到「无货号」（原先是固定等 2900ms：弹层 25 轮 2500，余量 400ms）
+      await waitFor(() => btn.textContent === '无货号', 15000, 100);
+      await sleep(120);          // 让最后一条提示落到状态条
       assert.equal(E.copied.length, 0, '取不到时不该复制任何东西');
       assert.equal(btn.textContent, '无货号', '按钮应显示「无货号」：' + btn.textContent);
       const t = E.toasts[E.toasts.length - 1];

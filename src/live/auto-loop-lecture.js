@@ -305,6 +305,12 @@
   function sliderMax() { return MAX_MIN; }
   function sliderValue() { return state.minutes; }
   function sliderPct(v) { return (v - MIN_MIN) / (MAX_MIN - MIN_MIN) * 100; }
+  /* 滑条左右内缩(2026-11-02,与「超级福袋」那个滑条同一个修法):
+   * 轨道撑满整宽,但滑钮与刻度的定位域要两端各让出**一个滑钮半径**,
+   * 否则拉到 1 分钟/15 分钟时滑钮有半个身子伸到轨道外(用户截图指出
+   * 福袋那边「最左最右轻微出界」,这里是同一套几何)。取 10px 覆盖按下
+   * 时 20px 的尺寸;填充条仍从轨道最左端算起,宽度用 calc 算到滑钮圆心。 */
+  var TRACK_INSET = 10;
   /** 秒档只能是四档之一;给什么值都吸到最近的一档 */
   function snapSec(v) {
     var best = SEC_TIERS[0], bd = 1e9;
@@ -1823,7 +1829,7 @@
     '.zones .g{width:50%;background:#f2fdf5;color:#0a8f28;border-top:1px solid #b7ebc6;border-bottom:1px solid #b7ebc6}',
     '.zones .o{width:21.4286%;background:#fff8f0;color:#c25e00;border:1px solid #ffd9b3;border-left:none}',
 
-    '.ticks{position:relative;height:17px}',
+    '.ticks{position:relative;height:17px;margin:0 10px}',
     '.ticks button{position:absolute;transform:translateX(-50%);font-size:10px;color:#86909c;white-space:nowrap;cursor:pointer;border:0;background:transparent;padding:0}',
     '.ticks button.rec{color:#0a8f28;font-weight:600}',
     '.ticks button.first{transform:translateX(0)}',
@@ -1837,6 +1843,9 @@
      *   ④ 按下时光环扩大,拖动手感有反馈。 */
     '.track{position:relative;height:24px;cursor:pointer;touch-action:none}',
     '.rail{position:absolute;left:0;right:0;top:9px;height:6px;border-radius:3px;background:#e9ebf0;box-shadow:inset 0 1px 2px rgba(31,35,41,.08)}',
+    /* 滑钮/刻度的定位域(见 TRACK_INSET 注释):两端各内缩一个半径,
+     * p=0 / p=100 时滑钮外沿正好与轨道端点相切。 */
+    '.in{position:absolute;left:10px;right:10px;top:0;bottom:0}',
     '.fill{position:absolute;left:0;top:9px;height:6px;border-radius:3px;background:linear-gradient(90deg,#6aa1ff,#165dff);box-shadow:inset 0 1px 0 rgba(255,255,255,.35)}',
     '.tick{position:absolute;top:4px;width:1px;height:16px;background:#d3d7de;transform:translateX(-50%)}',
     '.tick.rec{width:2px;height:18px;top:3px;background:#00b42a}',
@@ -1899,7 +1908,7 @@
       '<div class="zones"><span class="r">秒杀 · 引流</span><span class="g">承接 · 利润</span><span class="o">高客单</span></div>',
       '<div class="ticks"></div>',
       '<div class="track" role="slider" tabindex="0" aria-label="分钟间隔">',
-      '<div class="rail"></div><div class="fill"></div><div class="thumb"></div></div></div>',
+      '<div class="rail"></div><div class="fill"></div><div class="in"><div class="thumb"></div></div></div></div>',
       '<div class="readout"><div class="r1"></div><div class="r2"></div><div class="r3" hidden></div></div>'
     ].join('');
     shadow.appendChild(panel);
@@ -2026,9 +2035,12 @@
     var marks = document.createElement('div');
     marks.className = 'marks';
     marks.innerHTML = html;
-    var old = refs.track.querySelector('.marks');
+    /* 刻度跟着滑钮进内缩域:两者同一个坐标系,「3 分钟」那根推荐线
+     * 才正好落在滑钮中心的正上方。 */
+    var host = refs.track.querySelector('.in') || refs.track;
+    var old = host.querySelector('.marks');
     if (old) old.remove();
-    refs.track.appendChild(marks);
+    host.appendChild(marks);
   }
 
   /* ---------- 滑条:阻尼 + 吸附（只服务分钟档） ---------- */
@@ -2068,7 +2080,12 @@
 
   function refreshTrack() {
     var p = sliderPct(slider.cur);
-    if (refs.fill) refs.fill.style.width = p + '%';
+    /* 填充条:起点固定在轨道最左端,终点落在滑钮圆心 —— 滑钮圆心在 .in
+     * 里是 (100% - 2R) * p,换算回轨道坐标系再加一个 R。 */
+    if (refs.fill) {
+      refs.fill.style.width = 'calc(' + TRACK_INSET + 'px + (100% - '
+        + (TRACK_INSET * 2) + 'px) * ' + (p / 100) + ')';
+    }
     if (refs.thumb) refs.thumb.style.left = p + '%';
   }
 
@@ -2147,8 +2164,11 @@
   /** 滑条像素 → 分钟值。rect 可外部传入:拖动期间面板位置冻结,轨道矩形不变,不必每帧重读布局。 */
   function valueAt(clientX, rect) {
     var r = rect || refs.track.getBoundingClientRect();
-    var x = Math.min(Math.max(clientX - r.left, 0), r.width);
-    return sliderMin() + (x / r.width) * (sliderMax() - sliderMin());
+    /* 滑钮的行程不是轨道全宽:两端各内缩 TRACK_INSET,指针与滑钮中心才严格
+     * 对齐(否则压到轨道极左/极右时值已到头、滑钮还差 10px 没跟上)。 */
+    var usable = Math.max(1, r.width - TRACK_INSET * 2);
+    var x = Math.min(Math.max(clientX - r.left - TRACK_INSET, 0), usable);
+    return sliderMin() + (x / usable) * (sliderMax() - sliderMin());
   }
 
   /** 只承认真人手势:自动刷新每 10 秒派发的合成点击 isTrusted=false,不能当成用户松手。
@@ -2339,7 +2359,7 @@
      * src/content/overlay-guard.js(交集 ≥ 控件 35%,下拉面板也算挡道)。
      * 共享模块缺席时退回本地旧判据(面积 ≥ 视口 12%),保证胶囊照样会避让。 */
     var g = window.dycOverlayGuard;
-    if (g && typeof g.covers === 'function' && typeof g.enabled === 'function' && g.enabled()) {
+    if (g && typeof g.covers === 'function') {
       return g.covers(rect);
     }
     var list = modalRectsNow();

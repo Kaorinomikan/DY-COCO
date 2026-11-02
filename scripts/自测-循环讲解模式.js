@@ -193,6 +193,22 @@ function setup(store = {}) {
   check(dragFix.api.state.minutes===dragFix.api.slider.target,'松手把新的分钟值存下来');
   check(dragFix.store.dybAutoLoopGroup==='min','拖滑条后启用组写进存储');
 
+  /* 滑条两端不出界(2026-11-02 用户截图:福袋那个滑条「拉到最左最右轻微出界」,
+   * 这个面板是同一套几何)。滑钮与刻度同装在内缩域 .in 里,内缩量 ≥ 滑钮半径,
+   * p=0 / p=100 时外沿才不越过轨道端点;填充条仍从轨道最左端算到滑钮圆心。 */
+  const trackEl = dragFix.ui('.track');
+  const inEl = trackEl.querySelector('.in');
+  const cssTxt = dragFix.w.document.getElementById('dyc-auto-loop-host').shadowRoot.querySelector('style').textContent;
+  check(!!inEl && !!inEl.querySelector('.thumb') && !!inEl.querySelector('.marks'),
+    '滑钮与刻度同在内缩域里(圆心不会跑出轨道)');
+  const insetM = /\.in\{[^}]*left:(\d+)px[^}]*right:(\d+)px/.exec(cssTxt);
+  const insetPx = insetM ? +insetM[1] : -1;
+  const thumbR = (+( /\.thumb\{[^}]*width:(\d+)px/.exec(cssTxt) || [0,0])[1]) / 2;
+  check(insetPx >= thumbR && thumbR > 0, '内缩 '+insetPx+'px ≥ 滑钮半径 '+thumbR+'px,拉到头也不越过轨道端点');
+  const fillW = trackEl.querySelector('.fill').style.width;
+  check(/^calc\(/.test(fillW) && fillW.indexOf('(100% - '+(insetPx * 2)+'px)') > 0,
+    '填充条按内缩区间算宽(实测 '+fillW+')');
+
   for(const fixture of [f,restart,resume,race,defaults,dragFix]) fixture.dom.window.close();
   console.log('循环讲解模式行为自测：'+passed+'/'+passed+' 通过');
 })().catch(e=>{console.error(e);process.exit(1);});

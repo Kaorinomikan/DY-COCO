@@ -6,6 +6,7 @@
 #   bash scripts/wt-merge.sh <名字>                # 预检:能不能合、会不会冲突
 #   bash scripts/wt-merge.sh <名字> --go            # 真合并到 main(仍然不推送)
 #   bash scripts/wt-merge.sh <名字> --go --cleanup  # 合并后删掉工作树与分支
+#   ... --no-selftest                              # 跳过「合并前相关自测」（默认会跑）
 #
 # 它与 publish.sh 的分工:
 #   · 本脚本只把任务分支**合并进本地 main**;
@@ -25,9 +26,11 @@ WT_ROOT="C:/Develop project/DY-COCO-wt"
 NAME="$1"
 GO=""
 CLEANUP=""
+SELFTEST=""
 for a in "$@"; do
   [ "$a" = "--go" ] && GO=1
   [ "$a" = "--cleanup" ] && CLEANUP=1
+  [ "$a" = "--no-selftest" ] && SELFTEST=0
 done
 
 if [ -z "$NAME" ]; then
@@ -316,6 +319,29 @@ else
 fi
 
 echo ""
+
+# 6.5) 合并**前**跑「与本任务改动相关」的自测（2026-11-02 新增）
+# ★ 为什么放在合并前、且只跑相关子集：
+#   合并之后才发现红，代价是「重开工作树 → 再改 → 再回收」一整轮；
+#   在合并前用 5 秒跑相关用例，能挡掉绝大多数这种返工。
+#   必须在**任务工作树**里跑 —— 主工作区那时还是合并前的代码，
+#   在上面跑等于测旧版，红了才是误报。
+#   全量仍由推送期 publish.sh 负责（这里不重复跑全量）。
+if [ "$SELFTEST" != "0" ] && [ -d "$WT_PATH" ] && [ -f "$WT_PATH/scripts/run-selftests.py" ]; then
+  echo "── 合并前自测（在任务工作树内，只跑与本任务改动相关的用例）──"
+  SELFTEST_LOG="$REPO/.tmp/selftest-$NAME.log"
+  if ( cd "$WT_PATH" && "$PY" scripts/run-selftests.py --changed > "$SELFTEST_LOG" 2>&1 ); then
+    grep -E '按改动筛选|自测脚本：' "$SELFTEST_LOG" | sed 's/^/   /'
+    echo "[✓] 相关自测通过"
+  else
+    sed 's/^/   /' "$SELFTEST_LOG"
+    echo "[✗] 相关自测未通过 —— 已拦在合并前（合并后再发现要重开工作树，代价更大）"
+    echo "     在 $WT_PATH 里修好并提交后重跑本命令；确属断言过时也要先按新写法更新断言。"
+    FAIL=1
+  fi
+  rm -f "$SELFTEST_LOG"
+  echo ""
+fi
 
 if [ $FAIL -ne 0 ]; then
   echo "===== 预检未通过,未做任何改动 ====="

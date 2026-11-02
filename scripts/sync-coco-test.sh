@@ -88,7 +88,9 @@ snapshot() {
       [ -f "$f" ] && sha256sum "$f"
     done
     for d in $EXT_DIRS; do
-      [ -d "$d" ] && find "$d" -type f -exec sha256sum {} \;
+      [ -d "$d" ] && # 2026-11-02 提速：{} + 一次传参
+      #，而不是每个文件启一个进程。
+      find "$d" -type f -exec sha256sum {} +
     done
   ) | LC_ALL=C sort -k2
 }

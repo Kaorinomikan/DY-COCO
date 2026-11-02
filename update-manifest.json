@@ -1,5 +1,5 @@
 {
-  "version": "26.11.02.1",
+  "version": "26.11.03.1",
   "algorithm": "sha256",
   "files": [
     {
@@ -20,7 +20,7 @@
     {
       "path": "manifest.json",
       "size": 8209,
-      "sha256": "f4a73a8fb8229ca2aa066ca0acadc8bbfd642c530ec7ab23b4f6538950b0b085"
+      "sha256": "d0414389107a33beb1a3b3777d89c00f93eb1d1aaf29efbe32a07387cae2dc3f"
     },
     {
       "path": "src/background/service-worker.js",
@@ -64,8 +64,8 @@
     },
     {
       "path": "src/content/diag.js",
-      "size": 53832,
-      "sha256": "4400123ea93f1537963a0cc63c86ea0367776143037ed1287f62578e3724458e"
+      "size": 56614,
+      "sha256": "6d1c1bdc20426c14224a3410de13a24fdce5741a648a46fc5d5ff9f0799bc17e"
     },
     {
       "path": "src/content/dialog.js",
@@ -74,8 +74,8 @@
     },
     {
       "path": "src/content/flags.js",
-      "size": 78641,
-      "sha256": "c408481fa3dd335a373063c729eff1119972676973da394aef2df59a30d253d2"
+      "size": 78208,
+      "sha256": "ae7a4208c8ee5d67dc9e7d1ee30f5a6d9b29ff1098bf653a659b9391aa36d7f8"
     },
     {
       "path": "src/content/inject-button.js",
@@ -94,8 +94,8 @@
     },
     {
       "path": "src/content/overlay-guard.js",
-      "size": 15294,
-      "sha256": "2631f59eff60bbffa8f560ff95256b36eaee9ac3d38dcd35084a7ce3cef4782b"
+      "size": 14085,
+      "sha256": "936e3a0a137b24b5757be72a348b62164710b7b471bf30dac33c36af4ecb0d0f"
     },
     {
       "path": "src/content/page-probe.js",
@@ -164,13 +164,13 @@
     },
     {
       "path": "src/live/auto-loop-lecture.js",
-      "size": 221974,
-      "sha256": "e62f05cd1f8f0d5f8f88c1e252ed09ddf50502135996cd6da6afab804b4da14b"
+      "size": 223421,
+      "sha256": "273b0bc6c33b57683116b101181720402f6c6c46ccc76f9bce2d395705e83dad"
     },
     {
       "path": "src/live/auto-refresh.js",
-      "size": 74482,
-      "sha256": "7aec5200aeb60b2184c920b06ff266cf2b21b2eaf2499da7fe1c8c33509ca929"
+      "size": 74432,
+      "sha256": "7c68c69e81ae5fc43bf6cad417aaa3e3640993bf4e79f7b5283f4ee30af3beec"
     },
     {
       "path": "src/live/back-to-bottom.js",
@@ -229,8 +229,8 @@
     },
     {
       "path": "src/live/lucky-bag.js",
-      "size": 154081,
-      "sha256": "16357b5763d464d0a9cc41ec6e7a61893ac9eea670ee8f742a9851eb0b653809"
+      "size": 218609,
+      "sha256": "b9b79595ecb9ff22a3b8fdc6cd7d573cbe6c87260c76ab66cbc4bb17de6cf204"
     },
     {
       "path": "src/live/name-wrap.js",

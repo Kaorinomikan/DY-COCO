@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "可可助手",
-  "version": "26.11.02.1",
+  "version": "26.11.03.1",
   "description": "抖音抖店、微信小店、中控台小助手",
   "permissions": [
     "storage",

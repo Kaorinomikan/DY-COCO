@@ -15,7 +15,8 @@
  *   F. 强选择器（auxo / role=dialog）不要求 position，但要求有层级
  *   G. 矩形裁进视口：浮层超出屏幕一部分仍能正确判定
  *   H. bind / applyOne：被盖住 ⇒ visibility:hidden；浮层关掉 ⇒ 原值还原（不留残影）
- *   I. 开关：setFlag(false) ⇒ 全部还原且心跳停止；再开 ⇒ 重新托管
+ *   I. 无开关（2026-11-02 撤掉「浮层让位」菜单项）：让位恒定生效，
+ *      对外不再暴露 setFlag / enabled，源码里也没有可关的开关状态
  *   J. 源码红线：tooltip 不进判据、COVER_RATIO 与选择器表保持本期口径
  *
  * 做法与 scripts/自测-小黄车自动刷新.js 同源：按函数名抠出源码 → 最小 DOM 垫片上求值
@@ -116,12 +117,12 @@ function sliceVar(src, name) {
 const FN_NAMES = [
   'classStr', 'isOurNode', 'isPanel', 'clipRect', 'scan', 'collectPanels',
   'panelRects', 'invalidate', 'covers', 'applyOne', 'tick', 'stopPump',
-  'startPump', 'bind', 'unbind', 'setFlag'
+  'startPump', 'bind', 'unbind'
 ];
 const VAR_NAMES = [
   'CACHE_MS', 'PUMP_MS', 'COVER_RATIO', 'MIN_SIDE', 'MIN_AREA',
   'PANEL_SEL_STRONG', 'PANEL_SEL_WEAK', 'boundEls', 'rectCache', 'rectAt',
-  'pumpTimer', 'flagOn', 'flagWired', 'seenToken'
+  'pumpTimer', 'seenToken'
 ];
 
 function buildModule() {
@@ -378,30 +379,33 @@ group('H. bind 后的显隐与还原');
   summaryLine('H1~H3 让位与还原', true);
 }
 
-/* ---------- I. 开关 ---------- */
-group('I. 开关关闭即退回旧行为');
+/* ---------- I. 无开关：让位恒定 ---------- */
+group('I. 无开关，让位恒定生效');
 {
-  const { m } = fresh();
+  const { m, src } = fresh();
   const btn = new FakeEl({ cls: 'dyc-search-fab', rect: rect(780, 820, 48, 48), cs: { position: 'fixed', display: 'flex' } });
   btn.style.visibility = '';
   registry['.auxo-modal-root'] = [new FakeEl({ rect: rect(0, 0, 1600, 900), cs: { position: 'fixed', zIndex: '1000' } })];
   m.invalidate();
   m.bind(btn);
   m.tick();
-  ok('I1 开着时让位', btn.style.visibility === 'hidden', '得到 ' + btn.style.visibility);
+  ok('I1 有浮层覆盖 ⇒ 让位', btn.style.visibility === 'hidden', '得到 ' + btn.style.visibility);
 
-  m.setFlag(false);
-  ok('I2 关掉开关 ⇒ 立刻还原', btn.style.visibility === '', '得到 ' + JSON.stringify(btn.style.visibility));
-  ok('I3 关掉开关 ⇒ 心跳停止', timers.length === 0, '得到 ' + timers.length);
-  ok('I4 enabled() 反映开关', m.setFlag(true) === undefined && timers.length === 1);
+  /* 2026-11-02 用户：「删掉这个菜单可选项，这个功能不做选择」。下面三条是机械
+   * 保障：接口没了、源码里也没有开关状态，就不会被谁说一句「关掉」又退回旧行为。 */
+  ok('I2 对外不再暴露 setFlag / enabled', m.setFlag === undefined && m.enabled === undefined);
+  ok('I3 源码里不再有开关状态', !/\bflagOn\b|\bflagWired\b/.test(src) && !/dycWatchFlags/.test(src));
+  ok('I4 不再读取 overlayYield 存档键', !/overlayYield\s*===\s*false/.test(src));
 
+  /* 没有开关也要能自愈：浮层撤掉后控件自己回来 */
+  registry['.auxo-modal-root'] = [];
   m.invalidate();
   m.tick();
-  ok('I5 重新打开 ⇒ 再次让位', btn.style.visibility === 'hidden', '得到 ' + btn.style.visibility);
+  ok('I5 浮层撤销 ⇒ 控件自动回来', btn.style.visibility === '', '得到 ' + JSON.stringify(btn.style.visibility));
 
   m.unbind(btn);
   ok('I6 unbind ⇒ 还原并停心跳', btn.style.visibility === '' && timers.length === 0);
-  summaryLine('I1~I6 开关与解绑', true);
+  summaryLine('I1~I6 无开关与解绑', true);
 }
 
 /* ---------- J. 源码红线 ---------- */

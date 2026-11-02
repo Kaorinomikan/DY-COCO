@@ -234,7 +234,30 @@ zh() {{ cat; }}
         self.assertIn('exit 1', source.split('check-product-copy.js', 1)[1].split('fi', 1)[0])
 
 
+def _run_case(name):
+    """跑单个用例；每个用例自带独立沙箱（mkdtemp），因此可以并行。"""
+    case = FlowTests(name)
+    result = unittest.TestResult()
+    case.run(result)
+    return name, result
+
+
 if __name__ == '__main__':
     if not BASH:
         raise SystemExit('找不到 bash，无法运行流程行为自测')
-    unittest.main(verbosity=2)
+    # ★ 2026-11-02 并行化：12 个用例各自建沙箱、互不共享文件，
+    #   串行要 38 秒（Windows 上每次 bash 启动约 1.5 秒），
+    #   并行后约 8 秒 —— 这是全量自测里最大的一块。
+    import concurrent.futures
+    names = sorted(n for n in dir(FlowTests) if n.startswith('test_'))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=6) as pool:
+        outcomes = list(pool.map(_run_case, names))
+    failed = 0
+    for name, res in outcomes:
+        print(('通过' if res.wasSuccessful() else '失败') + '：' + name)
+        if not res.wasSuccessful():
+            failed += 1
+            for _, tb in list(res.failures) + list(res.errors):
+                print(tb)
+    print('发布回收流程自测：%d/%d 通过。' % (len(names) - failed, len(names)))
+    raise SystemExit(1 if failed else 0)

@@ -34,7 +34,9 @@
  *   · 平台 tooltip（`.auxo-tooltip`，鼠标停在任何按钮上都会飘）**不算浮层**，
  *     否则正常浏览页面时控件会一直闪没。
  *
- * 开关：`overlayYield`（中控台 · 默认开）。关掉即恢复旧行为（控件恒显）。
+ * 开关：**无**（2026-11-02 起）。原 `overlayYield` 开关已撤下 ——
+ *   用户原话「删掉这个菜单可选项，这个功能不做选择，已经写入各个浮动按钮的
+ *   底层且默认执行了」。让位行为恒生效，模块内不再有可关的开关状态。
  * ============================================================
  */
 (function () {
@@ -83,9 +85,8 @@
   var rectCache = null;
   var rectAt = 0;
   var pumpTimer = null;
-  /* 开关：缺省即开（见 flags.js 的 DYC_FLAGS_META 里 overlayYield 一项） */
-  var flagOn = true;
-  var flagWired = false;
+  /* 没有开关状态(2026-11-02 撤掉 overlayYield 开关后):让位恒生效,
+   * 见 flags.js 同名注释。老存档里的 overlayYield 键从此无人读取。 */
   var seenToken = 0;
 
   /** 取元素类名（兼容 SVG 的 SVGAnimatedString） */
@@ -234,7 +235,7 @@
     if (cs && cs.display === 'none') return;
     var r;
     try { r = el.getBoundingClientRect(); } catch (e) { return; }
-    var hide = flagOn && covers(r);
+    var hide = covers(r);
     if (hide) {
       if (el.__dycGuardHidden) return;
       el.__dycGuardHidden = true;
@@ -262,7 +263,7 @@
   }
 
   function startPump() {
-    if (pumpTimer || !flagOn) return;
+    if (pumpTimer) return;
     pumpTimer = setInterval(tick, PUMP_MS);
   }
 
@@ -293,48 +294,6 @@
     if (!boundEls.length) stopPump();
   }
 
-  /** 开关切换：关 ⇒ 全部还原并停心跳；开 ⇒ 重新开始托管 */
-  function setFlag(on) {
-    var next = on !== false;
-    if (next === flagOn) {
-      if (next) startPump();
-      return;
-    }
-    flagOn = next;
-    invalidate();
-    if (!flagOn) {
-      for (var i = 0; i < boundEls.length; i++) {
-        var el = boundEls[i];
-        if (!el || !el.__dycGuardHidden) continue;
-        el.__dycGuardHidden = false;
-        el.style.visibility = el.__dycGuardPrevVis || '';
-        el.__dycGuardPrevVis = '';
-      }
-      stopPump();
-      return;
-    }
-    startPump();
-    tick();
-  }
-
-  /** 读一次开关（缺省即开：老存档里根本没有这个键时不能误判成「关」） */
-  function wireFlag() {
-    if (flagWired) return;
-    flagWired = true;
-    try {
-      if (typeof dycReadFlags === 'function') {
-        dycReadFlags().then(function (f) {
-          if (f && f.overlayYield === false) setFlag(false);
-        });
-      }
-      if (typeof dycWatchFlags === 'function') {
-        dycWatchFlags(function (f) {
-          setFlag(!(f && f.overlayYield === false));
-        });
-      }
-    } catch (e) { /* 开关层异常不影响主判定：按默认开继续 */ }
-  }
-
   /** 排查用：当前认到的浮层矩形（写进控制台或诊断备注，不弹 UI） */
   function dump() {
     var list = collectPanels();
@@ -351,13 +310,8 @@
     covers: covers,
     bind: bind,
     unbind: unbind,
-    setFlag: setFlag,
-    /** 开关此刻是否生效。灯与讲解胶囊在关闭时用来自判「要不要退回本地旧判据」 */
-    enabled: function () { return flagOn; },
     invalidate: invalidate,
     rects: panelRects,
     dump: dump
   };
-
-  wireFlag();
 })();

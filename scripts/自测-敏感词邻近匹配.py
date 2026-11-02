@@ -89,6 +89,55 @@ def main():
             failed.append("误伤: %s" % t)
         print("  %-34s %s" % (t[:32], "✓" if ok else "✗ 误伤"))
 
+    # ---- 词表自身的一致性（2026-11-02 新增）----
+    # ★ 为什么钉这两条：上一轮为了让闸门变绿，把某个词整条加进白名单，
+    #   而它同时还在拦截表里 —— 拦截表那一行从此永久不响（假绿灯），
+    #   本自测也随之永久红（样本要求必须拦下、实际被放行）。
+    #   所以：① 两表冲突必须被判为配置错误；② 当前真实词表必须没有冲突。
+    print()
+    print("词表一致性：")
+    fake_words = {"block_words": [("示例词", "示例理由")]}
+    conflict_caught = (g.validate_tables(fake_words, {"示例词": "看起来正当的理由"}, quiet=True) is False)
+    if not conflict_caught:
+        failed.append("两表冲突未被拦下（白名单会把拦截表整行压死）")
+    print("  %-34s %s" % ("白名单与拦截表冲突 ⇒ 中止",
+                          "✓" if conflict_caught else "✗ 未拦下"))
+
+    real_ok = g.validate_tables(words, wl, quiet=True)
+    if not real_ok:
+        failed.append("当前真实词表存在两表冲突")
+    print("  %-34s %s" % ("当前真实词表无冲突", "✓" if real_ok else "✗ 有冲突"))
+
+    # 提交信息扫描不得回头扫已上线的历史（否则历史措辞会变成持久红灯）
+    args = g.pending_commit_log_args()
+    no_history = "-50" not in args
+    if not no_history:
+        failed.append("提交信息扫描退回了最近 50 条历史（会产生持久红灯）")
+    print("  %-34s %s" % ("提交信息不回头扫历史", "✓" if no_history else "✗ 退回 -50"))
+
+    # 词表定位：工作树里也必须自动找到主工程的词表（不许靠人工拷贝）
+    cands = [os.path.normpath(c) for c in g.word_candidates()]
+    chosen = os.path.normpath(os.path.abspath(g.default_words()))
+    located = (chosen in cands) and ("DY-COCO-wt" not in chosen) and os.path.isfile(chosen)
+    if not located:
+        failed.append("词表定位没指向主工程那份（工作树会判词表缺失）")
+    print("  %-34s %s" % ("工作树自动定位主工程词表", "✓" if located else "✗ 定位错"))
+
+    # 显式指路优先（排查时用 DYC_SENSITIVE_WORDS 换一份词表）
+    saved = os.environ.get("DYC_SENSITIVE_WORDS")
+    os.environ["DYC_SENSITIVE_WORDS"] = os.path.join(HERE, "说明.sh")
+    try:
+        env_first = os.path.normpath(os.path.abspath(g.default_words()))
+    finally:
+        if saved is None:
+            os.environ.pop("DYC_SENSITIVE_WORDS", None)
+        else:
+            os.environ["DYC_SENSITIVE_WORDS"] = saved
+    hinted = env_first == os.path.normpath(os.path.abspath(os.path.join(HERE, "说明.sh")))
+    if not hinted:
+        failed.append("环境变量 DYC_SENSITIVE_WORDS 没有优先生效")
+    print("  %-34s %s" % ("显式指路的词表优先", "✓" if hinted else "✗ 未生效"))
+
     print()
     if failed:
         print("✗ %d 项不符：" % len(failed))

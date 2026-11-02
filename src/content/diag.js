@@ -1121,11 +1121,21 @@
       }
       L.push('- 抽屉:' + (lbSc.panel ? ('已认出(' + (lbSc.by || '?') + ')') : '**没认出**') +
         ' · 行 ' + (lbSc.rows || 0) + ' 个 · 全页「开始活动」链接 ' + (lbSc.startLinks || 0) + ' 个' +
-        (lbSc.searchPh ? (' · 搜索框「' + clamp(lbSc.searchPh, 20) + '」') : ''));
+        (lbSc.searchPh ? (' · 搜索框「' + clamp(lbSc.searchPh, 20) + '」') : '') +
+        (lbSc.drawerCls ? (' · 容器 ' + lbSc.drawerCls + (lbSc.drawerBox ? (' ' + lbSc.drawerBox) : '')) : ''));
       var lbRows = lbSc.detail || [];
+      var pt = lbSc.pageText;
       if (!lbSc.panel && !lbRows.length) {
-        L.push('> 判读:抽屉没认出也没有行。**先确认你打开的是超级福袋抽屉**;');
-        L.push('> 开着还这样,就是锚点不匹配 —— 把下面「线索」一并看。');
+        if (pt && pt.start) {
+          /* 2026-11-02 深夜：这对读数（整页有、叶子级 0）是"平台把文案拆成
+           * 多个节点"的铁证 —— 老锚点必然全灭，新版改容器级判定。 */
+          L.push('> 判读:整页文本里**有**「开始活动」但叶子级一条都认不到 ⇒');
+          L.push('> 平台把按钮/标题拆成了多个节点(整串不再落在单个元素上)。');
+          L.push('> 新版已改用容器级判定;若这里仍为 0,请把本报告发回。');
+        } else {
+          L.push('> 判读:抽屉没认出也没有行。**先确认你打开的是超级福袋抽屉**;');
+          L.push('> 开着还这样,就是锚点不匹配 —— 把下面「线索」一并看。');
+        }
       }
       if (lbRows.length) {
         L.push('');
@@ -1141,15 +1151,47 @@
         L.push('> 判读:进行中 ' + multi + ' · 待开始 ' + pend +
           '。圆钮显示倒计时要求「进行中」行里有带标签的倒计时(距结束 03:12)。');
       }
+      /* 逐张卡片读数（2026-11-02 深夜）：行扫描认错时这里才是真话 ——
+       * 真机出现过「两张卡在跑，行扫描一条进行中都没认出来」。
+       * 按剩余时间升序，第一条就是最早结束的那张。 */
+      var lbCards = lbSc.cards || [];
+      if (lbCards.length) {
+        L.push('- 逐张卡片读数(按剩余时间升序):' + lbCards.map(function (c) {
+          return '`' + clamp(c.name || '?', 12) + '` 剩 ' + c.left + ' 秒';
+        }).join(' · '));
+      } else if (lbSc.panel) {
+        L.push('- 逐张卡片读数:没读到「…后结束」(抽屉里此刻没有进行中的卡)');
+      }
+      /* 全页文本检查（2026-11-02 晚）：clues 只扫可见叶子，这里回答
+       * 「整页文本里到底有没有」—— 有但扫不到 = 在不可见/Shadow 容器；
+       * 整页都没有 = 平台确实没往页面上渲染（抽屉关着），只能开抽屉读。 */
+      pt = pt || lbSc.pageText;
+      if (pt) {
+        L.push('- 全页文本检查:含「进行中活动」' + (pt.card ? '✓' : '✗') +
+          ' · 含「后结束」' + (pt.tail ? '✓' : '✗') +
+          ' · 含「开始活动」' + (pt.start ? '✓' : '✗') +
+          ' · 含「福袋」' + (pt.bag ? '✓' : '✗') +
+          ' · 含平台空态「没有进行中的福袋活动」' + (pt.empty ? '✓' : '✗') +
+          '（共 ' + pt.len + ' 字）');
+        if (pt.card && !lbRows.length) {
+          L.push('> 判读:整页文本里有「进行中活动」但行扫不到 —— 多半在不可见容器或 Shadow DOM 里,看下面的线索定位。');
+        } else if (!pt.card) {
+          L.push('> 判读:整页文本里**没有**「进行中活动」—— 平台当前没往页面上渲染卡片(多半抽屉关着),只能开抽屉读。');
+        }
+      }
       var cl = lbSc.clues || [];
       if (cl.length) {
-        L.push('- 抽屉外含「福袋」的文字(回答「关着抽屉能不能读」):');
-        cl.slice(0, 8).forEach(function (c) {
-          L.push('  - `' + clamp(c.t, 24) + '`' + (c.time ? (' · 时间 ' + c.time) : '') +
-            (c.kind ? (' · ' + c.kind) : ''));
+        L.push('- 抽屉外福袋相关文字(' + cl.length + ' 条,回答「关着抽屉能不能读」):');
+        cl.slice(0, 12).forEach(function (c) {
+          L.push('  - `' + clamp(c.t, 30) + '`' +
+            (c.time ? (' · 时间 ' + c.time) : '') +
+            (c.kind ? (' · ' + c.kind) : '') +
+            (c.box ? (' · ' + c.box) : '') +
+            (c.tag ? (' · ' + c.tag + (c.cls ? '.' + c.cls : '')) : '') +
+            (c.anc ? (' · 祖先 ' + clamp(c.anc, 40)) : ''));
         });
       } else {
-        L.push('- 抽屉外含「福袋」的文字:无(⇒ 关着抽屉读不到,只能开抽屉)');
+        L.push('- 抽屉外福袋相关文字:无(⇒ 关着抽屉读不到,只能开抽屉)');
       }
       var lbRing = lbSt.ring || [];
       if (lbRing.length) {
