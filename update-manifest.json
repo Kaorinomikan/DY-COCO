@@ -1,5 +1,5 @@
 {
-  "version": "26.11.03.1",
+  "version": "26.11.03.2",
   "algorithm": "sha256",
   "files": [
     {
@@ -19,13 +19,13 @@
     },
     {
       "path": "manifest.json",
-      "size": 8209,
-      "sha256": "d0414389107a33beb1a3b3777d89c00f93eb1d1aaf29efbe32a07387cae2dc3f"
+      "size": 8439,
+      "sha256": "53b27f21e4d01138a9f6c3d0f60bef7a9caa5b35ccbbadb5d28be70607f10485"
     },
     {
       "path": "src/background/service-worker.js",
-      "size": 68662,
-      "sha256": "9eb7e33d04b652ad20259af58c9559d4320422bffe07337202a3fee8dbafbc5d"
+      "size": 73862,
+      "sha256": "b37068054b0a080a9fce89169558d4222a261694ae14bfb291af28cfcacec899"
     },
     {
       "path": "src/content/anchor.js",
@@ -39,8 +39,8 @@
     },
     {
       "path": "src/content/channel-offline-delete.js",
-      "size": 48551,
-      "sha256": "639726d668182037a695a6b327e12f1d53f1535f3e04dac788d284ff204bc29f"
+      "size": 50799,
+      "sha256": "e1922647a41825cb9dfae3c9d175745ed0961f999adfc6e1e4ebcf720d63a589"
     },
     {
       "path": "src/content/channel-stock.js",
@@ -59,28 +59,33 @@
     },
     {
       "path": "src/content/debug-panel.js",
-      "size": 49683,
-      "sha256": "6cbdd2b020bd9a058874bddbc38f6990f8134e94f69d53dd6a52a941ce9cc522"
+      "size": 51573,
+      "sha256": "a01872c1a34bb54baadf0dd71403531f545cb3317930137fde73505988dd6d08"
     },
     {
       "path": "src/content/diag.js",
-      "size": 56614,
-      "sha256": "6d1c1bdc20426c14224a3410de13a24fdce5741a648a46fc5d5ff9f0799bc17e"
+      "size": 57124,
+      "sha256": "3480583b569e5629247ff4445835de9a0855f5a0347b80b5ec7c5626edc0be11"
     },
     {
       "path": "src/content/dialog.js",
-      "size": 34520,
-      "sha256": "5b81de23c2352758a29ffe7eeb9054279ebf67947dc9a556c5ce9ea2ba8e9d41"
+      "size": 35310,
+      "sha256": "a2b1c0003a9171f22699f852f4dc9e0120f87adc1b12196e837038d4f2b945c7"
     },
     {
       "path": "src/content/flags.js",
-      "size": 78208,
-      "sha256": "ae7a4208c8ee5d67dc9e7d1ee30f5a6d9b29ff1098bf653a659b9391aa36d7f8"
+      "size": 78474,
+      "sha256": "8b131152acdbfed4f44244312bffec9f6c41b8e96b7cb177541a71d86d299559"
     },
     {
       "path": "src/content/inject-button.js",
       "size": 11900,
       "sha256": "6f20bbaa39614ec30a5e8db0a5744c558fbdfffd4ad218c97a9071e196128bbd"
+    },
+    {
+      "path": "src/content/live-state.js",
+      "size": 14725,
+      "sha256": "89abd6207f4e56e0b891d1af023968948e1f7e2f89a6eb3d336c71065795e1a0"
     },
     {
       "path": "src/content/main.js",
@@ -89,8 +94,8 @@
     },
     {
       "path": "src/content/msgbox.css",
-      "size": 16440,
-      "sha256": "860730251f0dc00994c7cf9ffbae2fe3746b3087e440ee2da8504648e42a6b6e"
+      "size": 16975,
+      "sha256": "e044c34843ba6d3b79bb422648834546e96f44d1136fc252841e5e00b692ca74"
     },
     {
       "path": "src/content/overlay-guard.js",
@@ -106,6 +111,11 @@
       "path": "src/content/row-scan.js",
       "size": 6514,
       "sha256": "f4fee85088770cb5196224f606b4696a88c854fd960b664f2202b04371cc4e89"
+    },
+    {
+      "path": "src/content/shop-header-name.js",
+      "size": 2289,
+      "sha256": "034eb912c761c828bf0c5fb5084f0aa84b91ae285d87498c15c50d8f1495e627"
     },
     {
       "path": "src/content/shop-list-name.js",
@@ -164,13 +174,13 @@
     },
     {
       "path": "src/live/auto-loop-lecture.js",
-      "size": 223421,
-      "sha256": "273b0bc6c33b57683116b101181720402f6c6c46ccc76f9bce2d395705e83dad"
+      "size": 222953,
+      "sha256": "888b725566431f6ae2f296c3399b7631da6e49f5c76c67b1de54188e3d17a06c"
     },
     {
       "path": "src/live/auto-refresh.js",
-      "size": 74432,
-      "sha256": "7c68c69e81ae5fc43bf6cad417aaa3e3640993bf4e79f7b5283f4ee30af3beec"
+      "size": 70662,
+      "sha256": "4de549f54b60c3c626680bad2a387af723947202a703f4d966c3b2234a314bac"
     },
     {
       "path": "src/live/back-to-bottom.js",
@@ -229,8 +239,8 @@
     },
     {
       "path": "src/live/lucky-bag.js",
-      "size": 218609,
-      "sha256": "b9b79595ecb9ff22a3b8fdc6cd7d573cbe6c87260c76ab66cbc4bb17de6cf204"
+      "size": 227001,
+      "sha256": "c6708d04c31832418a1b006c98c0754f5c064f3ea3e744322edcc2cb74bd55a8"
     },
     {
       "path": "src/live/name-wrap.js",

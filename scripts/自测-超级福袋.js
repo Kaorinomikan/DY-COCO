@@ -28,6 +28,10 @@ const { JSDOM } = require('jsdom');
 
 const ROOT = path.resolve(__dirname, '..');
 const CODE = fs.readFileSync(path.join(ROOT, 'src/live/lucky-bag.js'), 'utf8');
+/* 开播判据已抽到共享模块（2026-11-03）：福袋与自动刷新共用同一份。
+ * 自测必须把它一起装进来 —— 不装的话 lucky-bag 的判据恒为 unknown、
+ * 开播闸恒关，所有「该点/该播报」的用例都会红成一片（那不是回归，是缺件）。 */
+const LIVE_STATE_CODE = fs.readFileSync(path.join(ROOT, 'src/content/live-state.js'), 'utf8');
 const FLAGS_SRC = fs.readFileSync(path.join(ROOT, 'src/content/flags.js'), 'utf8');
 const MANIFEST = JSON.parse(fs.readFileSync(path.join(ROOT, 'manifest.json'), 'utf8'));
 
@@ -42,6 +46,22 @@ function ok(cond, name) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 const PRIZE = '10元店铺红包';
+
+/* ------------------------------------------------------------
+ * 开播判据的桩（2026-11-03）
+ *
+ * 判据已抽到 src/content/live-state.js，福袋的开播闸改成「只有明确在播才动作」。
+ * 默认给页面放一枚「结束直播」按钮 = 在播，这样绝大多数用例（点开始活动、
+ * 播报、读数）都处在真实的主场景里；要验未开播 / 判不出的用例显式指定：
+ *   · opts.live === 'off'  ⇒ 放「开始直播」（明确未开播）
+ *   · opts.live === 'none' ⇒ 什么信号都不放（判不出 = unknown）
+ * 自测页面里没有别的 HH:MM:SS 计时器，所以「计时器递增」这一路不会误命中。
+ * ------------------------------------------------------------ */
+function liveTagHtml(live) {
+  if (live === 'off') return '<div id="liveTag"><button>开始直播</button></div>';
+  if (live === 'none') return '';
+  return '<div id="liveTag"><button>结束直播</button></div>';
+}
 
 /* ------------------------------------------------------------
  * 页面骨架：照 2026-11-01 用户截图里的真机结构写
@@ -82,7 +102,7 @@ function makeDom(opts) {
     ? ''
     : '<div id="tools"><span id="bagEntry">超级福袋</span><i>实物抽奖，提流量</i></div>';
 
-  const html = '<!doctype html><html><body>' +
+  const html = '<!doctype html><html><body>' + liveTagHtml(opts.live) +
     '<div id="left">直播工具' + entry + '</div>' + dialog +
     '</body></html>';
 
@@ -160,6 +180,8 @@ async function boot(opts) {
   const entryEl = doc.getElementById('bagEntry');
   if (entryEl) entryEl.addEventListener('click', function () { clicks.entry++; });
 
+  /* ★ 先装共享判据，再装福袋模块（顺序不能反：福袋启动首拍就会问它） */
+  win.eval(LIVE_STATE_CODE);
   win.eval(CODE);
   await sleep(30);               // 等 dycReadFlags 的 Promise 落地
 
@@ -758,7 +780,10 @@ function remove(env, id) {
    * ============================================================ */
 
   async function bootDrawer(body) {
-    const dom = new JSDOM('<!doctype html><html><body>' + body + '</body></html>', {
+    /* 开播判据的桩（2026-11-03）：这一组用例验的是「抽屉读数」，必须在播 ——
+     * 否则开播闸恒关，tick 会在读行之前就 return，倒计时永远是 0。
+     * 页面里没有 HH:MM:SS 计时器，所以「结束直播」这一枚按钮就是唯一信号。 */
+    const dom = new JSDOM('<!doctype html><html><body>' + liveTagHtml() + body + '</body></html>', {
       runScripts: 'dangerously',
       pretendToBeVisual: true,
       url: 'https://buyin.jinritemai.com/dashboard/live/control?probe=1'
@@ -776,6 +801,7 @@ function remove(env, id) {
     win.dycReadFlags = function () { return Promise.resolve({ luckyBag: true }); };
     win.dycWatchFlags = function () {};
     win.hasProductRows = function () { return true; };
+    win.eval(LIVE_STATE_CODE);      // 共享判据必须先于福袋模块（2026-11-03）
     win.eval(CODE);
     await sleep(30);
     const api = win.__DYC_LUCKY_BAG__;
@@ -911,7 +937,14 @@ function remove(env, id) {
     const entryHtml = opts.entryHtml !== undefined
       ? opts.entryHtml
       : '<button id="entry">超级福袋-活动管理</button>';
-    const html = '<div id="top">'
+    /* 开播判据的桩（2026-11-03）：默认「在播」，否则开播闸恒关、
+     * 所有「该点入口 / 该读数」的用例都会红。显式要验未开播 / 判不出的
+     * 用例用 opts.live = 'off' / 'none'；自己往 extraHtml 里塞了 liveTag
+     * 的用例（㊦⑦ 那几条）不再重复添加，避免「结束直播 + 开始直播」并存
+     * 把在播信号顶掉。 */
+    const hasOwnLiveTag = /id="liveTag"/.test(extraHtml || '');
+    const liveHtml = hasOwnLiveTag ? '' : liveTagHtml(opts.live);
+    const html = liveHtml + '<div id="top">'
       + entryHtml
       + '</div>'
       + (extraHtml || '')
@@ -1010,6 +1043,7 @@ function remove(env, id) {
     if (opts.hold) {
       try { win.sessionStorage.setItem('dycBagHoldDrawAt', String(opts.hold)); } catch (eH) {}
     }
+    win.eval(LIVE_STATE_CODE);      // 共享判据必须先于福袋模块（2026-11-03）
     win.eval(CODE);
     await sleep(30);
     const api = win.__DYC_LUCKY_BAG__;
@@ -1176,11 +1210,14 @@ function remove(env, id) {
   ok(bp.clicks.esc === 0, '㊦⑥ 也不发 Esc（不打扰你）');
   ok(!!bp.doc.getElementById('drawer'), '㊦⑥ 你开着的抽屉不会被插件关掉');
 
-  /* ㊦⑦ 未开播 / 已下播：圆钮不露脸、也不去确认 */
+  /* ㊦⑦ 未开播 / 已下播：**圆钮照常露脸**（2026-11-03 用户拍板「不用藏起来」），
+   *     但不去确认、不去点「开始活动」。 */
   bp = await bootBagPage('<div id="liveTag"><button>开始直播</button></div>');
   bp.api.tick();
   ok(bp.api.liveState() === 'idle', '㊦⑦ 认得出「开始直播」= 未开播');
-  ok(bp.doc.getElementById('dyb-bag-badge').style.visibility === 'hidden', '㊦⑦ 未开播时圆钮不露脸');
+  ok(bp.doc.getElementById('dyb-bag-badge').style.visibility !== 'hidden',
+    '㊦⑦ 未开播时圆钮仍露脸（用户 2026-11-03 定：不用藏起来）');
+  ok(bp.api.liveGate() === false, '㊦⑦ 未开播时开播闸关着');
   ok(bp.clicks.entry === 0, '㊦⑦ 未开播时不去开抽屉确认');
 
   bp = await bootBagPage('<div id="liveTag"><button>直播已结束</button></div>');
@@ -2318,6 +2355,94 @@ function remove(env, id) {
   }, 3000), '㊿③ 铺垫：读到了「没有进行中」那条');
   var noneMsg = bp.messages.filter(function (m) { return /没有进行中的福袋/.test(m.text); }).pop();
   ok(noneMsg.type === 'info', '㊿③ 没有进行中 → 仍灰点（info）：' + noneMsg.type);
+
+  /* ---------- ㋅ 开播闸改口径（2026-11-03 用户报「还没开播就一直弹出抽屉」）----------
+   * 四问定稿：A 只认明确在播才自动开抽屉（unknown 也拦）；B 自动发福袋同闸；
+   *          C 未开播圆钮照常露脸；D 判据抽共享模块 live-state.js。
+   * 这组用例钉的就是「闸门方向」—— 它一旦被改回「unknown 当在播」，
+   * 用户那条反馈就会原样复发，且症状是「安静地弹抽屉」，没人会联想到判据。 */
+
+  /* ㋅① 判不出（页面既无在播信号、也无未开播文案）⇒ 一次都不开抽屉。
+   *     这是本次反馈的正面复现：旧版这一档按在播处理，进页面 3 秒弹一次。 */
+  bp = await bootBagPage(null, { live: 'none' });
+  bp.api.tick();
+  ok(bp.api.liveState() === 'unknown', '㋅① 判不出 = unknown（铺垫）');
+  ok(bp.api.liveGate() === false, '㋅① unknown 时开播闸关着（旧版这里是开着的）');
+  bp.api.confirmNow();                       // 强制到期，模拟「节拍到点了」
+  await sleep(1600);
+  ok(bp.clicks.entry === 0, '㋅① 判不出时到点也不开抽屉（反馈的根因就在这里）');
+
+  /* ㋅② 明确未开播 ⇒ 同样不开（这条旧版已有，回归钉住） */
+  bp = await bootBagPage(null, { live: 'off' });
+  bp.api.tick();
+  ok(bp.api.liveState() === 'idle', '㋅② 明确未开播 = idle（铺垫）');
+  bp.api.confirmNow();
+  await sleep(1600);
+  ok(bp.clicks.entry === 0, '㋅② 未开播时到点也不开抽屉');
+
+  /* ㋅③ 明确在播 ⇒ 照常开（别把闸做成「永远不开」） */
+  bp = await bootBagPage(null, { live: 'on' });
+  bp.api.tick();
+  ok(bp.api.liveState() === 'live', '㋅③ 明确在播 = live（铺垫）');
+  ok(bp.api.liveGate() === true, '㋅③ 在播时开播闸打开');
+  bp.api.confirmNow();
+  await sleep(1600);
+  ok(bp.clicks.entry === 1, '㋅③ 在播时到点照常开抽屉确认');
+
+  /* ㋅④ 自动发福袋同闸：判不出时**不点「开始活动」**（用户拍板 B）。
+   *     这一条比抽屉更重要 —— 它真的会消耗奖励。 */
+  env = await boot({ watch: true, auto: true, live: 'none', onStartClick: 'running' });
+  env.tick();
+  await sleep(300);
+  ok(env.clicks.s1 === 0, '㋅④ 判不出时自动发福袋不点「开始活动」');
+  ok(env.api.snapshot().gate === false, '㋅④ snapshot 里 gate=false（可诊断）');
+
+  /* ㋅⑤ 对照：在播时自动发福袋照常点（同一份用例，只差 live 信号） */
+  env = await boot({ watch: true, auto: true, live: 'on', onStartClick: 'running' });
+  env.tick();
+  await sleep(300);
+  ok(env.clicks.s1 === 1, '㋅⑤ 在播时自动发福袋照常点「开始活动」');
+
+  /* ㋅⑥ 未开播时手动刷新仍然可用（人点了就是要现在抓，跟开没开播无关） */
+  bp = await bootBagPage(null, { live: 'off' });
+  bp.api.tick();
+  bp.api.manualRefresh();
+  ok(await waitBag(function () { return bp.clicks.entry === 1; }, 3000),
+    '㋅⑥ 未开播时手动刷新照常开抽屉（闸只管自动路径）');
+
+  /* ㋅⑦ 面板灰字：非在播时出现「为什么现在不自动刷新」，在播时消失。
+   *     口径反转后没有这一行，功能会变成「安静地不工作」。 */
+  bp = await bootBagPage(null, { live: 'none' });
+  bp.api.tick();
+  bp.api.togglePanel();
+  var gsh = bp.doc.getElementById('dyb-bag-panel').shadowRoot;
+  var gEl = gsh.querySelector('.g8');
+  ok(!!gEl && gEl.classList.contains('on'), '㋅⑦ 判不出时面板出现开播闸灰字');
+  ok(/未确认在播/.test(gEl.textContent), '㋅⑦ 灰字说明原因：' + gEl.textContent);
+
+  bp = await bootBagPage(null, { live: 'on' });
+  bp.api.tick();
+  bp.api.togglePanel();
+  var gsh2 = bp.doc.getElementById('dyb-bag-panel').shadowRoot;
+  var gEl2 = gsh2.querySelector('.g8');
+  ok(!!gEl2 && !gEl2.classList.contains('on'), '㋅⑦ 在播时灰字不出现（不占地方）');
+
+  /* ㋅⑧ 开播跃迁：从「判不出」切到「在播」要重新建立基线，
+   *     不能沿用上一场残留的 nextConfirmAt（否则开播后白等一整轮）。
+   *     ★ 用「反复 tick 直到结论变化」而不是固定 sleep：共享判据有 1.8 秒节流
+   *       （两个调用方共用同一个窗口，不能各自推进防抖计数），开播最多 1.8 秒后
+   *       才被认出来 —— 这是设计如此，不是缺陷。 */
+  bp = await bootBagPage(null, { live: 'none' });
+  bp.api.tick();
+  ok(bp.api.liveState() === 'unknown', '㋅⑧ 铺垫：起始判不出');
+  bp.doc.body.insertAdjacentHTML('beforeend', '<div id="liveTag2"><button id="btnLive">结束直播</button></div>');
+  for (var g8i = 0; g8i < 15 && bp.api.liveState() !== 'live'; g8i++) {
+    await sleep(200);
+    bp.api.tick();
+  }
+  ok(bp.api.liveState() === 'live', '㋅⑧ 出现「结束直播」→ 判为在播');
+  ok(bp.api.snapshot().check.next > Date.now() + 1000,
+    '㋅⑧ 跃迁后重新建立确认基线（next 在未来）');
 
   console.log('');
   console.log('通过 ' + pass + ' 项' + (failures.length ? '，失败 ' + failures.length + ' 项' : '，全部通过'));

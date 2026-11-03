@@ -26,6 +26,13 @@ const { JSDOM } = require('jsdom');
 
 const ROOT = path.resolve(__dirname, '..');
 const CODE = fs.readFileSync(path.join(ROOT, 'src/content/channel-offline-delete.js'), 'utf8');
+const detailStart = CODE.indexOf('  function batchFailureDetails(');
+const detailEnd = CODE.indexOf('  /** 批量按钮点击', detailStart);
+const formatDetails = require('vm').runInNewContext(CODE.slice(detailStart, detailEnd) + '\nbatchFailureDetails;');
+const grouped = formatDetails([{ title: '商品甲', reason: '删除失败' }, { title: '商品乙：特别款', reason: '删除失败' }, { title: '商品丙', reason: '下架失败' }]);
+require('assert').strict.equal(grouped.split('删除失败').length - 1, 1);
+for (const name of ['商品甲', '商品乙：特别款', '商品丙', '下架失败']) require('assert').strict.ok(grouped.includes(name));
+require('assert').strict.equal(formatDetails([{ title: '', reason: '未知错误' }]), '未知错误');
 const TOKEN = 'c434770ba4f0a3664c83bd6713d5bbb4';
 const BURST_MAX_MS = 1500;     // 连发：下架→删除应当很快，不该有长等待
 
@@ -49,7 +56,7 @@ function buildHtml(rowsDef, opts) {
     <tr class="ecom-g-table-row">
       <td><input type="checkbox" ${o.checked === false ? '' : 'checked'}></td>
       <td>
-        <span>测试商品${i + 1}</span>
+        <span>${r.title || ('测试商品' + (i + 1))}</span>
         <span>渠道ID:${r.id}</span>
         <span>主品ID:3842997238154527199</span>
       </td>
@@ -90,6 +97,14 @@ function setup(rowsDef, o) {
     url: 'https://fxg.jinritemai.com/ffa/g/channel-goods-manage/list'
   });
   const { window } = dom;
+  const waits = [];
+  if (o.fastWaits) {
+    const timer = window.setTimeout.bind(window);
+    window.setTimeout = (fn, ms, ...args) => {
+      waits.push(ms);
+      return timer(fn, ms >= 200 && ms <= 8000 ? 5 : ms, ...args);
+    };
+  }
 
   window.performance.getEntriesByType = function () {
     const q = o.noToken ? '' : ('__token=' + TOKEN);
@@ -107,7 +122,7 @@ function setup(rowsDef, o) {
   };
 
   const state = {
-    logs: [], messages: [], dialogs: [], calls: [], window, dom,
+    logs: [], messages: [], dialogs: [], calls: [], window, dom, waits,
     autoConfirm: o.autoConfirm !== false
   };
 
@@ -132,8 +147,18 @@ function setup(rowsDef, o) {
         ts: Date.now()
       });
 
+      if (o.onRequest) await o.onRequest(url, opts, state);
       if (url.indexOf('list_channel_product') >= 0) {
-        const data = rowsDef.map((r) => ({
+        if (o.listPage) return { status: 200, text: JSON.stringify({ code: 0, data: o.listPage(url) }) };
+        const page = Number(new URL(url, window.location.origin).searchParams.get('page'));
+        if (o.listFail && (page === 2 || (o.listFail === 'restart' && new URL(url, window.location.origin).searchParams.get('pageSize') === '10'))) {
+          if (o.listFail === 'throw') throw new Error('详情请求超时');
+          return { status: 200, text: JSON.stringify({ code: 1001, msg: '详情读取失败' }) };
+        }
+        if (o.rejectLargePage && page === 2 && new URL(url, window.location.origin).searchParams.get('pageSize') === '20') {
+          return { status: 200, text: JSON.stringify({ code: 1001, msg: '页大小被拒' }) };
+        }
+        const data = o.listPages ? (o.listPages[page - 1] || (o.repeatLastPage ? o.listPages[o.listPages.length - 1] : [])) : rowsDef.map((r) => ({
           main_product_id: '3842997238154527199',
           channel_id: Number(r.id),
           channel_type: typeOf(r.id),
@@ -142,6 +167,14 @@ function setup(rowsDef, o) {
           operations: []
         }));
         return { status: 200, text: JSON.stringify({ code: 0, data }) };
+      }
+
+      if (opts && opts.body && o.failItem) {
+        const body = JSON.parse(opts.body);
+        if (String(body.channel_id) === o.failItem.id && url.includes(o.failItem.api)) {
+          if (o.failItem.throws) throw new Error('该条请求超时');
+          return { status: 200, text: JSON.stringify({ code: 1002, msg: '该条操作被拒绝' }) };
+        }
       }
 
       if (url.indexOf('update_channel_product_status') >= 0) {
@@ -320,7 +353,11 @@ function waitDone(st, maxMs) {
     const st = setup([
       { id: '3387922539085091', state: '售卖中' },
       { id: '3387660924844069', state: '已下架' }
-    ]);
+    ], { listPages: [
+      [{ channel_id: '3387922539085091', channel_type: 4, status: 2 }],
+      ...Array.from({ length: 4 }, (_, i) => [{ channel_id: String(3300000000000000 + i), channel_type: 4, status: 0 }]),
+      [{ channel_id: '3387660924844069', channel_type: 4, status: 0 }]
+    ] });
     await boot(st);
     st.window.document.querySelector('.dyc-cd-batch').click();
     await sleep(20);
@@ -331,8 +368,101 @@ function waitDone(st, maxMs) {
     ok(offlinePosts(st).length === 1, '只有 1 条需要下架（实际 ' + offlinePosts(st).length + '）');
     ok(deletePosts(st).length === 2, '两条都删了（实际 ' + deletePosts(st).length + '）');
     const done = st.messages.find((m) => m.kind === 'finish');
-    ok(!!done && /2 个渠道品/.test(done.m), '汇总一条消息：' + (done ? done.m : ''));
-    ok(done && done.op && done.op.count === '2/2', '结果数 2/2');
+    ok(!!done && st.messages.filter((m) => m.kind === 'finish').length === 1, '全批只汇总一条结果');
+    ok(done && done.op && JSON.stringify(done.op.count.match(/\d+/g)) === '["2"]'
+      && JSON.stringify(done.m.match(/\d+/g)) === '["2"]', '对象总数与成功数均为 2');
+  }
+
+  console.log('\n=== 翻页查询：第六页的渠道品也能删除 ===');
+  {
+    const target = { main_product_id: '3842997238154527199', channel_id: '3387660924844069', channel_type: 4, status: 0 };
+    const pages = Array.from({ length: 5 }, (_, page) => Array.from({ length: 20 }, (_, i) => ({
+      channel_id: String(3300000000000000 + page * 20 + i), channel_type: 4, status: 0
+    })));
+    pages.push([target]);
+    const st = setup([{ id: target.channel_id, state: '已下架' }], { listPages: pages });
+    await boot(st);
+    st.window.document.querySelector('.dyc-cd-btn').click();
+    await waitDone(st, 3000);
+    ok(st.calls.filter((c) => c.method === 'GET').length === 6, '继续查询第六页');
+    ok(deletePosts(st).length === 1 && st.messages.some((m) => m.kind === 'finish'), '第六页目标走真实删除链路并报成功');
+    ok(deletePosts(st).every((c) => String(JSON.parse(c.body).channel_id) === target.channel_id), '只删除勾选目标');
+    st.window.close();
+  }
+
+  console.log('\n=== 接口缩小页大小、重复页与缺失目标 ===');
+  for (const mode of ['small', 'fallback', 'repeat', 'missing']) {
+    const target = { channel_id: '3387660924844069', channel_type: 4, status: 0 };
+    const other = { channel_id: '3300000000000000', channel_type: 4, status: 0 };
+    const st = setup([{ id: target.channel_id, state: '已下架' }], {
+      listPages: /small|fallback/.test(mode) ? [[other], [target]] : [[other]],
+      repeatLastPage: mode === 'repeat', rejectLargePage: mode === 'fallback'
+    });
+    await boot(st);
+    st.window.document.querySelector('.dyc-cd-btn').click();
+    await waitDone(st, 3000);
+    ok(st.calls.filter((c) => c.method === 'GET').length === (mode === 'fallback' ? 4 : 2), mode + '：查到目标、空页或重复页即停止');
+    if (mode === 'small' || mode === 'fallback') {
+      ok(deletePosts(st).length === 1 && st.messages.some((m) => m.kind === 'finish'), '返回条数小于 pageSize 仍继续找到并删除');
+    } else {
+      const failure = st.messages.find((m) => m.kind === 'fail');
+      ok(posts(st).length === 0 && !!failure, mode + '：未找到时不提交写操作');
+      ok(failure && /未执行操作/.test(failure.op.full) && !/已被删除/.test(failure.op.full), mode + '：查询缺失不猜测已删除');
+    }
+    st.window.close();
+  }
+
+  console.log('\n=== 批量：中间一条失败仍处理后续并汇总 ===');
+  for (const mode of ['offline', 'remove', 'throw', 'missing', 'listThrow', 'listReject', 'listRestartFail']) {
+    const rows = [0, 1, 2].map((i) => ({ id: String(3387660924844060 + i), state: '售卖中' }));
+    const isReadFailure = mode.startsWith('list');
+    const opts = { fastWaits: true };
+    if (isReadFailure || mode === 'missing') {
+      opts.listPages = [[rows[0], rows[2]].map((r) => ({ channel_id: r.id, channel_type: 4, status: 2 }))];
+      if (isReadFailure) opts.listFail = mode === 'listThrow' ? 'throw' : mode === 'listRestartFail' ? 'restart' : 'reject';
+    } else {
+      opts.failItem = { id: rows[1].id, api: mode === 'offline' ? 'update_channel_product_status' : 'remove_channel_product', throws: mode === 'throw' };
+    }
+    const st = setup(rows, opts);
+    await boot(st);
+    st.window.document.querySelector('.dyc-cd-batch').click();
+    await waitDone(st, 3000);
+    const deleted = deletePosts(st).map((c) => String(JSON.parse(c.body).channel_id));
+    ok(deleted.includes(rows[0].id) && deleted.includes(rows[2].id), mode + '：前后两条都执行删除');
+    const result = st.messages.find((m) => m.kind === 'fail');
+    ok(result && JSON.stringify(result.op.count.match(/\d+/g)) === '["2","1"]'
+      && JSON.stringify(result.m.match(/\d+/g)) === '["3"]', mode + '：完成全批后汇总成功与失败');
+    ok(result && result.op.details === true && result.op.standalone === true, mode + '：独立摘要保留可展开详情');
+    ok(result && /测试商品2/.test(result.op.full), mode + '：汇总包含失败商品');
+    ok(st.window.document.querySelectorAll('tr.ecom-g-table-row').length === 1, mode + '：只保留失败行');
+    ok(!st.logs.some((l) => /秒后自动刷新/.test(l)), mode + '：有失败时保留页面');
+    st.window.close();
+  }
+
+  console.log('\n=== 100 条批量：短间隔、完整执行与紧凑预览 ===');
+  {
+    const rows = Array.from({ length: 100 }, (_, i) => ({
+      id: String(3387660924844000 + i), state: '售卖中',
+      title: '【高奢女装】设计感撞色针织衫开衫上衣C1939超长商品名称' + i
+    }));
+    const st = setup(rows, { fastWaits: true });
+    await boot(st);
+    st.window.document.querySelector('.dyc-cd-batch').click();
+    await waitDone(st, 10000);
+    const dialog = st.dialogs[0];
+    ok(dialog && dialog.fields[0].value === '100 个渠道品', '数量明确为实际执行的 100 条');
+    const previews = dialog ? dialog.fields.filter((f) => /^商品[123]$/.test(f.label)) : [];
+    ok(previews.length === 3 && previews.every((f) => Array.from(f.value).length <= 18 && f.value.endsWith('…')), '仅三条短商品名预览，各自独立成行');
+    ok(dialog && dialog.fields.some((f) => /另有 97 个/.test(f.value)) && dialog.fields.length === 5, '其余 97 条用数量概括，弹窗不随商品数增长');
+    ok(st.waits.filter((ms) => ms === 200).length === 99, '100 条之间只安排 99 次 200ms 短间隔');
+    ok(!st.waits.includes(8000), '不再每三条额外停八秒');
+    ok(offlinePosts(st).length === 100 && deletePosts(st).length === 100, '100 条均执行下架与删除');
+    const sequence = posts(st);
+    ok(rows.every((r, i) => sequence[2*i] && sequence[2*i+1] &&
+      sequence[2*i].url.includes('update_channel_product_status') && sequence[2*i+1].url.includes('remove_channel_product') &&
+      String(JSON.parse(sequence[2*i].body).channel_id) === r.id && String(JSON.parse(sequence[2*i+1].body).channel_id) === r.id), '每条先下架再删除，按选择顺序逐条处理');
+    ok(st.messages.some((m) => m.kind === 'finish' && JSON.stringify(m.op.count.match(/\d+/g)) === '["100"]' && JSON.stringify(m.m.match(/\d+/g)) === '["100"]'), '汇总选中数与成功数均为 100');
+    st.window.close();
   }
 
   console.log('\n=== ⑦ 拿不到 __token：一个请求都不发 ===');
@@ -355,6 +485,128 @@ function waitDone(st, maxMs) {
     st.window.__DYC_CHANNEL_DEL__.stop();
     ok(!st.window.document.querySelector('.dyc-cd-btn'), '行内按钮已移除');
     ok(!st.window.document.querySelector('.dyc-cd-batch'), '批量按钮已移除');
+  }
+
+
+  console.log('\n=== ⑨ 执行中停止：下架返回、重试、批量与旧确认框 ===');
+  async function until(predicate) {
+    const deadline = Date.now() + 4000;
+    while (!predicate() && Date.now() < deadline) await sleep(10);
+    if (!predicate()) throw Error('等待测试状态超时');
+  }
+  {
+    const st = setup([{ id: '3387922539085091', state: '售卖中' }], {
+      onRequest: async (url, opts, state) => {
+        if (url.includes('update_channel_product_status')) {
+          state.window.__DYC_CHANNEL_DEL__.stop();
+          state.window.__DYC_CHANNEL_DEL__.start();
+        }
+      }
+    });
+    await boot(st);
+    st.window.document.querySelector('.dyc-cd-btn').click();
+    await waitDone(st, 4000);
+    ok(offlinePosts(st).length === 1 && deletePosts(st).length === 0, '下架回包时关闭再开启，旧任务不删除');
+    ok(st.messages.some(m => m.op && m.op.count === '已停止后续操作'), '明确说明停止，已提交结果需核对');
+    ok(!st.logs.some(l => /秒后自动刷新/.test(l)), '停止的任务不安排刷新');
+    st.dom.window.close();
+  }
+  {
+    const st = setup([{ id: '3387922539085091', state: '已下架' }], { fail: { removeOnce: true } });
+    await boot(st);
+    st.window.document.querySelector('.dyc-cd-btn').click();
+    await until(() => st.logs.some(l => /秒后重试/.test(l)));
+    st.window.__DYC_CHANNEL_DEL__.stop();
+    await waitDone(st, 4000);
+    ok(deletePosts(st).length === 1, '重试等待中关闭，不再提交删除');
+    ok(!st.messages.some(m => m.kind === 'finish'), '停止不误报成功');
+    st.dom.window.close();
+  }
+  {
+    const st = setup([
+      { id: '3387922539085091', state: '已下架' },
+      { id: '3387660924844069', state: '已下架' }
+    ], {
+      // 批量已压到 200ms 间隔，不再有可等的时间窗；改为第一条写请求发出时关闭，
+      // 验证后续条目不再提交、也不误报整批完成。
+      onRequest: async (url, opts, state) => {
+        if (url.includes('remove_channel_product') && !state.batchStopped) {
+          state.batchStopped = true;
+          state.window.__DYC_CHANNEL_DEL__.stop();
+        }
+      }
+    });
+    await boot(st);
+    st.window.document.querySelector('.dyc-cd-batch').click();
+    await waitDone(st, 6000);
+    ok(deletePosts(st).length === 1, '批量处理中关闭，不再处理下一条');
+    ok(!st.messages.some(m => m.kind === 'finish'), '批量停止不误报全部完成');
+    st.dom.window.close();
+  }
+  {
+    const st = setup([{ id: '3387922539085091', state: '已下架' }], { autoConfirm: false });
+    await boot(st);
+    st.window.document.querySelector('.dyc-cd-btn').click();
+    st.window.__DYC_CHANNEL_DEL__.stop();
+    st.window.__DYC_CHANNEL_DEL__.start();
+    st.dialogs[0].onConfirm();
+    await sleep(30);
+    ok(st.calls.length === 0, '关闭前弹出的确认框，重开后不能提交');
+    st.dom.window.close();
+  }
+  {
+    const st = setup([{ id: '3387922539085091', state: '售卖中' }], {
+      onRequest: async (url, opts, state) => {
+        if (url.includes('update_channel_product_status')) state.window.history.pushState({}, '', '/ffa/g/list');
+      }
+    });
+    await boot(st);
+    st.window.document.querySelector('.dyc-cd-btn').click();
+    await waitDone(st, 4000);
+    ok(deletePosts(st).length === 0, 'SPA 切页后旧任务不再删除');
+    st.dom.window.close();
+  }
+  {
+    const st = setup([{ id: '3387922539085091', state: '已下架' }]);
+    const timeouts = new Map();
+    const realSetTimeout = st.window.setTimeout.bind(st.window);
+    const realClearTimeout = st.window.clearTimeout.bind(st.window);
+    st.window.setTimeout = (fn, delay) => { const id = realSetTimeout(fn, delay); timeouts.set(id, delay); return id; };
+    st.window.clearTimeout = id => { timeouts.delete(id); realClearTimeout(id); };
+    await boot(st);
+    st.window.document.querySelector('.dyc-cd-btn').click();
+    await waitDone(st, 4000);
+    ok([...timeouts.values()].includes(1500), '成功后存在刷新定时器');
+    st.window.__DYC_CHANNEL_DEL__.stop();
+    ok(![...timeouts.values()].includes(1500), '关闭时取消已安排的刷新');
+    st.dom.window.close();
+  }
+  console.log('\n=== ⑩ 查询第六页与重复页保护 ===');
+  {
+    const id = '3387922539085091';
+    const st = setup([{ id, state: '已下架' }], {
+      listPage: url => {
+        const page = Number(new URL(url, 'https://example.test').searchParams.get('page'));
+        return Array.from({ length: 20 }, (_, i) => ({ channel_id: page === 6 && i === 0 ? id : String(page * 100 + i), channel_type: 4, status: 0 }));
+      }
+    });
+    await boot(st);
+    st.window.document.querySelector('.dyc-cd-btn').click();
+    await waitDone(st, 4000);
+    ok(st.calls.filter(c => c.method === 'GET').length === 6, '继续查询到第六页');
+    ok(deletePosts(st).length === 1 && st.messages.some(m => m.kind === 'finish'), '第六页目标可正常删除');
+    st.dom.window.close();
+  }
+  {
+    const st = setup([{ id: '3387922539085091', state: '已下架' }], {
+      listPage: () => Array.from({ length: 20 }, (_, i) => ({ channel_id: String(i + 1), channel_type: 4, status: 0 }))
+    });
+    await boot(st);
+    st.window.document.querySelector('.dyc-cd-btn').click();
+    await waitDone(st, 4000);
+    ok(st.calls.length === 2 && posts(st).length === 0, '重复返回同一页及时中止，不提交写请求');
+    ok(st.messages.some(m => /查询未完成/.test(m.op && m.op.full || '')), '如实提示查询未完成');
+    st.dom.window.close();
   }
 
   console.log('\n────────────────────────────');

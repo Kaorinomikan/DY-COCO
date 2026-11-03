@@ -62,6 +62,7 @@ const code = [
 
 const api = vm.runInNewContext(code, {});
 const { scaleOf, clampPos, layoutPos, dragPos } = api;
+const handleHeight = Number(SRC.match(/var HANDLE_H = (\d+);/)[1]);
 
 /* ============ 一、缩放比 ============ */
 
@@ -88,13 +89,13 @@ ok('往左上拖过头:最多只让出 120px,标题栏贴顶',
 
 c = clampPos(2000, 1000, W, VW, VH);
 ok('往右下拖过头:右留 120px 可见,标题栏留在视口内',
-  c.left === VW - 120 && c.top === VH - 34, JSON.stringify(c));
+  c.left === VW - 120 && c.top === VH - handleHeight, JSON.stringify(c));
 
 c = clampPos(100, 0, W, VW, VH);
 ok('正好贴顶不越界', c.top === 0, JSON.stringify(c));
 
-c = clampPos(0, 866, W, VW, VH);
-ok('正好贴底(标题栏 34px 全可见)不越界', c.top === 866, JSON.stringify(c));
+c = clampPos(0, VH - handleHeight, W, VW, VH);
+ok('正好贴底时标题栏全可见', c.top === VH - handleHeight, JSON.stringify(c));
 
 c = clampPos(100, 500, W, 300, 200);
 ok('窄窗口里右侧不放任越界', c.left <= 300 - 120, JSON.stringify(c));

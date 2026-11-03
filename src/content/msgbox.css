@@ -420,6 +420,26 @@
   word-break: break-word;
 }
 
+/* 长消息可展开全文，不依赖多行截断，键盘也可操作。 */
+#dyb-status-bar .dyb-history-item .h-details {
+  margin-top: 4px;
+  font-size: 12px;
+}
+#dyb-status-bar .dyb-history-item .h-details > summary {
+  display: list-item;
+  color: #1677b8;
+  cursor: pointer;
+}
+#dyb-status-bar .dyb-history-item .h-details > summary:focus-visible {
+  outline: 2px solid #1677b8;
+  outline-offset: 2px;
+}
+#dyb-status-bar .dyb-history-item .h-detail-body {
+  margin-top: 4px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 /* 历史条目三段(2026-10-15 用户定方案 B,与消息条同款口径):
    来源(弱) ｜ 值(强) ｜ 结果数(弱)。三段都用 inline 元素,
    正文才排得成连续的一段话(不再是 flex 行) */

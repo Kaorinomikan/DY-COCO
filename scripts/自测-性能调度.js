@@ -172,8 +172,12 @@ dispatched.length = 0; loop.ctx.MouseEvent = undefined;
 loop.api.fireClick(clickEl);
 assert.deepEqual(dispatched, ['native-click'], '两类事件不可用时原生 click 仅一次');
 
+/* 2026-11-03：开播判据已迁到 src/content/live-state.js（唯一真源）。
+ * 本夹具只关心「auto-refresh 的调度是否被判据结论正确驱动」，
+ * 所以不再引用已迁走的 timerTrend / hasLiveButton / hasPreLiveBanner，
+ * 改成往 window 上装一个**假判据**（signals() 负责摆），judgeLive 照常问它。 */
 const refresh = fixture('src/live/auto-refresh.js', `
-  tick, findRefreshBtn, ensureLamp, canRefresh, onLampClick, judgeLive, timerTrend,
+  tick, findRefreshBtn, ensureLamp, canRefresh, onLampClick, judgeLive,
   restoreJudge: function (fn) { judgeLive = fn; tickCount = 0; },
   configure: function (f, btn, light) {
     flags = { liveAutoRefresh: true }; lamp = light; _refreshBtn = btn;
@@ -187,11 +191,22 @@ const refresh = fixture('src/live/auto-refresh.js', `
   deadline: function () { nextAt = Date.now() - 1; mode = 'auto'; },
   live: function () { liveState = 'live'; autoStopped = true; },
   prelive: function () { liveState = 'prelive'; autoStopped = false; },
-  signals: function (f) { hasLiveButton = function () { return f.live; }; timerTrend = function () { return f.trend; }; hasPreLiveBanner = function () { return f.banner; }; },
+  /* 假判据：把「页面上有什么信号」直接映射成结论，供 judgeLive 取用 */
+  signals: function (f) {
+    var st = f.live ? 'live' : (f.banner ? 'prelive' : 'unknown');
+    window.dycLiveState = {
+      judge: function () { return st; },
+      once: function () { return st; },
+      get: function () { return st; },
+      isLive: function () { return st === 'live'; },
+      reset: function () {}, invalidate: function () {},
+      dump: function () { return { state: st }; },
+      setTimingForTest: function () {}
+    };
+  },
   state: function () { return { mode: mode, liveState: liveState, nextAt: nextAt }; },
   polite: function (f) { typingRecently = function () { return f.typing; }; popupOpen = function () { return f.popup; }; },
-  refreshes: function (fn) { doRefresh = fn; },
-  trendInput: function (el) { _timerEl = el; lastTimerVal = null; }
+  refreshes: function (fn) { doRefresh = fn; }
 `);
 const btn = refresh.el('刷新列表');
 const light = refresh.el(''); light.parentElement = refresh.doc.body; light.style.left = '766px';

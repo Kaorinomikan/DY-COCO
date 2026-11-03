@@ -263,6 +263,51 @@ function rows(win) { return [...win.document.querySelectorAll('.dyb-history-item
     check(history(win).length === 1 && history(win)[0].count === '12' && history(win)[0].ts === 123,
       '前后端统一类型过滤与数值结果数时间戳正规化');
   }
+  {
+    const { win, backend } = makeWin();
+    await flush(win);
+    const full = '库存清零失败：' + '完整商品名与失败原因。'.repeat(24) + '<img src=x onerror=alert(1)>';
+    win.setStatus('选中 20 件', 'error', {
+      source: '库存清零', count: '成功 1 · 无需清零 12 · 失败 7', full, standalone: true
+    });
+    await flush(win);
+    const fresh = makeWin(backend).win;
+    await flush(fresh);
+    fresh.openHistory();
+    const row = rows(fresh)[0];
+    const details = row.querySelector('details');
+    check(!!details && !details.open, '长消息重新加载后默认收起详情');
+    check(row.querySelector('.h-text').firstChild.textContent === '库存清零'
+      && row.querySelector('.h-count').textContent.includes('无需清零 12'), '短对象与结果数保留三段结构');
+    check(row.querySelector('.h-text').childNodes[2].textContent === '选中 20 件', '摘要沿用调用方的对象文案');
+    check(details.querySelector('.h-detail-body').textContent === full && !details.querySelector('img'),
+      '完整失败原因逐字保留且按纯文本展示');
+    details.open = true;
+    details.dispatchEvent(new fresh.Event('toggle'));
+    check(details.querySelector('summary').textContent.includes('收起'), '展开后可收起详情');
+    details.open = false;
+    details.dispatchEvent(new fresh.Event('toggle'));
+    check(details.querySelector('summary').textContent.includes('查看'), '收起后可再次查看详情');
+    check(backend.items[0].text === full && backend.items[0].brief === '选中 20 件', '后台保留全文与独立摘要');
+    fresh.setStatus('短对象', 'error', { source: '下架删除', full: '较短的失败原因', details: true, standalone: true });
+    await flush(fresh);
+    check(!!rows(fresh)[0].querySelector('details'), '显式详情即使较短也保持摘要与展开交互');
+    fresh.setStatus('货号', 'success', { source: '货号复制', full: '商品完整名称', standalone: true });
+    await flush(fresh);
+    check(!rows(fresh)[0].querySelector('details') && rows(fresh)[0].textContent.includes('商品完整名称'),
+      '短消息与商品名称别称仍直接显示');
+  }
+  {
+    const full = '旧版批量结果：' + '商品名称：没有找到库存编辑区；'.repeat(30);
+    const { win } = makeWin(makeBackend([record(full)]));
+    await flush(win);
+    win.openHistory();
+    const details = rows(win)[0].querySelector('details');
+    check(!!details && !details.open && details.querySelector('.h-detail-body').textContent === full,
+      '无摘要的旧长记录也可展开全文');
+    check(rows(win)[0].querySelector('.h-text').childNodes[2].textContent.length <= 73,
+      '旧长记录默认摘要长度受限');
+  }
   console.log('\n全部通过：' + passed + ' 项');
 })().catch((error) => {
   console.error(error);

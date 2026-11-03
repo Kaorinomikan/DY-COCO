@@ -57,6 +57,12 @@ function setup(store = {}) {
   f.api.apply({autoLoopLecture:true});await flush();
   check(!f.api.state.on&&f.api.state.group==='sec'&&f.api.state.seconds===45&&f.api.state.minutes===8.5,'停止状态、组与两个间隔均恢复');
   check(!f.ui('.sw')&&f.ui('.power').textContent==='开启','面板没有右上角开关，启停位常驻胶囊末端');
+  check(!f.ui('.gh .gx'),'两档标题不再显示重复的右上角间隔注释');
+  for (const seconds of [15,30,45,60]) {
+    f.ui('.sg[data-sec="'+seconds+'"]').click();await flush();
+    check(f.ui('.r1 b').textContent===(seconds-3)+'~'+seconds+' 秒','底部读数显示 '+seconds+' 档实际范围');
+  }
+  f.ui('.sg[data-sec="45"]').click();await flush();
   f.ui('.power').click();await flush();
   const d45=f.api.state.nextAt-f.now(); /* 2026-11-01:四档统一 (档位−3) 秒 + 0~3 秒随机,45 档 = 42~45 秒 */
   check(f.api.state.on&&d45>=42000&&d45<=45000,'手动开启先识别当前商品，等待完整间隔(45 档 42~45 秒随机)');

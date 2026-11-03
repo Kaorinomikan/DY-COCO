@@ -177,6 +177,7 @@ var DYC_PAGE_PATTERNS = {
     /^https:\/\/channels\.weixin\.qq\.com\//,
   wxAll:
     /^https:\/\/(?:store|channels)\.weixin\.qq\.com\//,
+  fxgShop: /^https:\/\/fxg\.jinritemai\.com\//,
 };
 
 /* ==========================================================
@@ -809,7 +810,7 @@ var DYC_FLAGS_META = [
     key: 'shopListNameWrap',
     group: 'shop',
     label: '抖店商品名称完整展示',
-    desc: '商品名优先两行，最多三行完整显示。',
+    desc: '商品名优先两行，最多显示三行。',
     note: '超长名仍省略；右侧空位会加给名字列。',
     default: true,
     pages: ['list']
@@ -845,6 +846,15 @@ var DYC_FLAGS_META = [
     note: '自动发福袋在悬浮窗里，默认关。',
     default: true,
     pages: ['liveCtrl']
+  },
+  {
+    key: 'shopHeaderName',
+    group: 'shop',
+    label: '店铺名称完整显示',
+    desc: '右上角完整显示店名。',
+    note: '空间不足时换行显示。',
+    default: true,
+    pages: ['fxgShop']
   },
 ];/* ==========================================================
  * 四、从元数据派生的常量(保持向后兼容)

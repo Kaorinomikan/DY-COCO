@@ -83,7 +83,7 @@ function mergeHistoryItems(current, incoming) {
     if (!item || typeof item.text !== 'string' || !item.text || !isFinite(item.ts)) return;
     if (['success', 'error', 'alert', 'warning'].indexOf(item.type) < 0) return;
     var row = { type: item.type, source: String(item.source || '').slice(0, 40),
-      text: item.text.slice(0, 12000), count: String(item.count || '').slice(0, 300),
+      text: item.text.slice(0, 12000), brief: String(item.brief || '').slice(0, 96), count: String(item.count || '').slice(0, 300),
       time: String(item.time || '').slice(0, 12), ts: Number(item.ts) };
     if (item.key) row.key = String(item.key).slice(0, 100);
     var id = row.key ? 'key:' + row.key : JSON.stringify([row.type, row.source, row.text, row.count, row.ts]);
@@ -1067,6 +1067,35 @@ function injectPanelScript(tabId) {
   return Promise.reject(new Error('当前浏览器不支持脚本注入'));
 }
 
+/**
+ * 注入成功后补发一次「按 mode 打开」（2026-11-03 修 #129 首屏落错 Tab）。
+ *
+ * 为什么必须补：injectPanelScript 只是把 panel.js 塞进页面。panel.js 首次运行
+ * 走的是启动段（只 display='flex'，不调用 open(mode)），Tab 停在 HTML 静态默认
+ * 的「反馈」；只有收到 dyc:fbToggle 才会走 open(mode) → setTab。所以「第一次点
+ * 更新日志落反馈、第二次才对」的根因就是这里缺了这一发。
+ *
+ * 为什么带重试：注入是异步的，脚本执行完成与监听器注册之间理论上存在窗口
+ * （脚本较长、老内核调度慢）。重复发送是幂等的 —— open() 只改显示状态，
+ * 不会叠加第二份面板。
+ *
+ * @returns {Promise<boolean>} 是否成功送达
+ */
+async function nudgeFeedbackPanelMode(tabId, mode) {
+  var want = mode || 'feedback';
+  for (var i = 0; i < 3; i++) {
+    try {
+      await chromeCb(function (done) {
+        chrome.tabs.sendMessage(tabId, { type: 'dyc:fbToggle', mode: want }, done);
+      }, 2000);
+      return true;
+    } catch (e) {
+      if (i < 2) await delayMs(120);
+    }
+  }
+  return false;
+}
+
 /* ────────────────────────────────────────────────────────────────────
  * 版本日志数据(#106 · 2026-10-24 迭代:并入反馈浮层,独立 changelog 页删除)
  *
@@ -1078,15 +1107,80 @@ function injectPanelScript(tabId) {
  * 链路:面板/兜底小窗连 Port(dyc-changelog) → 这里拉 tags.atom 列标签 +
  *   逐标签 raw 拉 RELEASE_NOTES.md → 解析成卡片数据回传。
  *   · 5 分钟内存缓存:切走再切回秒开,也免得每次开关面板都打仓库;
- *   · fresh=true 跳过缓存读(重试按钮用;拉取中途失败本就不写缓存);
+ *   · fresh=true 跳过内存缓存读(重试按钮用;拉取中途失败本就不写缓存);
+ *   · 各版解析结果按 tag 持久缓存在 chrome.storage.local(2026-11-03 新增,见下);
  *   · 解析规则与 update.js 的 parseNewsMd 同源(改动请两边同步)。
- *   · 纯展示数据:不写存储、不碰更新链路,任何失败都不弹系统对话框。
+ *   · 纯展示数据:不碰更新链路,任何失败都不弹系统对话框。
  * ──────────────────────────────────────────────────────────────────── */
 var CL_CACHE_TTL = 5 * 60 * 1000;
 var clCache = { at: 0, data: null };
 
+// 面板展示的版本张数（2026-11-03 #129：用户要求恢复成 10 个）。
+var CL_LIST_SIZE = 10;
+
 // 单版要点条数上限:与更新页「要点一眼看完」的口径一致,防异常长清单刷屏。
 var CL_MAX_ITEMS = 10;
+
+/* ★ 各版日志的持久缓存（2026-11-03）
+ *
+ * 为什么必须有：RELEASE_NOTES.md 是 .md，按 gitee.js 的混合读法不走 jsDelivr
+ * CDN（.md 会被 301 到 raw，部分网络不可达）⇒ 每个标签固定消耗 1 次
+ * api.github.com 匿名配额（60 次/小时）。展示 10 个版本意味着每次冷启动
+ * 要烧 10 次，约为小时额度的 1/6，会与更新下载（7 次）互相挤兑。
+ *
+ * 为什么可以永久缓存：标签一经推送，其内容就视为不可变（AGENTS.md 的
+ * 「同名标签不重建、要改就发新版本号」纪律）。所以「某个 tag 的解析结果」
+ * 是稳定值，只有**新出现的标签**才值得花那一次配额。
+ *
+ * schema 版本：解析规则（clParseNotes）或缓存结构变了就 +1，旧缓存自动作废，
+ * 避免把旧口径解析出来的结果继续当真理展示。
+ */
+var CL_NOTES_STORE = 'dycChangelogNotes';
+var CL_NOTES_SCHEMA = 1;
+var CL_NOTES_KEEP = 30;   // 只保留最新 30 个标签的解析结果，防键值无限膨胀
+
+/** 缓存结构是否可用（结构不对/版本不符一律当没有）。 */
+function clNotesCacheValid(v) {
+  return !!v && typeof v === 'object' && v.schema === CL_NOTES_SCHEMA
+    && !!v.tags && typeof v.tags === 'object';
+}
+
+/** 读持久缓存 → { tag: {s:摘要, i:[要点]} }；读不到或结构不对返回空对象。 */
+function clReadNotesCache() {
+  try {
+    return chrome.storage.local.get(CL_NOTES_STORE).then(function (got) {
+      var v = got && got[CL_NOTES_STORE];
+      return clNotesCacheValid(v) ? v.tags : {};
+    }, function () { return {}; });
+  } catch (e) {
+    return Promise.resolve({});
+  }
+}
+
+/** 写持久缓存。写失败只影响下次要不要多花配额，绝不影响本次展示。 */
+function clWriteNotesCache(tagsMap) {
+  try {
+    return chrome.storage.local.set({
+      [CL_NOTES_STORE]: { schema: CL_NOTES_SCHEMA, tags: tagsMap }
+    }).catch(function () { /* 配额/磁盘异常都忽略 */ });
+  } catch (e) {
+    return Promise.resolve();
+  }
+}
+
+/**
+ * 裁剪缓存：只留**当前仓库里仍存在**的最新 CL_NOTES_KEEP 个标签。
+ * 仓库侧已删掉的标签、以及超出上限的老标签，解析结果留着也没人看。
+ */
+function clTrimNotesCache(map, tags) {
+  var out = {};
+  var n = 0;
+  for (var i = 0; i < tags.length && n < CL_NOTES_KEEP; i++) {
+    var k = tags[i].tag;
+    if (Object.prototype.hasOwnProperty.call(map, k)) { out[k] = map[k]; n++; }
+  }
+  return out;
+}
 
 function clParseNotes(text) {
   if (!text) return null;
@@ -1183,43 +1277,75 @@ function clPool(tasks, runN, worker, onTick) {
   });
 }
 
-function buildChangelog(fresh, emit) {
+async function buildChangelog(fresh, emit) {
   if (!fresh && clCache.data && Date.now() - clCache.at < CL_CACHE_TTL) {
     emit({ type: 'done', data: clCache.data });
     return;
   }
-  clFetchTags().then(function (tags) {
-    // 配额防线（2026-11-01 体检 P0-4）：只为**比本地版新（含当前）**的标签
-    // 拉 RELEASE_NOTES。.md 不走 CDN，每个标签固定烧 1 次 api.github.com
-    // 匿名配额（60/小时）—— 全量拉约 24 个标签，一次「刷新」就烧掉 24 次，
-    // 与一次更新下载（7 次）互相挤兑，一小时内更新可能在中途 403。
-    // 旧版本的说明对更新决策没有价值；完整历史走面板底部的仓库标签页链接。
-    var localV = chrome.runtime.getManifest().version;
-    var useful = [];
-    for (var i = 0; i < tags.length; i++) {
-      if (DYC_GITEE.compareVersion(DYC_GITEE.tagToVersion(tags[i].tag), localV) >= 0) {
-        useful.push(tags[i]);
-      }
+
+  var tags;
+  try {
+    tags = await clFetchTags();
+  } catch (e) {
+    emit({ type: 'error', message: (e && e.message) || String(e) });
+    return;
+  }
+
+  // 版本窗口：仓库标签里最新的 CL_LIST_SIZE 个（标签本身已按版本降序）。
+  // ★ 2026-11-03 #129：不再按「≥ 本地版」过滤 —— 在线版已是最新时那种过滤
+  //   只剩当前这 1 个标签，正是用户看到「只能看到一个版本」的直接原因。
+  //   旧的配额顾虑改由「按 tag 持久缓存」解决：老标签不再重复消耗配额。
+  var list = tags.slice(0, CL_LIST_SIZE);
+
+  var cached = await clReadNotesCache();
+  var items = new Array(list.length);
+  var todo = [];
+  for (var i = 0; i < list.length; i++) {
+    var tag = list[i].tag;
+    if (Object.prototype.hasOwnProperty.call(cached, tag)) {
+      var c = cached[tag] || {};
+      var cNotes = (c.s || (c.i && c.i.length)) ? { summary: c.s || '', items: c.i || [] } : null;
+      items[i] = { tag: tag, date: list[i].date, notes: cNotes, fromCache: true };
+    } else {
+      todo.push(i);
     }
-    if (!useful.length) useful = tags.slice(0, 1); // 本地已是最新时至少保留当前版
-    return clPool(useful, 3, function (t) {
+  }
+
+  if (todo.length) {
+    var got = await clPool(todo.map(function (idx) { return list[idx]; }), 3, function (t) {
       return DYC_GITEE.fetchRawFile(t.tag, 'RELEASE_NOTES.md').then(function (buf) {
-        return { tag: t.tag, date: t.date, notes: clParseNotes(clDecodeUtf8(buf)) };
+        return { notes: clParseNotes(clDecodeUtf8(buf)) };
       });
     }, function (done, total) {
       emit({ type: 'progress', done: done, total: total });
     });
-  }).then(function (items) {
-    var data = {
-      items: items,
-      localVersion: chrome.runtime.getManifest().version,
-      webUrl: DYC_GITEE.TAGS_PAGE
-    };
-    clCache = { at: Date.now(), data: data };
-    emit({ type: 'done', data: data });
-  }).catch(function (e) {
-    emit({ type: 'error', message: (e && e.message) || String(e) });
-  });
+
+    var dirty = false;
+    for (var k = 0; k < todo.length; k++) {
+      var idx = todo[k];
+      var row = got[k] || {};
+      if (row.error) {
+        // 单版失败只坏这一张卡（面板走 cl-miss 占位显示原因），不整块失败；
+        // 失败不进缓存，下次打开会再试。
+        items[idx] = { tag: list[idx].tag, date: list[idx].date, error: row.error };
+        continue;
+      }
+      var nn = row.notes || null;
+      items[idx] = { tag: list[idx].tag, date: list[idx].date, notes: nn };
+      cached[list[idx].tag] = { s: (nn && nn.summary) || '', i: (nn && nn.items) || [] };
+      dirty = true;
+    }
+    // 只写成功的条目；写失败不影响本次展示，只是下次还要再花配额。
+    if (dirty) await clWriteNotesCache(clTrimNotesCache(cached, tags));
+  }
+
+  var data = {
+    items: items,
+    localVersion: chrome.runtime.getManifest().version,
+    webUrl: DYC_GITEE.TAGS_PAGE
+  };
+  clCache = { at: Date.now(), data: data };
+  emit({ type: 'done', data: data });
 }
 
 chrome.runtime.onConnect.addListener(function (port) {
@@ -1265,6 +1391,10 @@ async function openFeedbackPanel(mode) {
 
     try {
       await injectPanelScript(id);
+      // 注入 ≠ 打开（#129）：panel.js 首次运行只 display，不认 mode。
+      // 必须补发一次 toggle，否则「更新日志」入口首屏必然停在「反馈」。
+      // 补发失败不改变主流程结论：面板已经显示，只是 Tab 落在默认页。
+      await nudgeFeedbackPanelMode(id, mode);
       return { ok: true, injected: true };
     } catch (e) {
       why = (e && e.message) || '注入失败';

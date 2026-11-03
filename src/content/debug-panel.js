@@ -164,59 +164,81 @@
   var CSS = `
 .panel {
   all: initial;
-  display: block;
+  display: flex;
+  flex-direction: column;
   box-sizing: border-box;
   width: 100%;
-  max-height: 420px;
+  max-height: 520px;
+  max-height: min(520px, calc(100vh - 50px));
   overflow-y: auto;
-  background: #1f2329;
-  color: #e5e6eb;
-  font-family: Consolas, Monaco, monospace;
+  background: #22252c;
+  color: #e7e9ee;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Microsoft YaHei", sans-serif;
   font-size: 12px;
   line-height: 1.7;
-  padding: 12px;
-  border-radius: 8px;
-  box-shadow: 0 4px 24px rgba(0,0,0,.4);
+  padding: 0 16px 16px;
+  border: 1px solid #3b3e47;
+  border-radius: 12px;
+  box-shadow: 0 12px 34px rgba(0,0,0,.15), 0 2px 8px rgba(0,0,0,.1);
 }
 .panel * { box-sizing: border-box; }
 .head {
+  flex: none;
   display: flex; align-items: center; justify-content: space-between;
-  margin-bottom: 8px;
+  gap: 8px; margin: 0 -16px 12px; padding: 12px 16px;
+  border-bottom: 1px solid #343740;
   cursor: move; user-select: none; -webkit-user-select: none; touch-action: none;
 }
-.title { font-weight: 500; color: #ff7d00; }
+.title { display: flex; align-items: center; gap: 8px; font-size: 14px; font-weight: 500; }
+.title::before { content: ''; flex: none; width: 7px; height: 7px; border-radius: 50%; background: #f5a15c; box-shadow: 0 0 0 4px rgba(245,161,92,.07); }
+.active { font-size: 11px; font-weight: 400; color: #b5bac6; }
 .close {
-  flex: none; margin-left: 12px; padding: 2px 10px; font-size: 12px;
-  cursor: pointer; background: #2b303a; color: #e5e6eb;
-  border: 1px solid #4a505c; border-radius: 4px; font-family: inherit;
+  flex: none; padding: 3px 4px; font-size: 12px;
+  cursor: pointer; background: transparent; color: #aeb4c1;
+  border: 1px solid transparent; border-radius: 7px; font-family: inherit;
   line-height: 18px;
 }
-.close:hover { background: #363c47; }
-.hint { color: #86909c; margin-bottom: 8px; }
+.close::after { content: '\\2304'; margin-left: 6px; }
+.close:hover { background: #393e49; color: #e7e9ee; }
+.hint { flex: none; color: #a9afbd; margin-bottom: 12px; }
 .log {
-  min-height: 60px; max-height: 240px; overflow-y: auto;
-  padding: 8px; background: #171a1f; border-radius: 4px;
-  border: 1px solid #2b303a; color: #00b42a; line-height: 1.6;
+  flex: 1 1 auto; min-height: 60px; max-height: 240px; overflow-y: auto;
+  padding: 12px; background: #191c22; border-radius: 8px;
+  border: 1px solid #31353e; color: #d6d9e1; line-height: 1.85;
+  font-family: Consolas, Monaco, "Microsoft YaHei", monospace;
+  overflow-wrap: anywhere; word-break: break-word; scrollbar-width: thin;
+  scrollbar-color: #505662 #191c22;
 }
-.log .dim { color: #86909c; }
-.btns { margin-top: 10px; display: flex; flex-wrap: wrap; gap: 6px 0; }
+.log-line { display: flex; align-items: baseline; gap: 8px; }
+.log-time { flex: none; color: #949cab; font-variant-numeric: tabular-nums; }
+.log-text { min-width: 0; white-space: pre-wrap; }
+.log .dim { color: #a9afbd; }
+.btns { flex: none; margin-top: 14px; display: flex; flex-wrap: wrap; gap: 8px; }
 .btns button {
-  margin-right: 6px; padding: 6px 14px; font-size: 12px;
-  cursor: pointer; background: #2b303a; color: #e5e6eb;
-  border: 1px solid #4a505c; border-radius: 4px; font-family: inherit;
+  flex: 1 1 180px; min-width: 0; padding: 8px 10px; font-size: 12px;
+  cursor: pointer; background: #2c3039; color: #d6d9e1;
+  border: 1px solid #424651; border-radius: 7px; font-family: inherit; line-height: 20px;
 }
+.btns button:hover { background: #393e49; border-color: #626875; }
+.btns #dyb-debug-report { color: #ffc99e; background: #45352c; border-color: #72513b; }
+.btns #dyb-debug-report:hover { background: #554031; border-color: #a8744d; }
+.btns #dyb-debug-clear { background: transparent; color: #b4bac7; border-color: #383d47; }
+.btns #dyb-debug-clear:hover { background: #393e49; }
+.panel button:focus-visible { outline: 2px solid #f5a15c; outline-offset: 2px; }
 .btns button:disabled { opacity: .6; cursor: default; }
 .msg {
-  margin-top: 8px; font-size: 12px; line-height: 1.6;
-  color: #86909c;
+  flex: none;
+  margin-top: 12px; font-size: 12px; line-height: 1.6;
+  color: #b6c0d1; overflow-wrap: anywhere;
 }
-.msg.ok { color: #00b42a; }
-.msg.err { color: #f53f3f; }
+.msg.ok { color: #8ed6ad; }
+.msg.err { color: #ff9b9b; }
 .msg[hidden] { display: none; }
 .fallback {
+  flex: none;
   display: block; width: 100%; margin-top: 10px; min-height: 140px;
-  background: #171a1f; color: #e5e6eb; border: 1px solid #2b303a;
-  border-radius: 4px; padding: 8px; font-family: inherit; font-size: 12px;
+  background: #191c22; color: #e7e9ee; border: 1px solid #424651;
+  border-radius: 8px; padding: 12px; font-family: Consolas, Monaco, monospace; font-size: 12px;
   resize: vertical;
 }
 .fallback[hidden] { display: none; }
@@ -285,16 +307,16 @@
     panel.className = 'panel';
     panel.innerHTML = ''
       + '<div class="head">'
-      +   '<span class="title">调试模式已开启</span>'
+      +   '<span class="title">调试模式<span class="active">已开启</span></span>'
       +   '<button type="button" class="close" id="dyb-debug-close">收起</button>'
       + '</div>'
-      + '<div class="hint">日志实时显示；按住标题栏可拖动</div>'
-      + '<div class="log" id="dyb-debug-log"></div>'
+      + '<div class="hint">日志实时显示 · 按住标题栏可拖动</div>'
+      + '<div class="log" id="dyb-debug-log" role="log" aria-label="调试日志"></div>'
       + '<div class="btns">'
+      +   '<button type="button" id="dyb-debug-report">复制诊断报告</button>'
       // 导出页面结构(2026-10-18 用户要求):与弹窗里那枚同名按钮是同一个探针,
       // 区别只在于入口 —— 面板就长在页面上,操作时不用「先开弹窗、再点按钮」。
       +   '<button type="button" id="dyb-debug-probe">导出页面结构</button>'
-      +   '<button type="button" id="dyb-debug-report">复制诊断报告</button>'
       +   '<button type="button" id="dyb-debug-netarm">开始接口取样 30 秒</button>'
       +   '<button type="button" id="dyb-debug-clear">清空日志</button>'
       + '</div>'
@@ -325,7 +347,15 @@
     // 用 textContent 追加而非 innerHTML += —— 页面上的商品标题可能含尖括号,
     // 拼进 innerHTML 会被解析成标签,日志内容随之错乱或整块消失。
     var line = document.createElement('div');
-    line.textContent = '[' + new Date().toLocaleTimeString() + '] ' + text;
+    line.className = 'log-line';
+    var time = document.createElement('span');
+    time.className = 'log-time';
+    time.textContent = new Date().toLocaleTimeString();
+    var message = document.createElement('span');
+    message.className = 'log-text';
+    message.textContent = text;
+    line.appendChild(time);
+    line.appendChild(message);
     box.appendChild(line);
     box.scrollTop = box.scrollHeight;
   }
@@ -679,7 +709,7 @@
    * ========================================================== */
 
   var MIN_VISIBLE = 120;   // 拖到边上时至少留这么多宽度,否则抓不回来、也拖不回来
-  var HANDLE_H = 34;       // 标题栏高度(12px 内边距 + 22px 行高),必须整条留在视口内
+  var HANDLE_H = 52;       // 标题栏含上下内边距与分隔线,必须整条留在视口内
 
   /**
    * 拖动位置的**页内临时记忆**。null = 从未拖过,用 CSS 里的默认位置

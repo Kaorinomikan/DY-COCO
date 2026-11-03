@@ -1808,7 +1808,6 @@
     '.grp[aria-pressed="true"] .rd{border-color:#165dff;background:#165dff;box-shadow:inset 0 0 0 2.5px #fff}',
     '.gt{font-size:12px;color:#86909c}',
     '.grp[aria-pressed="true"] .gt{color:#1f2329;font-weight:600}',
-    '.gx{font-size:11px;color:#86909c;margin-left:auto;font-variant-numeric:tabular-nums}',
     '.seg{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}',
     '.sg{position:relative;border:1px solid #e8e9ec;border-radius:5px;padding:6px 0 5px;text-align:center;background:#fff;cursor:pointer}',
     '.sg b{display:block;font-size:15px;font-weight:600;line-height:1.15;color:#1f2329}',
@@ -1901,10 +1900,10 @@
     panel.innerHTML = [
       '<div class="ph"><b>自动循环讲解</b></div>',
       '<div class="grp" data-g="sec" aria-pressed="true">',
-      '<div class="gh"><span class="rd"></span><span class="gt">秒档</span><span class="gx"></span></div>',
+      '<div class="gh"><span class="rd"></span><span class="gt">秒档</span></div>',
       '<div class="seg"></div></div>',
       '<div class="grp" data-g="min" aria-pressed="false">',
-      '<div class="gh"><span class="rd"></span><span class="gt">分钟档</span><span class="gx"></span></div>',
+      '<div class="gh"><span class="rd"></span><span class="gt">分钟档</span></div>',
       '<div class="zones"><span class="r">秒杀 · 引流</span><span class="g">承接 · 利润</span><span class="o">高客单</span></div>',
       '<div class="ticks"></div>',
       '<div class="track" role="slider" tabindex="0" aria-label="分钟间隔">',
@@ -1921,8 +1920,6 @@
     refs.grpSec = panel.querySelector('.grp[data-g="sec"]');
     refs.grpMin = panel.querySelector('.grp[data-g="min"]');
     refs.secSeg = refs.grpSec.querySelector('.seg');
-    refs.secGx = refs.grpSec.querySelector('.gx');
-    refs.minGx = refs.grpMin.querySelector('.gx');
     refs.ticks = refs.grpMin.querySelector('.ticks');
     refs.track = refs.grpMin.querySelector('.track');
     refs.fill = refs.track.querySelector('.fill');
@@ -2048,13 +2045,11 @@
   var slider = { cur: DEF_MIN, target: DEF_MIN, raf: 0 };
   var lastSliderTxt = '';
 
-  /** 两个框的选中态 + 右上角当前值。谁亮着就是谁生效，不隐藏、不禁点。 */
+  /** 两个框与秒档按钮的选中态。谁亮着就是谁生效，不隐藏、不禁点。 */
   function paintGroups() {
     if (!refs.grpSec) return;
     refs.grpSec.setAttribute('aria-pressed', String(state.group === 'sec'));
     refs.grpMin.setAttribute('aria-pressed', String(state.group === 'min'));
-    if (refs.secGx) refs.secGx.textContent = '每 ' + state.seconds + ' 秒';
-    if (refs.minGx) refs.minGx.textContent = '每 ' + fmtMinute(liveMinutes());
     Array.prototype.forEach.call(refs.secSeg.children, function (el) {
       var on = state.group === 'sec' && parseFloat(el.getAttribute('data-sec')) === state.seconds;
       el.setAttribute('aria-pressed', String(on));
@@ -2100,7 +2095,7 @@
     if (!refs.r1) return;
     var isSec = state.group === 'sec';
     var cur = isSec ? state.seconds : liveMinutes();
-    var shown = isSec ? (cur + ' 秒') : fmtMinute(cur);
+    var shown = isSec ? ((cur - 3) + '~' + cur + ' 秒') : fmtMinute(cur);
     var rec = isSec ? (cur === SEC_REC) : (RECS.indexOf(cur) >= 0);
     var key = state.group + ':' + cur + ':' + state.seconds + ':' + state.minutes;
     if (key !== lastSliderTxt) {
@@ -2109,10 +2104,9 @@
         (rec ? '<span class="bdg">推荐</span>' : '');
       refs.r2.innerHTML = isSec ? '' : adviceOf(cur);
     }
-    /* 秒档不写场景说明(用户 2026-10-30 定):读数区只留主句,真实间隔由各档按钮内小字注明
+    /* 秒档不写场景说明(用户 2026-10-30 定):读数区只留主句,实际范围与各档按钮内小字一致
      * (2026-11-01 用户定,取代原档位下方共用的公式注)。 */
     refs.r2.hidden = isSec;
-    if (refs.minGx && !isSec) refs.minGx.textContent = '每 ' + fmtMinute(cur);
     refreshTrack();
     paintStatusLine();
     /* 秒档只有 15 秒一档用红(与分钟档色带「秒杀·引流」同义);其余档回到默认蓝。 */

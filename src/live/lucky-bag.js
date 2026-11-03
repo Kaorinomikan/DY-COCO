@@ -119,6 +119,20 @@
  *     · 手动发福袋的预检与二次确认都接上卡片判据 —— 有卡就不发；
  *     · 行扫描加高度守卫（>420px 视为整块容器，不当一行），从根上避免
  *       页签里的「已结束」把整块内容带成 drawn。
+ *
+ * 【2026-11-03 · 开播闸改口径 + 判据抽共享（用户报「还没开播就一直弹抽屉」）】
+ *   用户原话：「福袋的间隔刷新功能，想改成只有在开始直播才开始按照间隔设置
+ *   刷新，不然还没开播就一直弹出抽屉」。四问定稿：
+ *     A. 判据口径 = **只认明确在播**才自动开抽屉（unknown 也拦）；
+ *     B. 自动发福袋**同闸** —— 未确认在播时也不点「开始活动」；
+ *     C. 未开播时圆钮**照常露脸**（不藏）；
+ *     D. 判据**抽成共享模块** src/content/live-state.js（唯一真源）。
+ *   根因：旧版闸门是 `if (liveState === 'idle') return` —— 只拦「明确未开播」，
+ *   判不出（unknown）照开；而 livePhase() 自己写了一套薄判据（只认两组文案），
+ *   与 auto-refresh 那边早已补厚的三路信号必然漂移。页面没渲染出判据文案时
+ *   就落 unknown ⇒ 按在播处理 ⇒ 进页面 3 秒弹一次、之后每 N 分钟一次。
+ *   现在：判据统一问 live-state.js；闸门反转为「非 live 一律不动」；
+ *   并配三条可见性措施（面板灰字 / 诊断行 / snapshot.gate），不会静默失效。
  * ============================================================
  */
 
@@ -358,12 +372,13 @@
    *   ③ 超级福袋 —— 改版后的短文案（当前真机）。 */
   var BAG_ENTRY_CANDIDATES = ['超级福袋-活动管理', '超级福袋活动管理', '超级福袋'];
 
-  /* 开播判据（2026-11-01 05:0x）：
-   * 用户要求「只有开播后才生效，未开播不生效，直播结束后停止」。
-   * 取不到的写法就退到 unknown，**unknown 一律当在播** —— 宁可多读，
-   * 不能因为判不出来把功能整体弄哑（那比不生效更糟）。 */
-  var RE_LIVE_ON = /^(结束直播|结束本场直播)$/;
-  var RE_LIVE_OFF = /^(开始直播|未开播|直播已结束|已结束直播|本场已结束)$/;
+  /* 开播判据（2026-11-01 定，2026-11-03 改口径）：
+   * 用户要求「只有开播后才生效，未开播不生效，直播结束后停止」，
+   * 2026-11-03 进一步拍板「只认明确在播才自动开抽屉」。
+   * ★ 判据本身已抽到共享模块 src/content/live-state.js（唯一真源），
+   *   本文件不再自己写文案匹配 —— 见 livePhase() / liveGateOpen()。
+   *   旧的两条正则（RE_LIVE_ON / RE_LIVE_OFF）随之删除：留在这里只会让人
+   *   以为还有第二份判据。 */
 
   var REASONS = {
     'no-activity': { short: '已无可用福袋', detail: '已无可用福袋：表格里找不到还能点的「开始活动」。共完成 %N 轮。' },
@@ -1247,33 +1262,46 @@
   /**
    * 现在在不在播。
    *
-   * 用户口径：「按钮只有在开播后才会生效。未开播不生效。直播结束后也会停止
-   * 不再获取信息。」⇒ 必须有一条判据。
+   * 用户口径（2026-11-01 + 2026-11-03 两次定稿）：
+   *   · 2026-11-01：「按钮只有在开播后才会生效。未开播不生效。直播结束后也会停止
+   *     不再获取信息。」
+   *   · 2026-11-03：「福袋的间隔刷新功能，想改成只有在开始直播才开始按照间隔设置
+   *     刷新，不然还没开播就一直弹出抽屉」+ 拍板「只认明确在播才自动开抽屉」。
    *
-   * 判据只用**文案**（不认类名）：
-   *   · 有「结束直播」→ 正在播；这是中控台唯一只在直播中出现的主按钮。
-   *   · 有「开始直播 / 未开播 / 直播已结束」→ 没在播（开播前、下播后）。
-   *   · 两组都没有 → unknown。
+   * ★ 2026-11-03 起判据不再在本文件里实现 —— 统一问共享模块 live-state.js
+   *   （与 auto-refresh 同一份，全工程唯一真源）。旧版在这里自写一套「只认两组
+   *   文案」的薄判据，与小黄车那边早已补厚的三路信号必然漂移；漂移的后果就是
+   *   本文件原来的那句「unknown 一律按在播处理」—— 没开播也照开抽屉。
    *
-   * **unknown 一律按「在播」处理**：判不出来就少管一档，不能把功能整体弄哑
-   * （那用户会以为坏了）。这条与「先保证不误伤」的取向一致 ——
-   * 真实代价只是「没开播时多读几眼」，可接受。
+   * 返回口径统一为 'live' | 'idle' | 'unknown'（沿用本文件既有的三态命名，
+   * 共享模块内部叫 prelive，映射关系：prelive → idle）。
    */
   function livePhase() {
-    var on = false;
-    var off = false;
-    var all = document.querySelectorAll('button, a, span, div');
-    for (var i = 0; i < all.length; i++) {
-      var el = all[i];
-      if (!isLeaf(el) || isExtNode(el)) continue;
-      var t = tight(text(el));
-      if (!t || t.length > 10) continue;
-      if (RE_LIVE_ON.test(t)) { on = true; break; }
-      if (RE_LIVE_OFF.test(t)) { off = true; }
+    var g = window.dycLiveState;
+    if (!g || typeof g.judge !== 'function') {
+      /* 共享模块不在场（脚本注入顺序异常 / 老包）：退化为本文件的保守口径 ——
+       * 认不出就不动。这与 2026-11-03 的新取向一致（宁可不动作，也不乱开抽屉）。 */
+      return 'unknown';
     }
-    if (on) return 'live';
-    if (off) return 'idle';
+    var st = g.judge();
+    if (st === 'live') return 'live';
+    if (st === 'prelive') return 'idle';
     return 'unknown';
+  }
+
+  /**
+   * 开播闸：只有**明确在播**才允许自动动作。
+   *
+   * 2026-11-03 用户拍板（原话「只认明确在播才自动开抽屉」）：
+   *   · live   ⇒ 放行（按间隔开抽屉 / 自动发福袋）；
+   *   · idle   ⇒ 拦（未开播、已下播）；
+   *   · unknown⇒ **也拦**。这是本次改动最核心的一条口径反转 ——
+   *     旧版把 unknown 当在播，于是页面没渲染出判据文案时就一直弹抽屉。
+   *     代价从「打扰用户」换成「可能少抓一次」，并配三条可见性措施兜底
+   *     （面板灰字提示 / 诊断行 / snapshot.gate），不会变成静默不工作。
+   */
+  function liveGateOpen() {
+    return liveState === 'live';
   }
 
   /** 未开播 / 已下播：圆钮不露脸、不读数（露脸逻辑由 applyBadgeReveal 统一管） */
@@ -1309,13 +1337,19 @@
 
   function applyLiveGate() {
     if (!badgeHost) return;
+    /* 未开播 / 已下播：**圆钮照常露脸**（2026-11-03 用户拍板「不用藏起来」），
+     * 只把读数清掉 —— 圆钮显示「未开始」，人一眼能看出「它在待命、等开播」。
+     *
+     * 旧版在这里整枚隐藏，理由是「未开播不露脸」。改掉的原因：口径反转后
+     * 「闸关着」成了常态（判据没确认在播就不动作），把控件一起藏掉会让用户
+     * 找不到入口、以为功能被删了；而手动刷新/手动发福袋本来就允许未开播时用，
+     * 入口必须一直在。
+     * 注意：这里**不能**再动 visibility —— 显隐只由「浮层让位」一个主人管，
+     * 否则会和下面的 coveredByOverlay 分支互相揭开。 */
     if (liveState === 'idle') {
-      badgeHost.style.visibility = 'hidden';
-      badgeReadyShown = false;      // 再开播时要重新走一次「就绪才露脸」
-      badgeCovered = false;
       drawAt = 0;
       liveRunning = false;
-      return;
+      runningCount = 0;
     }
     /* 浮层盖住了就藏起来，浮层关掉再露 —— 与「上滑到顶」等控件同一口径。
      * 另外把「福袋抽屉自己开着」也算作浮层：那种情况下圆钮同样压在抽屉上。 */
@@ -1336,17 +1370,29 @@
    * 到点就自己打开抽屉确认一次。
    *
    * 只在三种情况下开：
-   *   ① 监视开着、且当前判据不是「已下播」；
+   *   ① 监视开着、且**明确在播**（liveGateOpen）；
    *   ② 抽屉没被你开着（你开着我就不动，免得跟你抢）；
    *   ③ 距上次确认 ≥ 滑块值（硬上限一分钟）；
    * 开完读一轮、**1.2 秒内关掉**，只有我们自己开的才关。
    */
   function maybeConfirm(force) {
     if (!flags.watch && !force) return;
-    /* 手动刷新不受开播判据约束（2026-11-02 凌晨真机「点了手动刷新没反应」：
-     * 用户没开播时 liveState='idle' 把点击整个吞掉，一点反馈都没有 ——
-     * 人点了就是要现在抓，跟开没开播无关）。 */
-    if (liveState === 'idle' && !force) return;
+    /* 自动节拍只在明确在播时开抽屉（2026-11-03 用户拍板）。
+     *
+     * ★ 口径反转（本次改动的核心）：旧版是 `if (liveState === 'idle') return`
+     *   —— 只拦「明确未开播」，判不出（unknown）照开。于是页面没渲染出判据文案
+     *   时就一直弹抽屉，正是用户报的「还没开播就一直弹出抽屉」。
+     *   现在反过来：只有 live 放行，idle 与 unknown 都拦。
+     *
+     * 手动刷新不受这条约束（2026-11-02 凌晨真机「点了手动刷新没反应」：
+     * 用户没开播时把点击整个吞掉、一点反馈都没有 —— 人点了就是要现在抓，
+     * 跟开没开播无关）。 */
+    if (!force && !liveGateOpen()) {
+      /* 「为什么不弹」由面板灰字（pRefs.gate）与诊断的 gate 字段回答，
+       * 这里**不写 confirmStat** —— 那个字段的语义是「最近一次确认的结果」，
+       * 塞进闸门原因会让排查时分不清「没开过」和「开了被拦」。 */
+      return;
+    }
     if (confirmBusy) {
       if (force) sayManual('正在刷新中，请稍候');
       return;
@@ -1501,11 +1547,13 @@
     var sawRunning = false;
     try {
       tick();
-      if (force && !liveRunning && liveState === 'idle') {
-        /* 未开播时的手动刷新：正常循环「未开播不生效」，开播闸会把本拍
-         * 读数清掉 —— 但手动刷新的口径是「人点了就是要现在抓，跟开没
-         * 开播无关」（maybeConfirm 开头同款）。抽屉刚刚还在眼前，按
-         * 上面卡片 + 行重判一次，别把真话吞成「没有进行中」。 */
+      if (force && !liveRunning && !liveGateOpen()) {
+        /* 非在播时的手动刷新：正常循环的闸（idle 与 unknown 都拦）会把本拍
+         * 读数清掉 —— 但手动刷新的口径是「人点了就是要现在抓，跟开没开播
+         * 无关」（maybeConfirm 开头同款）。抽屉刚刚还在眼前，按上面卡片 + 行
+         * 重判一次，别把真话吞成「没有进行中」。
+         * 2026-11-03 口径反转后这里一并从 `=== 'idle'` 放宽到 `!liveGateOpen()`：
+         * unknown 现在同样被闸拦住，不跟着放宽的话「没开播时手动刷新」会失效。 */
         liveRunning = forceRunningNow();
       }
       if (liveRunning) { stat = runningStat(); sawRunning = true; }
@@ -1812,20 +1860,49 @@
     if (phase === 'off' || phase === 'stopped') return;
     if (document.hidden) return;          // 后台标签页不动作，恢复可见会补拍
 
-    /* ---- 开播判据 + 确认节拍（2026-11-01 05:0x）----
-     * 未开播 / 已下播 ⇒ 什么都不做（用户：「未开播不生效」。下播后同样停）。
-     * 在播 ⇒ 到点自己开一次抽屉确认；这一步在「有没有行」之前，
-     * 因为看不见表格时正是最需要确认的时候。 */
+    /* ---- 开播判据 + 确认节拍（2026-11-01 定，2026-11-03 改口径）----
+     * 只有**明确在播**才动作（用户 2026-11-03 拍板「只认明确在播才自动开抽屉」）。
+     *   · live    ⇒ 到点自己开一次抽屉确认（这一步在「有没有行」之前，
+     *               因为看不见表格时正是最需要确认的时候）；
+     *   · idle    ⇒ 什么都不做（未开播 / 已下播），并把读数清空；
+     *   · unknown ⇒ **也不动作**（不开抽屉、不点「开始活动」），但**保留读数**。
+     *
+     * 为什么 unknown 保留读数而不是像 idle 一样清零：unknown 只是「这一拍认不出」，
+     * 不代表下播 —— 直播中平台重渲染的那几拍就会落进 unknown。此时把倒计时清掉
+     * 会让圆钮跳回「未开始」，比不动更误导。idle 才是确定的下播。 */
+    var prevLive = liveState;
     liveState = livePhase();
     /* 每拍把「抽屉现在开着没」公布给自动刷新（轻量判据，见 isDrawerOpenFast）。
      * 用户 05:22：「打开抽屉的时候，自动刷新可以让步不刷新。不然会冲突。」 */
     try { window.__dycBagPanelOpen = isDrawerOpenFast(); } catch (e0) {}
     applyLiveGate();
+
+    /* 跃迁处理（2026-11-03）：开播立刻建立基线，下播立刻停表复位。
+     * 不处理的话，上一场残留的 nextConfirmAt 会带进下一场 ——
+     * 停在过去的值会在开播瞬间连发一次，停在未来的值会让开播后白等一场。
+     * 注意这里**只动计时与闸状态，不写 confirmStat**：那个字段的语义是
+     * 「最近一次确认的结果」，混进跃迁事件会让排查时读不懂。 */
+    if (prevLive !== 'live' && liveState === 'live') {
+      nextConfirmAt = Date.now() + 3000;      // 开播 3 秒后抓一次基线
+      paintPanel();
+    } else if (prevLive === 'live' && liveState !== 'live') {
+      nextConfirmAt = 0;                      // 下播 / 判不出：复位，下次开播重新计时
+      paintPanel();
+    }
+
     if (liveState === 'idle') {
       quietSince = 0;
       noneStreak = 0;
       liveRunning = false;
       drawAt = 0;
+      return;
+    }
+    if (!liveGateOpen()) {
+      /* unknown：闸关着 —— 不开抽屉、不点「开始活动」，但不清读数、不重扫。
+       * 自动发福袋同闸（用户 2026-11-03 拍板「未确认在播时也不点开始活动」），
+       * 所以这里直接返回，走不到下面的候选点击分支。 */
+      quietSince = 0;
+      noneStreak = 0;
       return;
     }
     maybeConfirm();
@@ -3518,6 +3595,12 @@
       '.rl .val{margin-left:auto;font-size:14px;font-weight:600;',
       'font-variant-numeric:tabular-nums;letter-spacing:.4px}',
       '.rl .u{font-size:10px;color:#9aa1ab;margin-left:-4px}',
+      /* 开播闸提示（2026-11-03）：只在「非明确在播」时出现的一行灰字。
+       * 口径反转后最大的风险是「判据失配 ⇒ 静默不动作」，这一行就是解药：
+       * 用户打开面板能直接看到「为什么现在不自动刷新」。 */
+      '.g8{margin:-8px 0 10px;font-size:10px;line-height:1.5;color:#9aa1ab;',
+      'display:none}',
+      '.g8.on{display:block}',
       /* 确认间隔 + 问号说明 + 滑条 */
       '.slab{position:relative;display:flex;align-items:center;color:#646a73;font-size:11px}',
       '.slab b{margin-left:auto;color:#1f2329;font-weight:600;font-variant-numeric:tabular-nums}',
@@ -3752,6 +3835,13 @@
       r1.appendChild(k1); r1.appendChild(v1); r1.appendChild(u1);
       box.appendChild(r1);
 
+      /* 开播闸提示（2026-11-03 用户拍板「只认明确在播才自动开抽屉」）：
+       * 判据失配时功能会静默不动作，这一行让原因看得见 —— 只在非 live 时出现，
+       * live 时不占地方（display:none）。文案只回答「为什么现在不自动刷新」，
+       * 不解释实现，符合第 25 条「一处只回答当前问题」。 */
+      var g8 = document.createElement('div'); g8.className = 'g8';
+      box.appendChild(g8);
+
       var r2 = document.createElement('div'); r2.className = 'slab';
       var k2 = document.createElement('span'); k2.textContent = '确认间隔';
       /* 问号提示（2026-11-01 05:26 用户：「确认间隔→确认间隔（问号：每隔设定的时间
@@ -3894,7 +3984,7 @@
       mrow.appendChild(mbtn);
       box.appendChild(mrow);
 
-      pRefs = { val: v1, unit: u1, min: v2, tk: tk, fill: fill, thumb: thumb, sw: asw, fbtn: fbtn, mbtn: mbtn };
+      pRefs = { val: v1, unit: u1, min: v2, tk: tk, fill: fill, thumb: thumb, sw: asw, fbtn: fbtn, mbtn: mbtn, gate: g8 };
       pRefs.sw.classList.toggle('on', autoOn);
       slide.cur = slide.target = checkMin;
       paintSlide();
@@ -3909,6 +3999,18 @@
     }
     if (pRefs.val.textContent !== txt) pRefs.val.textContent = txt;
     pRefs.unit.style.display = drawAt ? '' : 'none';
+    /* 开播闸提示（2026-11-03）：非明确在播时说明「为什么现在不自动刷新」。
+     * 这是口径反转后的必备可见性措施 —— 判据失配时功能会静默不动作，
+     * 没有这一行用户只会觉得「坏了」。 */
+    if (pRefs.gate) {
+      var gateOn = liveGateOpen();
+      var gt = gateOn ? ''
+        : (liveState === 'idle'
+          ? '未开播，自动刷新已暂停（开播后自动开始）'
+          : '未确认在播，自动刷新已暂停（点「手动刷新」随时可抓）');
+      if (pRefs.gate.textContent !== gt) pRefs.gate.textContent = gt;
+      pRefs.gate.classList.toggle('on', !gateOn);
+    }
     /* 手动刷新按钮（2026-11-02 凌晨）：忙时禁用换文案，闲时恢复。
      * 手动发福袋（2026-11-02 晚）同款：发送中禁用；手动刷新被发福袋
      * 占用期间也一并显示忙（抽屉正被用，两个动作互斥）。 */
@@ -4228,6 +4330,15 @@
           return o;
         })(),
         live: liveState,
+        /* 开播闸的结论（2026-11-03）：true = 明确在播、自动动作放行；
+         * false = 未开播或未确认，自动开抽屉与自动发福袋都停。
+         * 与 live 分开报是刻意的：live 是三态原值，gate 是它的后果，
+         * 排查时要能一眼看出「是判据认不出，还是判据认出了但闸没生效」。 */
+        gate: liveGateOpen(),
+        liveRaw: (function () {
+          var g = window.dycLiveState;
+          return (g && typeof g.dump === 'function') ? g.dump() : null;
+        })(),
         check: {
           min: checkMin,
           last: lastConfirmAt,
@@ -4250,6 +4361,7 @@
         drawerBox: info.drawerBox || '',
         startLinks: info.startLinks,
         live: liveState,
+        gate: liveGateOpen(),
         checkMin: checkMin,
         rows: rows.length,
         detail: rows.slice(0, 10).map(rowDigest),
@@ -4301,6 +4413,15 @@
     manualStart: manualStart,
     manualStartState: function () { return { busy: manualStartBusy }; },
     liveState: function () { return liveState; },
+    /* 开播闸（2026-11-03）：自测要能直接断言「闸开没开」，不必自己推三态 */
+    liveGate: liveGateOpen,
+    /* 自测用：直接把 liveState 摆成某个值（跳过判据）。
+     * 真实运行永远由 livePhase() 从共享模块读，不要在生产路径调这个。 */
+    setLiveForTest: function (v) {
+      liveState = (v === 'live' || v === 'idle') ? v : 'unknown';
+      paintPanel();
+      paintBadge();
+    },
     tick: tick,
     setTimingForTest: function (o) {
       o = o || {};

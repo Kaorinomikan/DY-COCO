@@ -185,8 +185,8 @@ function sliceVar(src, name) {
  * @param {string}   prelude  额外的前置语句(初始化状态)
  * @param {string[]} preludeFns 只在 prelude 里定义的辅助函数
  */
-function buildModule(fnNames, varNames, shims, prelude, preludeFns) {
-  const src = fs.readFileSync(SRC_PATH, 'utf8');
+function buildModule(fnNames, varNames, shims, prelude, preludeFns, srcPath) {
+  const src = fs.readFileSync(srcPath || SRC_PATH, 'utf8');
   const parts = [];
   for (const v of varNames || []) parts.push(sliceVar(src, v));
   for (const f of fnNames) parts.push(sliceFunction(src, f));
@@ -226,11 +226,11 @@ function eq(name, got, want) {
  * ============================================================ */
 
 const STATE_VARS = [
-  'REFRESH_TEXT', 'LIVE_TEXTS', 'PRE_LIVE_TEXTS', 'EXT_MARK_ATTRS',
-  'TIMER_RE', 'BANNER_TTL', 'RESCAN_MS', 'SCROLLER_TTL',
+  'REFRESH_TEXT', 'EXT_MARK_ATTRS',
+  'RESCAN_MS', 'SCROLLER_TTL',
   'INTERVAL_MS', 'JITTER_MS', 'START_DELAY', 'FAIL_LIMIT', 'RESTORE_SCROLL_DELAY',
   'TYPING_IDLE_MS', 'JUDGE_EVERY', 'TICK_MS',
-  'RETRY_INTERVAL_MS', 'LIVE_MISS_LIMIT',
+  'RETRY_INTERVAL_MS',
   'DOT_SIZE', 'DOT_BORDER', 'DOT_R', 'LAMP_HIT', 'LAMP_GAP', 'MARK_VER',
   'POPUP_TTL', '_popupAt', '_popupHit', 'SCROLL_QUIET_MS',
   /* 2026-10-27 浮层覆盖式判定:采集口径、面积阈值、缺按钮宽限(placeLamp 依赖) */
@@ -314,8 +314,11 @@ const docRegistry = { bySel: {}, bodyText: '' };
 const documentShim = makeDoc(docRegistry);
 
 const M = buildModule(
-  ['norm', 'secsOf', 'visible', 'isExtNode', 'insideExt', 'looksLikeRefresh',
-   'hasLiveButton', 'timerTrend', 'hasPreLiveBanner', 'judgeLiveOnce', 'judgeLive',
+  ['norm', 'visible', 'isExtNode', 'insideExt', 'looksLikeRefresh',
+   /* 判据本体已迁到 live-state.js（2026-11-03），本文件只留调用层：
+    * judgeLive / judgeLiveOnce / resetLiveJudge。三路信号与防抖在 C 段
+    * 直接对共享模块断言，不再从这里取。 */
+   'judgeLive', 'judgeLiveOnce', 'resetLiveJudge',
    'typingRecently', 'markType', 'popupOpen', 'popupOpenFast', 'refreshBusy', 'clickable',
    'classStr', 'overlayRects', 'coveredByOverlay', 'overlayListFast',
   'refreshUsable', 'canRefresh', 'scroller', 'saveScroll', 'restoreScroll',
@@ -395,120 +398,205 @@ const other = new FakeEl('BUTTON', { text: '添加商品', rect: withRect(80, 32
 ok('B6 别的按钮不被误认', M.looksLikeRefresh(other) === false);
 
 /* ============================================================
- * C. 直播状态判定
+ * C. 直播状态判定（2026-11-03：判据已迁到共享模块 live-state.js）
+ * ============================================================
+ * ★ 为什么要改这一段的测试对象，而不是删掉：
+ *   判据本体从 auto-refresh.js 搬到了 src/content/live-state.js（唯一真源，
+ *   auto-refresh 与 lucky-bag 共用）。判据的**行为口径一条都没变**（三路信号、
+ *   连续 3 次判不出才认 unknown、确认过在播后不再采信 prelive），
+ *   所以断言原样保留、只把被测对象换成共享模块 —— 否则这些回归样本会随搬迁一起消失。
+ *
+ * 装配方式：直接求值 live-state.js 全文，取 window.dycLiveState。
+ * 每次用例前调 resetLive()（等价整页刷新）清掉防抖计数与缓存。
+ *
+ * ★ 两个自测专属处理，都不是「为了让测试变绿」：
+ *   ① 节流窗口设 0：自测要逐次采样看防抖行为，不能被 1.8 秒窗口挡住；
+ *      （节流本身另有一条 C11 专门验，那里恢复真实窗口）
+ *   ② 改完 body 文案后调 invalidate()：横幅判定带 10 秒缓存（BANNER_TTL，
+ *      真实运行里是刻意省开销的），测试里时间不走，只能显式清缓存来模拟
+ *      「10 秒后缓存过期」。不清的话，前一个用例留下的 prelive 缓存会串到下一个。
  * ============================================================ */
 
+const LIVE_STATE_PATH = path.join(ROOT, 'src/content/live-state.js');
+const LIVE_STATE_SRC = fs.readFileSync(LIVE_STATE_PATH, 'utf8');
+
+/** 装一份全新的共享判据（每个用例开头调，等价整页刷新） */
+function freshLiveState() {
+  const winShim = {};
+  // eslint-disable-next-line no-new-func
+  const fn = new Function('window', 'document', 'Date', 'Math', LIVE_STATE_SRC);
+  fn(winShim, documentShim, Date, Math);
+  winShim.dycLiveState.setTimingForTest(0);   // 关掉节流：自测要逐次采样
+  return winShim.dycLiveState;
+}
+
+let LS = freshLiveState();
+
+/** 重置判据 + 页面垫片（与 resetState 同义，额外换一份新的判据实例） */
+function resetLive() {
+  resetState();
+  LS = freshLiveState();
+}
+
 /* C1 有「结束直播」按钮 ⇒ 直接判直播中 */
-resetState();
+resetLive();
 docRegistry.bySel['button, [role="button"], a'] = [
   new FakeEl('BUTTON', { text: '结束直播', rect: withRect(88, 32) })
 ];
-eq('C1 结束直播按钮 ⇒ live', M.judgeLiveOnce(), 'live');
+eq('C1 结束直播按钮 ⇒ live', LS.once(), 'live');
 
 /* C2 计时器递增 ⇒ live */
-resetState();
+resetLive();
 const timerEl = new FakeEl('SPAN', { text: '00:10:00', rect: withRect(60, 16) });
 docRegistry.bySel['span, div, p, b, strong, i'] = [timerEl];
-eq('C2 首拍只记值,不判趋势', M.timerTrend(), null);
+eq('C2 首拍只记值,不判趋势', LS.once(), 'unknown');
 timerEl.textContent = '00:10:05';
-eq('C3 计时器变大 ⇒ up', M.timerTrend(), 'up');
+eq('C3 计时器变大 ⇒ up（判 live）', LS.once(), 'live');
 
-/* C4 计时器递减 ⇒ down（开播倒计时,绝不能当成直播中） */
-resetState();
+/* C4 计时器递减 ⇒ 不算直播中（开播倒计时） */
+resetLive();
 const countdown = new FakeEl('SPAN', { text: '00:30:00', rect: withRect(60, 16) });
 docRegistry.bySel['span, div, p, b, strong, i'] = [countdown];
-M.timerTrend();
+LS.once();
 countdown.textContent = '00:29:58';
-eq('C4 计时器变小 ⇒ down', M.timerTrend(), 'down');
+eq('C4 计时器变小 ⇒ 不判 live', LS.once(), 'unknown');
 
-/* C4b 倒计时语境下不能判 live */
-resetState();
+/* C4b 倒计时语境 + 播前横幅 ⇒ prelive
+ * ★ 文案必须先摆好再第一次采样：横幅判定带 10 秒缓存，先采一次会把
+ *   「没有横幅」这个否定结论缓存住，后面再改 body 就读不到了。 */
+resetLive();
 const cd2 = new FakeEl('SPAN', { text: '00:30:00', rect: withRect(60, 16) });
 docRegistry.bySel['span, div, p, b, strong, i'] = [cd2];
-M.timerTrend();
-cd2.textContent = '00:29:55';
 documentShim.body.textContent = '开播前请使用直播计划';
+LS.once();                            // 首拍：记下计时器初值
 cd2.textContent = '00:29:50';
-eq('C4b 倒计时不算直播中(应判未开播)', M.judgeLiveOnce(), 'prelive');
+eq('C4b 倒计时不算直播中(应判未开播)', LS.once(), 'prelive');
 
 /* C5 只有播前横幅 ⇒ prelive */
-resetState();
+resetLive();
 documentShim.body.textContent = '开播前请使用直播计划 创建直播预告 创建直播计划';
-eq('C5 播前横幅 ⇒ prelive', M.judgeLiveOnce(), 'prelive');
+eq('C5 播前横幅 ⇒ prelive', LS.once(), 'prelive');
+
+/* C5b 「开始直播 / 直播已结束」这类完全相等的文案 ⇒ prelive
+ * （这一档是福袋模块 2026-11-01 的原有判据，合并时必须保留） */
+resetLive();
+docRegistry.bySel['button, a, span, div'] = [
+  new FakeEl('BUTTON', { text: '开始直播', rect: withRect(88, 32) })
+];
+eq('C5b 「开始直播」文案 ⇒ prelive', LS.once(), 'prelive');
+
+resetLive();
+docRegistry.bySel['button, a, span, div'] = [
+  new FakeEl('SPAN', { text: '直播已结束', rect: withRect(88, 32) })
+];
+eq('C5c 「直播已结束」文案 ⇒ prelive', LS.once(), 'prelive');
+
+/* C5d 未开播文案要求**完全相等**：带前缀的运营文案不能命中 */
+resetLive();
+docRegistry.bySel['button, a, span, div'] = [
+  new FakeEl('SPAN', { text: '开始直播倒计时', rect: withRect(88, 32) })
+];
+eq('C5d 「开始直播倒计时」不算未开播（完全相等才认）', LS.once(), 'unknown');
 
 /* C6 什么都没有 ⇒ 单次采样是 unknown */
-resetState();
+resetLive();
 documentShim.body.textContent = '直播商品 待上架商品';
-eq('C6 单次采样无信号 ⇒ unknown', M.judgeLiveOnce(), 'unknown');
+eq('C6 单次采样无信号 ⇒ unknown', LS.once(), 'unknown');
 
 /* C7 「结束直播」优先级高于播前横幅(横幅可能残留) */
-resetState();
+resetLive();
 documentShim.body.textContent = '开播前请使用直播计划';
 docRegistry.bySel['button, [role="button"], a'] = [
   new FakeEl('BUTTON', { text: '结束直播', rect: withRect(88, 32) })
 ];
-eq('C7 直播信号优先于横幅', M.judgeLiveOnce(), 'live');
+eq('C7 直播信号优先于横幅', LS.once(), 'live');
 
 /* ── C9 #108:删弱特定词后,S1 只认「开播前请使用直播计划」 ── */
 
-resetState();
+resetLive();
 documentShim.body.textContent =
   '基于【女装】行业数据分析，日均开播【5】小时，时均流量获取效率最高！创建直播预告创建直播计划查看';
-eq('C9a 运营浮条按钮词(创建直播预告/计划)不再命中 S1', M.hasPreLiveBanner(), false);
-M.__reset();                    /* 清掉横幅判定的 10 秒缓存(BANNER_TTL)再验真横幅 */
+ok('C9a 运营浮条按钮词(创建直播预告/计划)不再命中 S1', LS.once() === 'unknown',
+  'got=' + LS.once());
+
+resetLive();
 documentShim.body.textContent = '开播前请使用直播计划';
-eq('C9b 真播前横幅仍命中 S1', M.hasPreLiveBanner(), true);
+ok('C9b 真播前横幅仍命中 S1', LS.once() === 'prelive', 'got=' + LS.once());
 
 /* ── C10 #108:开播跃迁单向锁 —— 确认过 live 后,prelive 结论不再采信 ──
  *   场景:未开播 → 开播无缝转接(SPA 不刷新) → 转接后子页 S2 空窗,
  *   若 S1 再误命中,旧实现会把直播中误锁回 prelive ⇒ 点灰灯出假绿。 */
 
-resetState();
+resetLive();
 documentShim.body.textContent = '';
 docRegistry.bySel['button, [role="button"], a'] = [
   new FakeEl('BUTTON', { text: '结束直播', rect: withRect(88, 32) })
 ];
-eq('C10a 经 S2 确认直播中(everLive 置位)', M.judgeLive(), 'live');
+eq('C10a 经 S2 确认直播中(everLive 置位)', LS.judge(), 'live');
 
 /* S2 空窗(按钮消失),只剩真横幅 —— 旧实现在这里判回 prelive */
 documentShim.body.textContent = '开播前请使用直播计划';
 docRegistry.bySel['button, [role="button"], a'] = [];
-eq('C10b 锁生效:第 1 次不采信 prelive(保持 live)', M.judgeLive(), 'live');
-eq('C10c 第 2 次仍保持 live', M.judgeLive(), 'live');
-eq('C10d 第 3 次按确认节奏转 unknown(点灯恒给 force)', M.judgeLive(), 'unknown');
+docRegistry.bySel['button, a, span, div'] = [];
+LS.invalidate();                       // 模拟「横幅缓存已过期」，读到新文案
+eq('C10b 锁生效:第 1 次不采信 prelive(保持 live)', LS.judge(), 'live');
+eq('C10c 第 2 次仍保持 live', LS.judge(), 'live');
+eq('C10d 第 3 次按确认节奏转 unknown(点灯恒给 force)', LS.judge(), 'unknown');
 
-/* C10e 解锁验证:__reset(等价整页刷新)后,同样的横幅输入正常判 prelive */
-resetState();
+/* C10e 解锁验证:整页刷新(新实例)后,同样的横幅输入正常判 prelive */
+resetLive();
 documentShim.body.textContent = '开播前请使用直播计划';
-eq('C10e 重置(等价刷新)后正常判未开播', M.judgeLive(), 'prelive');
+eq('C10e 重置(等价刷新)后正常判未开播', LS.judge(), 'prelive');
 
 /* ── C8 判不出要「连续 3 次」才认（本轮新增的关键确认） ── */
 
-resetState();
-documentShim.body.textContent = '直播商品 待上架商品';   // 什么信号都没有
-M.__set({ liveState: 'prelive' });                      // 上一次结论是未开播
+resetLive();
+documentShim.body.textContent = '开播前请使用直播计划';
+LS.judge();                            // 确认一次 prelive（作为「上一次结论」）
+documentShim.body.textContent = '';
+LS.invalidate();                       // 模拟横幅缓存过期（真实运行 10 秒后自然过期）
 
-eq('C8a 第 1 次判不出 ⇒ 仍按未开播走(继续刷)', M.judgeLive(), 'prelive');
-eq('C8b 第 2 次判不出 ⇒ 仍按未开播走', M.judgeLive(), 'prelive');
-eq('C8c 第 3 次判不出 ⇒ 才转 unknown', M.judgeLive(), 'unknown');
+eq('C8a 第 1 次判不出 ⇒ 仍按未开播走(继续刷)', LS.judge(), 'prelive');
+eq('C8b 第 2 次判不出 ⇒ 仍按未开播走', LS.judge(), 'prelive');
+eq('C8c 第 3 次判不出 ⇒ 才转 unknown', LS.judge(), 'unknown');
 
-resetState();
-documentShim.body.textContent = '直播商品 待上架商品';
-M.__set({ liveState: 'prelive' });
-M.judgeLive();                       // 第 1 次不中
+resetLive();
+documentShim.body.textContent = '开播前请使用直播计划';
+LS.judge();                            // 确认一次 prelive
+documentShim.body.textContent = '';
+LS.invalidate();
+LS.judge();                            // 第 1 次不中
 /* 第 3 次命中了 —— 用「结束直播按钮」而不是横幅:横幅判定带 10 秒缓存,
  * 刚出现时读不到,不适合做「瞬时切换」的用例。 */
 docRegistry.bySel['button, [role="button"], a'] = [
   new FakeEl('BUTTON', { text: '结束直播', rect: withRect(88, 32) })
 ];
-eq('C8d 中间命中一次 ⇒ 计数清零,走命中结论', M.judgeLive(), 'live');
-eq('C8e 命中后 streak 清零', M.__get().unknownStreak, 0);
+eq('C8d 中间命中一次 ⇒ 计数清零,走命中结论', LS.judge(), 'live');
+eq('C8e 命中后 streak 清零', LS.dump().streak, 0);
 
-resetState();
-documentShim.body.textContent = '直播商品 待上架商品';
-M.__set({ liveState: 'prelive' });
-M.judgeLive(); M.judgeLive();
-eq('C8f 未达上限时 streak 记到 2', M.__get().unknownStreak, 2);
+resetLive();
+documentShim.body.textContent = '开播前请使用直播计划';
+LS.judge();
+documentShim.body.textContent = '';
+LS.invalidate();
+LS.judge(); LS.judge();
+eq('C8f 未达上限时 streak 记到 2', LS.dump().streak, 2);
+
+/* ── C11 判据节流：两个调用方共用同一个防抖窗口（2026-11-03 新增） ──
+ *   若各自推进计数，防抖窗口会被两倍速消耗（≈1.1 秒就转 unknown），
+ *   等于把「连续 3 次才认判不出」这条设计废掉。 */
+resetLive();
+LS.setTimingForTest(1800);             // 恢复真实窗口
+documentShim.body.textContent = '开播前请使用直播计划';
+LS.judge();                            // 第 1 次：确认 prelive
+documentShim.body.textContent = '';
+LS.invalidate();
+LS.judge();                            // 推进 streak 到 1
+const streakAfter1 = LS.dump().streak;
+eq('C11 铺垫：streak 已推进到 1', streakAfter1, 1);
+LS.judge();                            // 同一窗口内再问：应被节流、不动计数
+eq('C11 节流窗口内的重复判定不推进计数', LS.dump().streak, streakAfter1);
+eq('C11 节流窗口内返回上一次结论', LS.judge(), 'prelive');
 
 /* ============================================================
  * C9. 按钮本体上溯（灯要贴在整枚按钮左边，不是文字左边）

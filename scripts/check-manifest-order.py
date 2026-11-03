@@ -54,6 +54,10 @@ SHARED_TOOLS = {
     # 浮层让位判定(2026-11-01 补录):浮动控件的公共判据,必须早于
     # back-to-top / back-to-bottom / search / auto-refresh 等使用方。
     'src/content/overlay-guard.js',
+    # 开播判据(2026-11-03 补录):中控台的公共判据,auto-refresh 与 lucky-bag
+    # 共用同一份。必须早于所有使用方(第 16 / 21 位),否则两边各判一次、
+    # 结论不一致 —— 这正是「没开播还在按间隔开抽屉」的根因。
+    'src/content/live-state.js',
     'src/content/cursor-fix.js',  # 光标/焦点修正:只依赖 flags.js,须早于功能层
     # 诊断采集内核(2026-10-14 补录):必须在功能脚本之前挂上错误钩子,
     # 否则它「记录报错」这件事本身就漏掉了功能初始化阶段的异常。
@@ -78,6 +82,7 @@ ENTRIES = {
 # 不把商品列表页那整套脚本注入到无关页面。
 # ⚠️ 只登记确实自启动的脚本;普通功能脚本仍必须挂在入口脚本之前。
 SELF_BOOTING = {
+    'src/content/shop-header-name.js',  # 抖店全域的店名样式，自行订阅开关。
     'src/live/hide-elements.js',
     # 直播回放下载(2026-10-18):这两个回放页没有工具栏入口,也不需要
     # main.js / toolbar.js —— 主流程自己读开关、自己订阅变化、自己挂按钮,

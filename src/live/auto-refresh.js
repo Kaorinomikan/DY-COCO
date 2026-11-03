@@ -38,11 +38,16 @@
  * 【无记忆(拍板 ③)】三态只存在内存,不写 storage / localStorage ⇒
  *   真刷新(F5 / Ctrl+R)一定回到绿色;站内点菜单换页再切回则保持(脚本没重载)。
  *
- * 【开播怎么判 —— 三重信号,失败偏向停,但要先确认 3 次】
- *   S2 直播中:页面上有【结束直播】/【下播】/【关播】类按钮;
- *            或存在一个**递增**的 HH:MM:SS 计时器(递减是开播倒计时,不算);
- *   S1 未开播:播前引导横幅(「开播前请使用直播计划」);
- *   S3 判不出:保持上一次的结论继续刷 —— **连续 3 次(约 6 秒)都判不出**才转灰不刷。
+ * 【开播怎么判 —— 判据在共享模块,失败偏向停,但要先确认 3 次】
+ *   ★ 2026-11-03：判据本体已迁到 src/content/live-state.js（唯一真源），
+ *     本文件只调用、不再自己扫页面。原先这里与 lucky-bag.js 各写一份，
+ *     两份漂移直接导致「福袋没开播也照开抽屉」（福袋那份停在薄判据上）。
+ *   信号分三档（详细口径见 live-state.js 文件头）：
+ *     · 在播 —— 【结束直播】/【下播】/【关播】类按钮；或**递增**的 HH:MM:SS 计时器
+ *       （递减是开播倒计时，不算）；
+ *     · 未开播 —— 播前引导横幅「开播前请使用直播计划」；或「开始直播 / 未开播 /
+ *       直播已结束」这类完全相等的文案；
+ *     · 判不出 —— 保持上一次的结论继续刷，**连续 3 次（约 6 秒）都判不出**才转灰不刷。
  *
  *   为什么偏向停:把已开播误判成未开播 ⇒ 双方同时刷、列表反复重排(正是用户担心的
  *   卡顿),代价高;反过来只是回到手动点刷新,代价低。两边不对称 ⇒ 拿不准选代价低的那边。
@@ -122,7 +127,9 @@
  * 【开关】flags.js 的 liveAutoRefresh(中控台组,默认开)。
  *   关掉即时生效:摘定时器 + 摘灯。
  *
- * 【依赖】flags.js(开关)、dialog.js(toast,可选)、locate.js(滚动容器,可选)。
+ * 【依赖】flags.js(开关)、live-state.js(开播判据,必需)、
+ *         dialog.js(toast,可选)、locate.js(滚动容器,可选)。
+ *         live-state.js 缺失时判据恒为 unknown ⇒ auto 档停刷(安全方向)。
  * ============================================================
  */
 
@@ -158,7 +165,6 @@
   var START_DELAY = 3000;             // 进页面先等 3 秒
   var FAIL_LIMIT = 3;                 // 连续点不到这么多次 ⇒ 转「慢速重试」
   var RETRY_INTERVAL_MS = 30000;      // 慢速重试的间隔(不彻底停机)
-  var LIVE_MISS_LIMIT = 3;            // 连续判不出这么多次 ⇒ 才认「状态未知」
   var RESTORE_SCROLL_DELAY = 400;     // 刷完多久把滚动位置放回去
 
   /* 控件几何(全部派生,改一处即可整体联动)
@@ -177,18 +183,9 @@
   var DOT_R = (DOT_SIZE + DOT_BORDER * 2) / 2;   // 角标灯外半径(自测与文档用)
 
   var REFRESH_TEXT = '刷新列表';
-  var LIVE_TEXTS = ['结束直播', '下播', '关播', '结束本场直播'];
-  /* #108(2026-10-23):删「创建直播预告」「创建直播计划」两个弱特定词。
-   *   它们最初随 #92 进来,当作播前引导区信号的补充;但 26.10.21.3 上线的
-   *   中控台运营浮条(#102)的「行业数据分析」气泡**恰好带这两个按钮**,
-   *   且直播中一直挂在页面上 —— hasPreLiveBanner() 是 body 全文匹配,
-   *   于是直播中 S1 必误命中:只要 S2 空窗(部分中控台子页没有「结束直播」
-   *   按钮、计时器也采不到),liveState 就被误锁回 prelive ⇒ 点灰灯回
-   *   auto(假绿)而非 force(橙),三态乱入(#108 用户实测「转接后短时间
-   *   坏掉,刷新才正常」)。两个词同时是「未开播引导」与「直播中运营浮条」
-   *   的文案,弱特定词两头翻车 —— 只保留「开播前请使用直播计划」
-   *   (这条横幅只在未开播出现,直播中不会撞上)。 */
-  var PRE_LIVE_TEXTS = ['开播前请使用直播计划'];
+  /* 判据相关的常量（LIVE_TEXTS / PRE_LIVE_TEXTS / TIMER_RE / BANNER_TTL /
+   * LIVE_MISS_LIMIT）已于 2026-11-03 全部迁到 src/content/live-state.js。
+   * 本文件不再保留第二份 —— 留着就一定会有人顺手改错那一份。 */
   var EXT_MARK_ATTRS = ['data-dyc-ar', 'data-dyc-code-btn', 'data-dyc-ld-btn'];
 
   /* ---------- 状态 ---------- */
@@ -207,18 +204,13 @@
   /** 'auto' | 'force' | 'off' —— 无记忆:只在本次页面有效,不写 storage */
   var mode = 'auto';
 
-  /** 已确认的直播状态:'prelive' 未开播 / 'live' 直播中 / 'unknown' 判不出 */
+  /** 已确认的直播状态:'prelive' 未开播 / 'live' 直播中 / 'unknown' 判不出。
+   *  ★ 2026-11-03：结论来自共享模块 live-state.js（唯一真源），本变量只是
+   *    本模块的状态副本 —— 灯色与挡位切换要拿「上一拍结论」做跃迁播报，
+   *    那是本模块的语义，不能直接读全局。
+   *    everLive / unknownStreak 两个防抖状态也一并交给共享模块保管了
+   *    （两个调用方各自推进计数会把防抖窗口按调用次数成倍消耗）。 */
   var liveState = 'unknown';
-
-  /** #108 开播跃迁单向锁:本次页面生命周期内是否**确认过**「直播中」。
-   *   抖店中控台是 SPA,「未开播 → 直播中」是页面内无缝转接(不刷新);
-   *   转接后部分子页 S2 空窗(无「结束直播」按钮、计时器采不到),一旦
-   *   S1 再误命中,直播中会被误判回 prelive ⇒ 点灰灯出假绿、三态乱入。
-   *   整页刷新会重建本变量(下播走页面跳转/刷新,锁自然解除)。 */
-  var everLive = false;
-
-  /** 连续「判不出」的次数;达到 LIVE_MISS_LIMIT 才把 liveState 置为 unknown */
-  var unknownStreak = 0;
 
   /** auto 模式下因开播而自动停(与用户手动停区分开:前者开播结束自动恢复) */
   var autoStopped = false;
@@ -232,7 +224,6 @@
   var nextAt = 0;                     // 下一次该刷的时刻
   var startedAt = 0;                  // 主循环起点(启动延迟用)
   var failCount = 0;                  // 连续点不到的次数
-  var lastTimerVal = null;            // 上一次看到的 HH:MM:SS(判递增)
   var busyUntil = 0;                  // 刷新后一小段时间内不叠加
   var lamp = null;                    // 我们的指示灯
   var lampMissAt = 0;                 // 从哪一刻起找不到原生刷新按钮(用于宽限,防闪)
@@ -426,154 +417,56 @@
     return best;
   }
 
-  /* ---------- 直播状态判定 ---------- */
-
-  /**
-   * 页面上有没有「直播中」类按钮(结束直播 / 下播 / 关播)。
+  /* ---------- 直播状态判定 ----------
    *
-   * ★ 顺序要紧:先做**纯文本**匹配(不触发布局),命中之后才做可见性判定。
-   *   反过来写的话,几百个候选每个都要读矩形 ⇒ 每次判定都强制重排一轮,
-   *   而这一步每 2 秒就跑一次。文本命中的元素极少。
-   */
-  function hasLiveButton() {
-    var cands = document.querySelectorAll('button, [role="button"], a');
-    for (var i = 0; i < cands.length; i++) {
-      var el = cands[i];
-      var t = norm(el.textContent);
-      if (!t || t.length > 10) continue;
-      var hit = false;
-      for (var k = 0; k < LIVE_TEXTS.length; k++) {
-        if (t.indexOf(LIVE_TEXTS[k]) >= 0) { hit = true; break; }
-      }
-      if (!hit) continue;
-      if (insideExt(el) || !visible(el)) continue;
-      return true;
-    }
-    return false;
-  }
-
-  var TIMER_RE = /^\d{1,2}:\d{2}:\d{2}$/;
-  var _timerEl = null;
-
-  /**
-   * 找页面上形如 HH:MM:SS 的小计时器,并判断它是否在**递增**。
-   * 返回 'up'(递增 ⇒ 直播中)/ 'down'(递减 ⇒ 倒计时)/ null(没看到 / 只看到一次)。
-   */
-  function timerTrend() {
-    var found = null;
-
-    // 快路径:上一拍找到的计时器还在、还是那个格式 ⇒ 直接读它
-    if (_timerEl && _timerEl.isConnected) {
-      var t0 = norm(_timerEl.textContent);
-      if (TIMER_RE.test(t0)) found = t0;
-    }
-
-    // 慢路径:全页扫一次(每 2 秒最多一次,且首个命中即 break)
-    if (!found) {
-      var nodes = document.querySelectorAll('span, div, p, b, strong, i');
-      for (var i = 0; i < nodes.length; i++) {
-        var el = nodes[i];
-        if (insideExt(el)) continue;
-        // 只看「自己没有元素子节点」的叶子,避免把整块容器文本读进来
-        if (el.firstElementChild) continue;
-        var t = norm(el.textContent);
-        if (!TIMER_RE.test(t)) continue;
-        if (!visible(el)) continue;
-        _timerEl = el;
-        found = t;
-        break;
-      }
-    }
-
-    if (!found) { lastTimerVal = null; _timerEl = null; return null; }
-    if (!lastTimerVal) { lastTimerVal = found; return null; }
-
-    var a = secsOf(lastTimerVal);
-    var b = secsOf(found);
-    lastTimerVal = found;
-    if (b > a) return 'up';
-    if (b < a) return 'down';
-    return null;   // 同一秒内两次采样,值没变
-  }
-
-  function secsOf(hms) {
-    var p = hms.split(':');
-    return (+p[0]) * 3600 + (+p[1]) * 60 + (+p[2]);
-  }
-
-  /**
-   * 未开播引导文案在不在(「开播前请使用直播计划」这类)。
+   * ★ 2026-11-03：判据本体已抽到共享模块 src/content/live-state.js（唯一真源）。
+   *   原先这里与 lucky-bag.js 各写一份，两份必然漂移 —— 实际已经漂了：
+   *   这边补到三路信号（按钮 / 计时器递增 / 播前横幅），福袋那边还停在
+   *   「只认两组文案、判不出当在播」，于是没开播也照开抽屉。
+   *   现在这里只保留**调用与状态缓存**，判据本身不再在本文件实现。
    *
-   * ★ 两处优化,理由都是「这一步每 2 秒跑一次,不能太贵」:
-   *   ① 用 textContent 而不是 innerText —— innerText 会**强制布局**;
-   *   ② 结果缓存 BANNER_TTL(10 秒)。开播这一跃迁由**便宜的**直播按钮判定兜住,
-   *      横幅只用来确认「未开播」这个稳定态。
+   *   为什么还留 judgeLive() 这一层：本文件的 liveState 要参与灯色 / 挡位切换，
+   *   是「本模块自己的状态」，不能直接读全局 —— 灯需要「上一拍结论」来做
+   *   跃迁播报（开播自动停、恢复自动），那是本模块的语义，不是判据的。
    */
-  var BANNER_TTL = 10000;
-  var _bannerHit = null;
-  var _bannerAt = 0;
-
-  function hasPreLiveBanner() {
-    if (_bannerHit !== null && now() - _bannerAt < BANNER_TTL) return _bannerHit;
-    _bannerAt = now();
-    var t = norm(document.body ? document.body.textContent : '');
-    if (!t) { _bannerHit = false; return false; }
-    for (var i = 0; i < PRE_LIVE_TEXTS.length; i++) {
-      if (t.indexOf(norm(PRE_LIVE_TEXTS[i])) >= 0) { _bannerHit = true; return true; }
-    }
-    _bannerHit = false;
-    return false;
-  }
 
   /**
-   * 判一次直播状态(单次采样,可能返回 'unknown')。
-   * 优先级:S2 直播中 > S1 未开播 > unknown(两条都不中)。
-   */
-  function judgeLiveOnce() {
-    // S2 最高优先:出现「结束直播」类按钮 ⇒ 一定在播
-    if (hasLiveButton()) return 'live';
-
-    // S2 次级:计时器递增 ⇒ 直播中(倒计时递减 ⇒ 不算)
-    if (timerTrend() === 'up') return 'live';
-
-    // S1:播前引导横幅只在开播前出现
-    if (hasPreLiveBanner()) return 'prelive';
-
-    return 'unknown';
-  }
-
-  /**
-   * 带确认的判定:**连续 LIVE_MISS_LIMIT 次判不出**才认「状态未知」。
+   * 判一次直播状态（带确认，由共享模块负责防抖）。
    *
-   * 为什么:判定每 2 秒一次,页面正在重渲染(比如我们自己刚点完刷新)时
-   *   单次判不出是常态。一次不中就转灰不刷,用户会觉得「莫名其妙就停了」
-   *   (用户 2026-10-20 反馈「即使没开播也会停」)。
-   *   期间保持上一次的结论 ⇒ 照常刷,不打断。
+   * 共享模块内部的「连续判不出才认 unknown」+「单向锁」原样生效，
+   * 本函数只负责把结论落到 liveState 上并返回。
    *
-   * @return {string} 已确认的直播状态
+   * @return {string} 已确认的直播状态 'live' | 'prelive' | 'unknown'
    */
   function judgeLive() {
-    var j = judgeLiveOnce();
-
-    /* #108 单向锁:曾确认直播中 ⇒ 「未开播」结论不再采信,按 unknown 走确认节奏。
-     *   理由:转接后 / 部分子页 S2 空窗时,任何「prelive」结论都高度可疑
-     *   (删弱特定词后 S1 误命中源已除,此锁是防未来文案改版的第二道防线)。
-     *   降级为 unknown 后最多 LIVE_MISS_LIMIT×2s 保持旧结论,随后转 unknown
-     *   —— 点灯恒给 force(两态循环恢复),auto 偏向停(安全方向)。
-     *   取舍:若平台「下播」不跳转/不刷新,锁不解 ⇒ 下播后恢复自动要靠
-     *   手动刷新或点灯拿橙;比直播中出假绿安全,可接受。 */
-    if (j === 'prelive' && everLive) j = 'unknown';
-
-    if (j === 'unknown') {
-      unknownStreak++;
-      if (unknownStreak >= LIVE_MISS_LIMIT) liveState = 'unknown';
-      // 未达上限 ⇒ 保持 liveState 不变(继续按上一次的结论走)
-    } else {
-      unknownStreak = 0;
-      liveState = j;
-      if (j === 'live') everLive = true;
+    var g = window.dycLiveState;
+    if (!g || typeof g.judge !== 'function') {
+      /* 共享模块不在场（注入顺序异常 / 老包）：保守判「未知」。
+       * 未知在 auto 档 = 停刷，是安全方向 —— 不会因为判据缺失就乱刷。 */
+      liveState = 'unknown';
+      return liveState;
     }
+    liveState = g.judge();
     return liveState;
+  }
+
+  /** 单次采样（不推进防抖计数）。自测与排查用，主循环走 judgeLive() */
+  function judgeLiveOnce() {
+    var g = window.dycLiveState;
+    if (!g || typeof g.once !== 'function') return 'unknown';
+    return g.once();
+  }
+
+  /**
+   * 清掉共享模块的防抖状态。
+   *
+   * 为什么需要：用户点了灯（切挡）之后不该还背着「刚才连续判不出 2 次」的账 ——
+   * 那会让下一次判定立刻落 unknown，表现为「刚点完就判不出」。
+   * 只清缓存与计数，不动结论（结论由下一拍 judgeLive 重新给）。
+   */
+  function resetLiveJudge() {
+    var g = window.dycLiveState;
+    if (g && typeof g.invalidate === 'function') g.invalidate();
   }
 
   /* ---------- 「正在打字」判定 ---------- */
@@ -1387,7 +1280,7 @@
       var backToAuto = offResumesAuto();
       mode = backToAuto ? 'auto' : 'force';
       autoStopped = false;
-      unknownStreak = 0;
+      resetLiveJudge();          // 用户刚点了灯：别背着上一段的「判不出」计数
       scheduleNext();
       say(backToAuto ? '恢复自动' : '强制刷新', 'info', { source: '自动刷新', keepHistory: false });
     } else {
@@ -1501,7 +1394,7 @@
             scheduleNext();
           }
         } else if (liveState === 'unknown') {
-          /* 判不出(已连续 LIVE_MISS_LIMIT 次)⇒ 停,只提醒不进盒子。
+          /* 判不出(共享模块已连续 MISS_LIMIT 次判不出)⇒ 停,只提醒不进盒子。
            * 两个条件同时满足才说:
            *   ① 已过启动延迟(3 秒)—— 页面刚加载时横幅还没渲染,此时判不出属正常;
            *   ② 这一段失效还没说过 —— 免得每 2 秒重复一遍。 */
@@ -1560,7 +1453,7 @@
     startedAt = now();
     scheduleNext();
     liveState = 'unknown';
-    unknownStreak = 0;
+    resetLiveJudge();
     autoStopped = false;
     failCount = 0;
     unknownSaid = false;

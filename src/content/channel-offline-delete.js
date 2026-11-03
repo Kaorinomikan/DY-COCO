@@ -56,6 +56,25 @@
   var CLS_BATCH = 'dyc-cd-batch';   // 批量「下架并删除」
 
   var enabled = false;              // 功能开关（dybFeatures.channelOfflineDelete）
+  var taskEpoch = 0;
+  var activeTask = null;
+
+  function taskValid(task) {
+    return enabled && task && task.epoch === taskEpoch && task.url === location.href;
+  }
+
+  function invalidateTask() {
+    taskEpoch++;
+    if (reloadTimer) { clearTimeout(reloadTimer); reloadTimer = null; }
+  }
+
+  function checkTask() {
+    if (taskValid(activeTask)) return;
+    var error = new Error('已停止后续操作；已提交的请求无法撤回，请核对平台结果。');
+    error.cancelled = true;
+    throw error;
+  }
+
   var running = false;              // 执行锁：同一时刻只跑一个任务
   var observer = null;
   var scanTimer = null;
@@ -72,7 +91,7 @@
   }
 
   function sleep(ms) {
-    return new Promise(function (r) { setTimeout(r, ms); });
+    return new Promise(function (r) { setTimeout(r, ms); }).then(checkTask);
   }
 
   function say(msg) {
@@ -566,17 +585,20 @@
    * @returns {Promise<{status:number, text:string, via:string}>}
    */
   async function pageFetch(url, opts) {
+    checkTask();
     opts = opts || {};
     var probe = window.__DYC_STOCK_PROBE__;
     var out = null;
 
     if (probe && typeof probe.sendRequest === 'function') {
       var r = await probe.sendRequest(url, opts);
+      checkTask();
       if (r && r.status > 0) {
         out = { status: r.status, text: r.text || '', via: 'main' };
       }
     }
     if (!out) {
+      checkTask();
       // 超时兜底（2026-11-01 体检 P0-5）：隔离 fetch 一旦挂起（TCP 黑洞 /
       // 平台不回包），这个 await 永不 settle，上层 running 锁永不释放，
       // 之后所有「下架并删除」点击永远弹「正在处理上一个任务」—— 功能级死锁。
@@ -604,6 +626,8 @@
       }
       if (timer) { clearTimeout(timer); }
     }
+
+    checkTask();
 
     // 每个请求都留一条日志（含通道与响应摘要）—— 失败时不用猜是「没发出去」
     // 还是「平台拒了」,诊断报告里直接能看到；这是 2026-10-24 两次「点了没反应」
@@ -643,6 +667,7 @@
    */
   async function listChannelMeta(needIds) {
     var out = {};
+    var seen = {};
     var remain = needIds.slice();
     var page = 1;
     // 接口取样里页面自己用的是 pageSize=10。这里先按 20 拉，接口若对页大小有校验
@@ -650,7 +675,9 @@
     var pageSize = 20;
     var triedSmall = false;
 
-    while (page <= 5 && remain.length) {
+    var seenPages = new Set();
+    while (remain.length) {
+      checkTask();
       var q = apiParams();
       q.set('page', String(page));
       q.set('pageSize', String(pageSize));
@@ -661,7 +688,13 @@
       q.set('need_query_gift_activity', 'true');
       q.set('needMainProductStockDetail', 'true');
 
-      var r = await pageFetch('/product/tproduct/list_channel_product?' + q.toString(), { method: 'GET' });
+      var r;
+      try {
+        r = await pageFetch('/product/tproduct/list_channel_product?' + q.toString(), { method: 'GET' });
+      } catch (e) {
+        if (e && e.cancelled) throw e;
+        return { ok: false, map: out, msg: '读取渠道品详情失败（' + (e && e.message || e) + '）' };
+      }
       var j = safeJson(r.text);
 
       if (!j || j.code !== 0 || !Array.isArray(j.data)) {
@@ -670,19 +703,31 @@
           triedSmall = true;
           pageSize = 10;
           page = 1;
+          seenPages.clear();
+          seen = {};
           say('列表接口拒了 pageSize=' + '20，降到 10 重试');
           continue;
         }
         return {
-          ok: false,
+          ok: false, map: out,
           msg: '拉不到渠道品详情（' + apiError(j, r) + '，via=' + r.via + '）'
         };
       }
 
+      // 整页内容与上一页完全相同 ⇒ 平台没在翻页，明确中止而不是静默当末页
+      var pageKey = j.data.map(function (it) { return String(it.channel_id || ''); }).join(',');
+      if (j.data.length && seenPages.has(pageKey)) {
+        return { ok: false, map: out, msg: '平台重复返回同一页，查询未完成，未执行操作；请刷新后重试。' };
+      }
+      seenPages.add(pageKey);
+
+      var added = 0;
       for (var i = 0; i < j.data.length; i++) {
         var it = j.data[i] || {};
         var id = String(it.channel_id || '');
         if (!id) continue;
+        if (!Object.prototype.hasOwnProperty.call(seen, id)) added++;
+        seen[id] = true;
         out[id] = {
           channelType: it.channel_type,
           status: it.status,
@@ -693,7 +738,8 @@
         if (k >= 0) remain.splice(k, 1);
       }
 
-      if (j.data.length < pageSize) break;
+      // 不按请求页大小判末页：接口可能自行缩小返回条数；空页或重复页才停止。
+      if (!added) break;
       page++;
     }
 
@@ -742,19 +788,11 @@
   }
 
   /* ==========================================================
-   * 五、执行（分步直提：一次点击只做一件事）
+   * 五、执行（确认后自动下架并删除）
    *
-   * 【用户口径 2026-10-25】
-   *   「不要模拟点击，全都是直接提交，把下架步骤和删除步骤切开。
-   *     当我使用这个按钮的时候，就会分段执行，这样子可以试试会不会限流。」
-   *
-   * 于是每次点击只发**一个写请求**：
-   *   · 行是「售卖中」→ 这一次只下架（离线接口一次 POST），完事提示「再点一次即可删除」；
-   *   · 行是「已下架」→ 这一次只删除（删除接口一次 POST）。
-   * 两次点击之间的间隔由用户自己掌握，天然把两个写操作拆开 —— 这正是要试的东西。
-   *
-   * 每次点击额外只有 1 个 GET（列表接口）用来取 channel_type 与真实 status，
-   * 查询类请求不产生写副作用。
+   * 售卖中的先下架再删除，已下架的直接删除；删除被拒时有限重试。
+   * 查询列表取得 channel_type 与状态，直到找到目标或读完列表。
+   * 停用或切页后停止后续请求；已提交的请求无法撤回，需核对平台结果。
    * ========================================================== */
 
   /** 令牌缺失就别发：盲发是最容易被判异常的一种请求 */
@@ -778,12 +816,14 @@
   var reloadTimer = null;
 
   function scheduleReload(ms) {
-    if (reloadTimer) return;
+    if (reloadTimer || !taskValid(activeTask)) return;
+    var task = activeTask;
     // 只进调试日志，不再单独弹一条 —— 刷新提示直接并进最后那条结果消息里。
     // （2026-10-25 用户反馈：一次操作弹三个提示太多，且那条 info 不进盒子，看着像丢了。）
     say('已完成，' + (ms / 1000).toFixed(1) + ' 秒后自动刷新页面');
     reloadTimer = setTimeout(function () {
       reloadTimer = null;
+      if (!taskValid(task)) return;
       try { location.reload(); } catch (e) { /* 环境不允许就静默放弃 */ }
     }, ms);
   }
@@ -867,14 +907,16 @@
     if (!look.ok) return { ok: false, stage: '', msg: title + '：' + look.msg };
 
     var info = look.map[meta.channelId];
-    if (!info) return { ok: false, stage: '', msg: title + '：列表接口里找不到这个渠道品（可能已被删除）' };
+    if (!info) return { ok: false, stage: '', msg: title + '：本次列表查询未找到这个渠道品，未执行操作；请刷新后核对' };
     if (info.channelType == null) return { ok: false, stage: '', msg: title + '：没拿到渠道类型，已取消' };
 
     return runFull(meta, info, title, onStage);
   }
 
-  /** 单行按钮点击：按当前状态弹不同的确认框，只做一步 */
+  /** 单行按钮点击：按当前状态确认后自动完成下架与删除 */
   function handleSingle(tr) {
+    var confirmEpoch = taskEpoch;
+    var confirmUrl = location.href;
     if (running) {
       toast('正在处理上一个任务，请稍候', 'info', { source: SOURCE });
       return;
@@ -904,7 +946,8 @@
       cancelText: '取消',
       danger: true,
       onConfirm: function () {
-        if (running) return;
+        if (running || !enabled || confirmEpoch !== taskEpoch || confirmUrl !== location.href) return;
+        activeTask = { epoch: taskEpoch, url: location.href };
         running = true;
         updateProgress(1, 1, offlineNow ? '正在删除' : '正在下架', { source: SOURCE });
 
@@ -930,8 +973,8 @@
           scheduleReload(1500);
         }).catch(function (e) {
           failStatus(title, {
-            source: SOURCE, count: '操作异常',
-            full: title + ' 操作异常：' + (e && e.message)
+            source: SOURCE, count: e && e.cancelled ? '已停止后续操作' : '操作异常',
+            full: title + '：' + (e && e.message)
           });
         }).then(function () {
           running = false;
@@ -941,8 +984,24 @@
     });
   }
 
-  /** 批量按钮点击：这一轮只做一件事（全下架 或 全删除） */
+  /** 相同失败原因只写一次，完整商品名逐行保留。 */
+  function batchFailureDetails(fails) {
+    var groups = new Map();
+    fails.forEach(function (failure) {
+      var title = failure.title;
+      var reason = failure.reason;
+      if (!groups.has(reason)) groups.set(reason, []);
+      if (title) groups.get(reason).push(title);
+    });
+    return Array.from(groups, function (group) {
+      return group[0] + (group[1].length ? '（' + group[1].length + ' 件）\n' + group[1].join('\n') : '');
+    }).join('\n\n');
+  }
+
+  /** 批量按钮点击：确认后逐条下架并删除 */
   function handleBatch() {
+    var confirmEpoch = taskEpoch;
+    var confirmUrl = location.href;
     if (running) {
       toast('正在处理上一个任务，请稍候', 'info', { source: SOURCE });
       return;
@@ -964,30 +1023,32 @@
       return;
     }
 
-    var names = [];
-    for (var n = 0; n < items.length && n < 5; n++) names.push(items[n].title);
-    var moreCount = items.length > 5
-      ? ('等共 ' + items.length + ' 个')
-      : ('' + items.length + ' 个');
+    var fields = [{ label: '数量', value: items.length + ' 个渠道品' }];
+    for (var n = 0; n < items.length && n < 3; n++) {
+      var name = Array.from(items[n].title);
+      fields.push({ label: '商品' + (n + 1),
+        value: name.length > 18 ? name.slice(0, 17).join('') + '…' : items[n].title });
+    }
+    if (items.length > 3) {
+      fields.push({ label: '其余', value: '另有 ' + (items.length - 3) + ' 个渠道品，将一并处理' });
+    }
 
     showConfirmDialog({
       title: '批量下架并删除这 ' + items.length + ' 个渠道品？',
-      fields: [
-        { label: '数量', value: moreCount },
-        { label: '商品', value: names.join('、') }
-      ],
+      fields: fields,
       warning:
         ('逐条下架并删除；已下架的直接删除。删除无法恢复，该渠道售卖记录与配置会消失。\n' +
-         '每条间隔 2.5–4 秒，每 3 条额外等待 8 秒；某条失败后继续处理后续商品。\n' +
+         '每条间隔 0.2 秒；某条失败后继续处理后续商品。\n' +
          '全部成功后自动刷新；部分失败时保留页面，请核对结果。'),
       confirmText: '全部下架并删除',
       cancelText: '取消',
       danger: true,
       onConfirm: function () {
-        if (running) return;
+        if (running || !enabled || confirmEpoch !== taskEpoch || confirmUrl !== location.href) return;
+        activeTask = { epoch: taskEpoch, url: location.href };
         running = true;
         runBatch(items).catch(function (e) {
-          failStatus('批量操作异常', { source: SOURCE, full: '批量操作异常：' + (e && e.message) });
+          failStatus('选中商品', { source: SOURCE, count: e && e.cancelled ? '已停止后续操作' : '批量操作异常', full: e && e.message });
         }).then(function () {
           running = false;
           scheduleScan();
@@ -998,7 +1059,7 @@
 
   /**
    * 批量：先一次性查状态，然后**每条直接提交两个参数**（下架 → 紧接着删除）。
-   * 条与条之间再隔 3~5 秒，避免连续写请求堆在一起。
+   * 条与条之间间隔 200 毫秒，不并发提交写请求。
    */
   async function runBatch(items) {
     var total = items.length;
@@ -1017,17 +1078,17 @@
 
     var ids = items.map(function (it) { return it.meta.channelId; });
     var look = await listChannelMeta(ids);
-    if (!look.ok) {
-      failStatus('读取渠道品详情失败', { source: SOURCE, full: look.msg, count: '0/' + total });
-      return;
-    }
+    // 查询中途失败也保留已取得的详情；仅跳过详情不全的条目。
+    if (!look.ok) say('详情查询未完成，将继续处理已查到的渠道品：' + look.msg);
 
     for (var i = 0; i < total; i++) {
+      checkTask();
       var it = items[i];
       var info = look.map[it.meta.channelId];
 
       if (!info || info.channelType == null) {
-        fails.push(it.title + '：列表接口里找不到（可能已被删除）');
+        fails.push({ title: it.title, reason: (!look.ok ? look.msg :
+          (!info ? '本次列表查询未找到' : '没拿到渠道类型')) + '，未执行操作' });
         continue;
       }
 
@@ -1046,22 +1107,15 @@
           dropRow(findRowByChannelId(it.meta.channelId) || it.tr);
         } else {
           if (res.offlined) markRowOffline(it.tr);
-          fails.push(res.msg);
+          var prefix = it.title + '：';
+          fails.push({ title: it.title, reason: res.msg.indexOf(prefix) === 0 ? res.msg.slice(prefix.length) : res.msg });
         }
       } catch (e) {
-        fails.push(it.title + '：' + (e && e.message));
+        if (e && e.cancelled) throw e;
+        fails.push({ title: it.title, reason: String(e && e.message || e) });
       }
 
-      // 条与条之间留人的节奏：连续写请求是平台最敏感的特征
-      if (i < total - 1) {
-        var gap = 2500 + Math.floor(Math.random() * 1500);
-        updateProgress(i + 1, total, '等待 ' + Math.round(gap / 1000) + ' 秒后处理下一个', { source: SOURCE });
-        await sleep(gap);
-        if ((i + 1) % 3 === 0) {
-          say('已处理 ' + (i + 1) + ' 条，冷却 8 秒');
-          await sleep(8000);
-        }
-      }
+      if (i < total - 1) await sleep(200);
     }
 
     // 只有全部成功才自动刷新；有失败就留在现场，让用户看清原因
@@ -1070,23 +1124,21 @@
     }
 
     if (ok > 0 && !fails.length) {
-      finishStatus('已下架并删除 ' + ok + ' 个渠道品',
-        { source: SOURCE, count: ok + '/' + total });
+      finishStatus('选中 ' + total + ' 件',
+        { source: SOURCE, count: '已下架并删除 ' + ok + ' 件', standalone: true });
     } else if (ok > 0) {
-      /* 批量档没有「单一被执行对象」,值放结果句、计数进右端(2026-10-27 口径);
-       * 原来值里自带「完成 2/5」、右端又写一遍 2/5,同一组数字说两遍。 */
-      failStatus('批量下架删除', {
-        source: SOURCE, count: '成功 ' + ok + '/' + total + ' · ' + fails.length + ' 个失败',
-        full: '批量下架删除：完成 ' + ok + '/' + total +
-              '，失败 ' + fails.length + ' 个 —— ' + fails.join('；')
+      // 中段只写选中范围，成功与失败数量留在右段。
+      failStatus('选中 ' + total + ' 件', {
+        source: SOURCE, count: '成功 ' + ok + ' · 失败 ' + fails.length, standalone: true, details: true,
+        full: batchFailureDetails(fails) + '\n\n页面未刷新，请核对失败商品。'
       });
     } else {
-      failStatus('批量下架删除', {
-        source: SOURCE, count: '全部失败 · 0/' + total,
-        full: '批量下架删除全部失败 —— ' + fails.join('；')
+      failStatus('选中 ' + total + ' 件', {
+        source: SOURCE, count: '全部失败 ' + total + ' 件', standalone: true, details: true,
+        full: batchFailureDetails(fails) + '\n\n页面未刷新，请核对失败商品。'
       });
     }
-    if (fails.length) say('失败明细：' + fails.join(' ｜ '));
+    if (fails.length) say('失败明细：' + batchFailureDetails(fails));
   }
 
   /* ==========================================================
@@ -1120,6 +1172,7 @@
     if (routeTimer) return;
     routeTimer = setInterval(function () {
       if (location.href === lastUrl) return;
+      invalidateTask();
       lastUrl = location.href;
       // SPA 切页：旧按钮全部摘掉再重扫（旧行节点已被销毁，留着也是死按钮）
       removeAll();
@@ -1135,6 +1188,7 @@
   function start() {
     if (enabled) return;
     enabled = true;
+    lastUrl = location.href;
     say('已开启');
     attachWatcher();
     attachRouteWatcher();
@@ -1145,6 +1199,7 @@
   function stop() {
     if (!enabled) return;
     enabled = false;
+    invalidateTask();
     detachWatcher();
     detachRouteWatcher();
     if (scanTimer) { clearTimeout(scanTimer); scanTimer = null; }
@@ -1152,6 +1207,8 @@
     lastScanKey = '';
     say('已关闭，按钮已移除');
   }
+
+  window.addEventListener('pagehide', invalidateTask);
 
   /* ---- 首次读取 + 订阅开关 ----
      首次读到的状态必须先记进 prevFlag（第 21 条）：否则页面加载后用户

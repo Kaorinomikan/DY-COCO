@@ -30,6 +30,10 @@ items.json（反馈文本由助手用 DB 工具查出后落盘，体积很小）
                   → 「现象/根因/修法/拍板」渲染为「评审意见」块,
                     「去向」渲染为「修改计划」块(去向上色:待修复 bug / 计划 / 当场修 / 不做)。
               缺该字段 → 退化为纯阅读页(与扩展前行为一致)。
+  · diag / page_structure —— **不必再手写**(2026-11-03 起):
+              items 缺这两个字段时,脚本自己走 dyc_meta RPC 从云端补
+              (页面结构单条约 80KB,模型逐字抄必截断 ⇒ 11-03 出过「0 条带诊断快照」
+              的退化页,根因在此)。items 里已有则以本地为准,不发请求。
   ⚠️ 「评审汇报页」与「图文阅读页」是同一份(2026-10-15 用户定,不再一天出两份);
      评审期请用 --title「可可助手 · 评审汇报」、输出 output/评审汇报-YYYY-MM-DD.html。
   页面按 group 分节展示(顺序 bug → 新功能建议 → 其他 → 垃圾反馈);
@@ -47,6 +51,7 @@ import sys
 import urllib.request
 
 RPC = "https://dycoco-feedback.app.workbuddy.host/.cloud/database/rest/rpc/dyc_shot"
+RPC_META = "https://dycoco-feedback.app.workbuddy.host/.cloud/database/rest/rpc/dyc_meta"
 ACCESS_KEY = "wbpk_TczgSmUCbUzky377FNk3Py_RxDXjaBU8BMDzAgt0Jo1f9AngmMn4f1n"
 HERE = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_KEY_FILE = os.path.join(HERE, "..", "..", ".dyc-shot-key")
@@ -90,6 +95,23 @@ def fetch(key, fid):
     req.add_header("x-wb-webapp-access-key", ACCESS_KEY)
     with urllib.request.urlopen(req, timeout=60) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def fetch_meta(key, fid):
+    """从云端取 diag / page_structure（2026-11-03 新增 · RPC dyc_meta）。
+
+    为什么：items JSON 由助手手写，diag（约 3KB）尚可，page_structure
+    （约 80KB）**根本无法逐字复现**——今天（11-03）就退化成了「0 条带诊断快照」。
+    所以脚本自己取：items 里缺这两个字段时自动补，助手不用再把大 JSON
+    抄进 items，日报页永远不会再丢诊断。items 里已有该字段时不发请求（本地覆盖优先）。
+    """
+    body = json.dumps({"p_id": fid, "p_key": key}).encode("utf-8")
+    req = urllib.request.Request(RPC_META, data=body, method="POST")
+    req.add_header("content-type", "application/json")
+    req.add_header("x-wb-webapp-access-key", ACCESS_KEY)
+    with urllib.request.urlopen(req, timeout=60) as resp:
+        rows = json.loads(resp.read().decode("utf-8"))
+    return rows[0] if rows else {}
 
 
 def strip_data_uri(value):
@@ -318,7 +340,8 @@ def render_review(review):
 # ==========================================================
 # 诊断快照渲染（2026-10-13 新增 · 反馈诊断包第 4 层）
 #
-# 数据来自 feedback 表的 diag 列（jsonb）。助手用 DB 工具查出后写进 items.json，
+# 数据来自 feedback 表的 diag 列（jsonb）。优先读 items.json 的 diag 字段；
+# items 没带时由主流程走 dyc_meta RPC 自动从云端补（2026-11-03 起），
 # 本函数把它渲染成卡片里的一个区块：环境 / 开关 / 控件 / 报错 / 轨迹 / 截图来源。
 # 老记录 diag 为 {} → 显示「本条无诊断信息」，不报错。
 # ==========================================================
@@ -628,7 +651,10 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--items", required=True, help="反馈条目 JSON 文件")
     ap.add_argument("--out", required=True, help="输出的 HTML 路径")
-    ap.add_argument("--title", default="可可助手 · 反馈阅读")
+    ap.add_argument("--title", default=None,
+                    help="页面标题；省略时按 --out 文件名推日期，"
+                         "自动用「可可助手 · 反馈评审汇报（YYYY-MM-DD）」，"
+                         "防止生成标题退回「反馈阅读」的降级页（2026-11-03 踩过）")
     ap.add_argument("--subtitle", default="")
     ap.add_argument("--show-junk", action="store_true",
                     help="把「垃圾反馈」也渲染出来（默认不展示，与流程口径一致）")
@@ -636,6 +662,14 @@ def main():
 
     with open(args.items, "r", encoding="utf-8") as f:
         items = json.load(f)
+
+    # 标题缺省推导（2026-11-03）：评审汇报页与阅读页 2026-10-15 已合并，
+    # 默认标题应是「评审汇报」，而不是旧阅读页的「反馈阅读」。
+    if not args.title:
+        import re as _re
+        m = _re.search(r"(\d{4}-\d{2}-\d{2})", os.path.basename(args.out))
+        args.title = ("可可助手 · 反馈评审汇报（%s）" % m.group(1)) if m \
+                     else "可可助手 · 反馈评审汇报"
 
     key = read_key()
     n_img, with_shot, failed = 0, [], []
@@ -656,6 +690,20 @@ def main():
         except Exception as exc:                      # noqa: BLE001
             failed.append(fid)
             print("#%d 取图失败：%s" % (fid, exc))
+
+        # diag / page_structure 缺省时自动从云端补（2026-11-03）——
+        # 避免 items JSON 漏写这两个字段导致页面悄悄丢诊断（今天的退化根因）。
+        if "diag" not in it or "page_structure" not in it:
+            try:
+                meta = fetch_meta(key, fid)
+                if "diag" not in it and meta.get("diag"):
+                    it["diag"] = meta["diag"]
+                    print("#%d 诊断快照已从云端自动补入" % fid)
+                if "page_structure" not in it and meta.get("page_structure"):
+                    it["page_structure"] = meta["page_structure"]
+                    print("#%d 页面结构已从云端自动补入" % fid)
+            except Exception as exc:                  # noqa: BLE001
+                print("#%d 取诊断/页面结构失败（不影响图片与正文）：%s" % (fid, exc))
 
         blocks = []
         for idx, raw in enumerate((row.get("d1"), row.get("d2"), row.get("d3")), start=1):
@@ -788,7 +836,7 @@ def main():
     with open(args.out, "w", encoding="utf-8", newline="\n") as f:
         f.write(doc)
 
-    print("条目 %d 条；含图 %d 条、内嵌图片 %d 张" % (len(items), len(with_shot), n_img))
+    print("条目 %d 条；含图 %d 条、内嵌图片 %d 张；带诊断快照 %d 条" % (len(items), len(with_shot), n_img, n_diag))
     print("含图编号：%s" % idx_text)
     if failed:
         print("取图失败：%s" % ", ".join("#%d" % i for i in failed))

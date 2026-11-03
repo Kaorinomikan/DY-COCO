@@ -454,6 +454,7 @@ function dycMergeHistory(...groups) {
         type: item.type,
         source: String(item.source || '').slice(0, 40),
         text: item.text.slice(0, 12000),
+        brief: String(item.brief || '').slice(0, 96),
         count: String(item.count || '').slice(0, 300),
         time: String(item.time || '').slice(0, 12),
         ts: Number(item.ts),
@@ -591,12 +592,14 @@ function pushHistory(type, entry) {
     last.time = statusNowText();
     last.ts = now;
     last.count = String(entry.count || '');
+    last.brief = String(entry.brief || '');
     if (key) last.key = key;
   } else {
     dycHistory = dycMergeHistory(dycHistory, [{
       type,
       source,
       text,
+      brief: entry.brief || '',
       count: entry.count || '',
       time: statusNowText(),
       ts: now,
@@ -628,12 +631,12 @@ function renderHistory() {
     const time = document.createElement('span');
     time.className = 'h-time';
     time.textContent = it.time;
-    const text = document.createElement('span');
+    const text = document.createElement('div');
     text.className = 'h-text';
-    // 三段渲染:来源(弱) ｜ 值(强) ｜ 结果数(弱),与消息条口径一致。
-    // 三段一律用 inline 元素:盒子条目是「一整段话」,段间靠竖线分隔;
-    // 正文不再做行数截断(2026-10-27 用户报「显示不全」,见 msgbox.css 的 .h-text),
-    // 所以这里也不需要为 -webkit-box 让路,只求结构与文案一致。
+    // 长消息默认显示摘要，全文通过原生 details 展开；旧记录同样保留全文。
+    const content = it.text || '';
+    const long = !!it.brief || content.length > 96;
+    const brief = long ? (it.brief || content.split(/[\n。]|——/)[0].slice(0, 72)) : content;
     if (it.source) {
       const src = document.createElement('span');
       src.className = 'h-source';
@@ -641,13 +644,28 @@ function renderHistory() {
       text.appendChild(src);
       text.appendChild(makeHSep());
     }
-    text.appendChild(document.createTextNode(it.text || ''));
+    text.appendChild(document.createTextNode(brief + (long && !it.brief ? '…' : '')));
     if (it.count) {
       text.appendChild(makeHSep());
       const c = document.createElement('span');
       c.className = 'h-count';
       c.textContent = it.count;
       text.appendChild(c);
+    }
+    if (long) {
+      const details = document.createElement('details');
+      details.className = 'h-details';
+      const summary = document.createElement('summary');
+      summary.textContent = '查看详情';
+      const body = document.createElement('div');
+      body.className = 'h-detail-body';
+      body.textContent = content;
+      details.appendChild(summary);
+      details.appendChild(body);
+      details.addEventListener('toggle', () => {
+        summary.textContent = details.open ? '收起详情' : '查看详情';
+      });
+      text.appendChild(details);
     }
     row.appendChild(dot);
     row.appendChild(time);
@@ -700,8 +718,8 @@ function toggleHistory() {
  *        「来源 ｜ 值 ｜ 结果数」三段(2026-10-15 用户定方案 B)
  * @param {string} [opts.count] 弱化计数字(如「1/8」「唯一」)
  * @param {string} [opts.full] 存进消息盒子的**完整文案**(缺省 = message)。
- *        条上位置窄,长句一律截断;盒子有条目行数可用,让完整原因留在里面,
- *        用户事后翻盒子能看清到底报的什么(2026-10-19 用户定)。
+ *        长原因在盒子中默认收起，点击「查看详情」展示全文；短的商品别称直接显示。
+ * @param {boolean} [opts.details] 即使 full 较短，也在盒子中用「查看详情」展开。
  * @param {boolean} [opts.standalone] 独立成层,不与上一条同类富状态原地合并
  *        (2026-10-14 方案 C:结果消息带 count 后会被判为「富状态」,不加这个
  *         开关就会与上一条结果合并覆盖,3 秒内连搜两次只留最后一条)
@@ -764,6 +782,7 @@ function setStatus(message, type = 'info', opts = {}) {
   const histEntry = {
     source,
     text: (typeof opts.full === 'string' && opts.full) ? opts.full : message,
+    brief: (typeof opts.full === 'string' && (opts.full.length > 96 || opts.details)) ? message : '',
     count: (count && type !== 'running') ? count : '',
     key: histKey || ''
   };
