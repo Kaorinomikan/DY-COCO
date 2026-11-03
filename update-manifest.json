@@ -1,5 +1,5 @@
 {
-  "version": "26.11.03.2",
+  "version": "26.11.04.1",
   "algorithm": "sha256",
   "files": [
     {
@@ -20,7 +20,7 @@
     {
       "path": "manifest.json",
       "size": 8439,
-      "sha256": "53b27f21e4d01138a9f6c3d0f60bef7a9caa5b35ccbbadb5d28be70607f10485"
+      "sha256": "e57125d54c33f31384c55506fb1823b66aff03389b7b99c8ba90d3d6d8be16a5"
     },
     {
       "path": "src/background/service-worker.js",
@@ -64,8 +64,8 @@
     },
     {
       "path": "src/content/diag.js",
-      "size": 57124,
-      "sha256": "3480583b569e5629247ff4445835de9a0855f5a0347b80b5ec7c5626edc0be11"
+      "size": 59248,
+      "sha256": "2a276e364247d9b284daf38369d385edd7195d3c9d95816076c5989668f0983d"
     },
     {
       "path": "src/content/dialog.js",
@@ -184,13 +184,13 @@
     },
     {
       "path": "src/live/back-to-bottom.js",
-      "size": 21628,
-      "sha256": "fb6516ee907bf93ad6ef5b9bec6d228159413c7835ec5f9703877601da033e08"
+      "size": 22973,
+      "sha256": "bcc6443b684fd58f3578af2f9a8feb9a49906e091ad68abf3a9c1256cee8ddd1"
     },
     {
       "path": "src/live/back-to-top.js",
-      "size": 43714,
-      "sha256": "f85c2e066445a3bd1df848ab79b564e55142a97830f94ef59439cbe835b103e5"
+      "size": 46863,
+      "sha256": "08c7392ef22c47d9dc42ecd69be9804a88383c37c767b12d16125cd28bee2c5d"
     },
     {
       "path": "src/live/cart-paste.js",
@@ -239,8 +239,8 @@
     },
     {
       "path": "src/live/lucky-bag.js",
-      "size": 227001,
-      "sha256": "c6708d04c31832418a1b006c98c0754f5c064f3ea3e744322edcc2cb74bd55a8"
+      "size": 283655,
+      "sha256": "4fb43cd2d609017cb3fa3e06d65362f9e9c3249573d67ab6fdadd02db9cf755d"
     },
     {
       "path": "src/live/name-wrap.js",

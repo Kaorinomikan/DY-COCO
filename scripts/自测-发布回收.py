@@ -18,6 +18,7 @@ TAG = 'v26.10.28.1'
 FAKE_GIT = r'''#!/bin/bash
 printf '%s\n' "$*" >> "$CASE_ROOT/git.log"
 if [ "$1" = "-c" ]; then shift 2; fi
+if [ "$1" = "-C" ]; then shift 2; fi
 case "$1" in
   rev-parse)
     if [[ "$*" == *refs/tags/* ]] && [ "$SCENARIO" = "local-wrong" ]; then
@@ -52,7 +53,11 @@ case "$1" in
         printf '%s\trefs/tags/%s^{}\n' "$peeled" "$TAG"
       fi
     fi ;;
-  status|diff|log|merge-tree) ;;
+  status|log|merge-tree) ;;
+  diff)
+    if [[ "$*" == *--name-only* ]] && [ "$SCENARIO" = "src-change" ]; then
+      printf 'src/live/demo.js\n'
+    fi ;;
   show) printf '  "version": "26.10.28.1"\n' ;;
   merge-base)
     if [ "$2" = "--is-ancestor" ] && [[ "$SCENARIO" != already-* ]]; then exit 1; fi ;;
@@ -183,6 +188,9 @@ REMOTE=gitee
         source = source.replace('REPO="C:/Develop project/DY-COCO"', f"REPO='{self.path.as_posix()}'")
         source = source.replace('WT_ROOT="C:/Develop project/DY-COCO-wt"', f"WT_ROOT='{self.path.as_posix()}/tasks'")
         (self.path / 'tasks' / 'case').mkdir(parents=True)
+        (self.path / 'tasks' / 'case' / 'scripts').mkdir(parents=True)
+        self.write('tasks/case/scripts/check-syntax.py', '# 语法闸门占位，由 fake-python 执行\n')
+        self.write('tasks/case/scripts/perf-check.py', '# 性能闸占位，由 fake-python 执行\n')
         merge = self.write('scripts/wt-merge.sh', source)
         self.write('scripts/中文工具.sh', f'''REPO='{self.path.as_posix()}'
 check_name() {{ return 0; }}
@@ -203,6 +211,21 @@ zh() {{ cat; }}
         merge, _ = self.prepare_merge()
         self.assertEqual(self.run_script(merge, 'already-sync-fail', 'case', '--go', '--cleanup'), 2, self.output)
         self.assertNotIn('worktree remove', self.trace())
+
+    def test_runtime_change_requires_fresh_smoke_ack(self):
+        merge, _ = self.prepare_merge()
+        self.env.pop('DYC_SMOKE_OK', None)
+        self.assertEqual(self.run_script(merge, 'src-change', 'case', '--go'), 1, self.output)
+        self.assertIn('缺少当次真机冒烟确认', self.output)
+        self.assertNotIn('merged', self.trace())
+        self.assertNotIn('worktree remove', self.trace())
+
+    def test_runtime_change_merges_with_smoke_ack(self):
+        merge, _ = self.prepare_merge()
+        self.env['DYC_SMOKE_OK'] = '1'
+        self.assertEqual(self.run_script(merge, 'src-change', 'case', '--go'), 0, self.output)
+        self.assertIn('已声明本次完成真机冒烟', self.output)
+        self.assertIn('merge --no-ff', self.trace())
 
     def test_outer_reports_sync_failure_without_claiming_rollback(self):
         _, outer = self.prepare_merge()
@@ -232,6 +255,28 @@ zh() {{ cat; }}
         self.assertIn('COPY_ARGS=(--gate)', source)
         self.assertIn('check-product-copy.js" "${COPY_ARGS[@]}"', source)
         self.assertIn('exit 1', source.split('check-product-copy.js', 1)[1].split('fi', 1)[0])
+
+    def test_publish_always_runs_full_release_gate(self):
+        source = (ROOT / 'publish.sh').read_text(encoding='utf-8')
+        full = source.index('run-selftests.py --release-gate')
+        perf = source.index('perf-check.py --gate')
+        sensitive = source.index('check-sensitive-words.py --fix')
+        self.assertLess(perf, full)
+        self.assertLess(full, sensitive)
+        self.assertIn('发布全量自测未通过', source[full:full + 500])
+
+    def test_publish_checks_manifest_order(self):
+        source = (ROOT / 'publish.sh').read_text(encoding='utf-8')
+        self.assertIn('check-manifest-order.py', source)
+        self.assertIn('manifest 脚本顺序未通过', source)
+
+    def test_github_reuses_main_preflight_instead_of_private_gate(self):
+        source = (ROOT / 'scripts/publish-github-api.py').read_text(encoding='utf-8')
+        self.assertIn('"publish.sh"', source)
+        self.assertIn('"--dry-run"', source)
+        self.assertIn('run_main_preflight()', source)
+        self.assertNotIn('def batch_gate', source)
+        self.assertNotIn('check-sensitive-words.py", "--fix"', source)
 
 
 def _run_case(name):

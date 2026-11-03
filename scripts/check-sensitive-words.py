@@ -257,7 +257,7 @@ def load_words(path):
         print("")
         print("   处理办法：")
         print("     ① 词表通常与令牌文件同级（C:/Develop project/ 下）；")
-        print("        若确实丢失，按 AGENTS.md「敏感词闸门」章节重建；")
+        print("        若确实丢失，按 docs/agents/当前状态.md「敏感词闸门」一节重建；")
         print("     ② 也可用 --words <path> 指向别处的词表文件。")
         print("=" * 68)
         return None

@@ -7,14 +7,14 @@
 #   算出「本次推送应该用哪个版本号」。
 #   把过去在对话里手动 curl 的动作固化成一条命令。
 #
-# 口径(用户 2026-10-11 定,见 AGENTS.md 个性化要求第 3 条):
+# 口径(用户 2026-10-11 定,见 docs/agents/用户要求.md 第 3 条):
 #   版本号以**在线版**为基准 +1,格式 YY.MM.DD.N。
 #   · 在线版与今天同日 → 只递增最后一段(26.10.11.1 → 26.10.11.2)
 #   · 在线版是更早的日期 → 日期刷新、序号归 1(26.10.10.8 → 26.10.11.1)
 #
 # 何时跑:
 #   ⚠️ 只在**推送期**跑,不要每做完一个小功能就跑。
-#   开发期一律纯本地(见 AGENTS.md「五、开发流程」)。
+#   开发期一律纯本地(见 AGENTS.md「三、开发流程」)。
 #
 # 用法:
 #   bash scripts/next-version.sh          # 查在线版并推算
@@ -157,9 +157,9 @@ echo ""
 echo "★ 本次应发版本号:$NEXT"
 echo "★ 本次标签应打   :v$NEXT"
 echo ""
-echo "后续(推送期一次性做完,详见 AGENTS.md「五、开发流程」):"
+echo "后续(推送期一次性做完,详见 AGENTS.md「三、开发流程」):"
 echo "  1. 改 manifest.json 的 \"version\" 为 $NEXT"
 echo "  2. 若本轮动过 src/shared/,同步自增 service-worker.js 的 DYC_BUILD"
 echo "  3. 重新生成更新清单:python scripts/make-update-manifest.py"
-echo "  4. 同步 README.md / AGENTS.md / RELEASE_NOTES.md 三份文档"
+echo "  4. 同步 README.md / RELEASE_NOTES.md 两份文档"
 echo "  5. 自审通过后:SELF_REVIEW=1 bash publish.sh"

@@ -302,39 +302,35 @@ def find_bash():
     return "bash"
 
 
-def batch_gate(force=False):
-    """★ 攒批门槛（与 publish.sh 同一道闸，2026-11-01 补）。
+def run_main_preflight():
+    """复用主发布通道的完整预演，避免 GitHub 通道另维护残缺闸门。
 
-    【为什么必须有】2026-11-01 实测漏洞：v26.11.01.2 走本脚本上架，
-    绕过了 publish.sh 里的攒批门槛 —— 当时「待推送」栏是空的（0 点）也照推了。
-    门槛 = 攒够 5 个有效点（功能点逐项计 + 基建点上限 1）才推一次，
-    计数与数字的唯一事实来源是 scripts/计点.sh，这里直接问它，不许自报。
-    FORCE_PUSH=1（用户明确口令「就推」）可显式越过。
+    publish.sh --dry-run 会跑：工作区 / 并行任务 / 版本 / 文档 / 文案 /
+    manifest 顺序 / 实质更新 / SW 标记 / 更新清单 / 性能 / 全量自测 /
+    敏感词 / 攒批门槛。全部通过才允许进入 API 上架。
     """
-    script = os.path.join(REPO_ROOT, "scripts", "计点.sh")
-    log("\n附加闸门 · 攒批门槛（功能点 + 基建点，门槛见 计点.sh）")
+    script = os.path.join(REPO_ROOT, "publish.sh")
+    log("\n[0/5] 主发布通道预演（与 Gitee 同一口径）")
     if not os.path.isfile(script):
-        log("  [中止] 找不到 %s —— 无法计点，拒绝上架。" % script)
+        log("  [中止] 找不到 publish.sh —— 拒绝上架。")
         return False
     try:
         proc = subprocess.run(
-            [find_bash(), script, "--gate"], cwd=REPO_ROOT,
+            [find_bash(), script, "--dry-run"], cwd=REPO_ROOT,
             capture_output=True, text=True, encoding="utf-8", errors="replace",
         )
     except OSError as e:
-        log("  [中止] 跑不了计点脚本：%s —— 拒绝上架。" % e)
+        log("  [中止] 跑不了主发布预演：%s —— 拒绝上架。" % e)
         return False
     out = ((proc.stdout or "") + (proc.stderr or "")).strip()
     if out:
-        log("  " + out.replace("\n", "\n  "))
-    if proc.returncode == 0:
-        return True
-    if force or os.environ.get("FORCE_PUSH", "") == "1":
-        log("  [注意] 未达攒批门槛，但 FORCE_PUSH=1 —— 按用户明确口令越过该闸门。")
-        return True
-    log("  [中止] 未达攒批门槛，本次不上架（未推送任何内容）。")
-    log("         攒够后再推；若用户已明确要求「就推」，用 FORCE_PUSH=1 重跑。")
-    return False
+        tail = out.splitlines()[-30:]
+        log("  " + "\n  ".join(tail))
+    if proc.returncode != 0:
+        log("  [中止] 主发布预演未通过，本次不上架（未调用任何写接口）。")
+        return False
+    log("  [✓] 主发布预演全部闸门通过")
+    return True
 
 
 def main():
@@ -354,7 +350,7 @@ def main():
     ap.add_argument("--homepage", default="")
     args = ap.parse_args()
 
-    if not batch_gate():
+    if not run_main_preflight():
         return 1
 
     token = load_token()
@@ -412,58 +408,8 @@ def main():
     total = int(out.strip() or 0)
     log("  工作区干净；HEAD=%s；共 %d 个提交" % (head[:12], total))
 
-    # ---- 2b. 敏感词检测（与 publish.sh 同一道闸）----
-    # Gitee 于 2026-11-01 因「自动化参与平台活动发放」类表述封了账号
-    # （证据链见 scripts/check-sensitive-words.py 头部与 publish.sh 的同名闸门）。
-    # GitHub 同样有内容审核（DMCA / 恶意代码 / 违规内容），
-    # 而且 GitHub 仓库是**公开**的，机器扫描更积极 —— 同一道闸两个通道都要过。
-    log("\n[2b/5] 敏感词检测")
-    sens = os.path.join(REPO_ROOT, "scripts", "check-sensitive-words.py")
-    if os.path.isfile(sens):
-        # ★ 与 publish.sh 同一套三段式：自动优化 → 复跑自测 → 通过才继续。
-        #   理由见 publish.sh 的同名闸门（用户 2026-11-01 定：
-        #   「发布前遇到敏感词要自动优化掉，优化完继续推送」）。
-        proc = subprocess.run([sys.executable, sens, "--fix"], cwd=REPO_ROOT,
-                              capture_output=True, text=True,
-                              encoding="utf-8", errors="replace")
-        tail = (proc.stdout or "")[-1500:]
-        for line in tail.split("\n"):
-            if line.strip():
-                log("  " + line)
-        if proc.returncode != 0:
-            log("")
-            log("  [中止] 敏感词仍有无法自动处理的项，未推送任何内容。")
-            log("        处理：换成中性表述（同义、不改功能）；")
-            log("              确属正当业务词的，登记进 scripts/sensitive-words-allowlist.txt（须写理由）。")
-            return 1
-
-        # 自动改写动过代码 → 必须确认功能没坏
-        st = subprocess.run([GIT, "diff", "--quiet", "--", "src", "scripts"],
-                            cwd=REPO_ROOT, capture_output=True)
-        if st.returncode != 0:
-            log("")
-            log("  自动优化已改写内容 —— 复跑自测确认没改坏功能")
-            proc2 = subprocess.run(
-                [sys.executable, os.path.join(REPO_ROOT, "scripts", "run-selftests.py")],
-                cwd=REPO_ROOT, capture_output=True, text=True,
-                encoding="utf-8", errors="replace")
-            if proc2.returncode != 0:
-                log("  [中止] 自动优化改坏了功能 —— 已回滚，请人工处理。")
-                subprocess.run([GIT, "checkout", "--", "src", "scripts"],
-                               cwd=REPO_ROOT, capture_output=True)
-                return 1
-            log("  自测通过，未改坏功能。")
-            # 提交自动优化结果（否则「工作区必须干净」会拦下推送）
-            subprocess.run([GIT, "add", "-A"], cwd=REPO_ROOT, capture_output=True)
-            subprocess.run(
-                [GIT, "commit", "-q", "-m",
-                 "[自动优化] 发布前敏感词中性化\n\n发布闸门自动改写了易触发内容审核的表述。\n"
-                 "改写只动文案层，未改标识符与逻辑。\n\n"
-                 "Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"],
-                cwd=REPO_ROOT, capture_output=True)
-            log("  已提交自动优化结果。")
-    else:
-        log("  [跳过] 找不到 %s" % sens)
+    # 敏感词、计点、全量自测、文案与性能等已由 run_main_preflight 统一完成；
+    # 这里不再保留第二套实现，避免两通道口径漂移。
 
     tag = args.tag.strip()
     if not tag:

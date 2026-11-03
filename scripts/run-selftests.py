@@ -2,20 +2,23 @@
 
 ★ 2026-11-02 提速改造（用户要求：降低自测误红概率、缩短每次迭代等待）
   ① `--changed`：只跑与本轮改动**相关**的自测（自动从脚本内容反查引用的源文件，
-     零维护）。全量约 30 秒，相关子集约 5 秒，日常迭代用这一档。
+     零维护）。全量耗时以实际输出为准，相关子集取决于命中范围。
   ② 失败**归因**：失败时直接指出「疑似断言过时」还是「疑似真 bug」，
      并列出该自测引用的源文件在本轮是否被改动 —— 不用再逐个点开看。
   ③ 按历史耗时**降序**调度（缓存 .tmp/selftest-durations.json），
      长脚本先开跑，总时长贴近最慢那一个而不是排队累加。
   ④ 超时 60 → 180 秒：jsdom 大脚本在并发下偶发超过 60 秒会被误判为失败。
      超时仍然判失败（不放过卡死的异步任务），但不再因机器抖动而误红。
+  ⑤ `--release-gate`：发布前必跑全量；按受测内容指纹复用同一份通过结果。
+     指纹覆盖全部 Git 跟踪/未忽略文件与运行时版本，内容一变即失效。
 
 ★ 判据不变：任一脚本非零退出 → 本入口非零退出。`--changed` 只减少**跑哪些**，
-  不改变**怎么判**。全量仍是合并/推送前的必跑档。
+  不改变**怎么判**。全量是发布前的必跑档。
 """
 from pathlib import Path
 import argparse
 import concurrent.futures
+import hashlib
 import json
 import os
 import re
@@ -53,10 +56,10 @@ GLOBAL_SCRIPTS = ('scripts/run-selftests.py', 'scripts/selfcheck-assertions.py')
 SCRIPT_TARGETS = {
     'scripts/check-sensitive-words.py': '自测-敏感词邻近匹配.py',
     'scripts/sensitive-words-allowlist.txt': '自测-敏感词邻近匹配.py',
+    'scripts/check-syntax.py': '自测-语法闸门.py',
     'scripts/wt-merge.sh': '自测-发布回收.py',
     'scripts/回收.sh': '自测-发布回收.py',
     'scripts/publish.sh': '自测-发布回收.py',
-    'scripts/publish-github.py': '自测-发布回收.py',
     'scripts/publish-github-api.py': '自测-发布回收.py',
     'scripts/make-dist.py': '自测-发布回收.py',
 }
@@ -197,6 +200,43 @@ def save_durations(durations):
         pass
 
 
+def release_receipt(root=None):
+    return Path(root or ROOT) / '.tmp' / 'selftest-release-ok.json'
+
+
+def release_fingerprint(root=None):
+    """发布全量的受测内容指纹；取不到 Git 文件清单时返回 None（必须实跑）。"""
+    base = Path(root or ROOT)
+    try:
+        names = subprocess.run(
+            ['git', 'ls-files', '-z', '--cached', '--others', '--exclude-standard'],
+            cwd=base, capture_output=True, timeout=60)
+        if names.returncode != 0:
+            return None
+        paths = sorted({p for p in names.stdout.decode('utf-8', 'replace').split('\0')
+                        if p and not p.startswith('.tmp/')})
+        if not paths:
+            return None
+        digest = hashlib.sha256()
+        for name in paths:
+            path = base / name
+            if not path.is_file():
+                continue
+            digest.update(name.encode('utf-8', 'replace'))
+            digest.update(b'\0')
+            digest.update(path.read_bytes())
+            digest.update(b'\0')
+        try:
+            node_version = subprocess.run([NODE, '--version'], capture_output=True, text=True,
+                                          encoding='utf-8', errors='replace', timeout=10).stdout.strip()
+        except Exception:
+            node_version = 'unknown'
+        digest.update(('python=' + sys.version + '\nnode=' + node_version).encode('utf-8'))
+        return digest.hexdigest()
+    except Exception:
+        return None
+
+
 def execute(script, timeout):
     """跑一个自测；返回含耗时与归因素材的结果。"""
     command = [sys.executable if script.suffix == '.py' else NODE, str(script)]
@@ -281,7 +321,9 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('names', nargs='*', help='只运行指定脚本文件名；省略则按模式选')
     parser.add_argument('--changed', action='store_true',
-                        help='只跑与本轮改动相关的自测（日常迭代用；合并/推送前请跑全量）')
+                        help='只跑与本轮改动相关的自测（合并预检用；发布必须全量）')
+    parser.add_argument('--release-gate', action='store_true',
+                        help='发布前全量闸门；同一受测内容复用已通过结果')
     parser.add_argument('--list', action='store_true', help='只打印「改动 → 相关自测」的判定，不执行')
     parser.add_argument('--json', action='store_true', help='输出完整 JSON 供审查')
     parser.add_argument('--jobs', type=int, default=6, help='并发数（默认 6）')
@@ -298,10 +340,32 @@ def main():
         if missing:
             parser.error('找不到指定自测：' + ', '.join(sorted(missing)))
 
+    if args.release_gate and (args.changed or args.names):
+        parser.error('--release-gate 只能跑全量，不能与 --changed 或指定脚本同时使用')
+
     changes = changed_files()
     reason = None
     if args.changed and not args.names:
         scripts, reason = select_changed(scripts, build_index(scripts), changes)
+
+    fingerprint = None
+    if args.release_gate:
+        fingerprint = release_fingerprint()
+        receipt = release_receipt()
+        if fingerprint:
+            try:
+                saved = json.loads(receipt.read_text(encoding='utf-8'))
+            except Exception:
+                saved = {}
+            if (saved.get('fingerprint') == fingerprint
+                    and saved.get('scripts') == len(scripts)
+                    and saved.get('status') == 'pass'):
+                print('发布全量自测：同一受测内容已有通过凭据，直接复用。')
+                print('  凭据：' + str(receipt))
+                print(f'  受测脚本：{len(scripts)} 个；内容未变，无需重复执行。')
+                return 0
+        else:
+            print('发布全量自测：无法计算受测内容指纹，本次实跑（不复用旧结果）。')
 
     if args.list:
         print('本轮改动：' + (', '.join(sorted(changes)) if changes else '（无）'))
@@ -346,6 +410,25 @@ def main():
                   + f'（{result["seconds"]}s）')
             if result['exit']:
                 print(result['output'])
+
+    receipt = release_receipt()
+    if args.release_gate and fingerprint:
+        if failed:
+            try:
+                saved = json.loads(receipt.read_text(encoding='utf-8'))
+                if saved.get('fingerprint') == fingerprint:
+                    receipt.unlink()
+            except Exception:
+                pass
+        else:
+            receipt.parent.mkdir(parents=True, exist_ok=True)
+            receipt.write_text(json.dumps({
+                'status': 'pass',
+                'fingerprint': fingerprint,
+                'scripts': len(results),
+                'finished_at': time.strftime('%Y-%m-%d %H:%M:%S'),
+            }, ensure_ascii=False, indent=1), encoding='utf-8')
+            print('发布全量自测通过凭据已写入：' + str(receipt))
 
     if failed:
         index = build_index(scripts)

@@ -502,6 +502,16 @@
     }, null);
   }
 
+  /* 滚动链诊断(2026-11-03):back-to-top.js 导出的 __dycChainDebug,
+   * 回答「上滑/下滑圆钮的页面链到底圈了哪些容器」——锚点认没认到、
+   * 购物车滚动容器在不在链上、各容器滚动量。不在中控台/模块未注入时为 null。 */
+  function collectScrollChain() {
+    return safe(function () {
+      var fn = window.__dycChainDebug;
+      return typeof fn === 'function' ? fn() : null;
+    }, null);
+  }
+
   function snapshot(extra) {
     var t0 = Date.now();
     return collectFlags().then(function (flags) {
@@ -516,7 +526,8 @@
         errors: errors.slice(),
         timeline: timeline.slice(),
         autoLoop: collectAutoLoop(),
-        luckyBag: collectLuckyBag()
+        luckyBag: collectLuckyBag(),
+        scrollChain: collectScrollChain()
       };
       if (extra && Array.isArray(extra.swErrors) && extra.swErrors.length) {
         snap.swErrors = extra.swErrors.slice(-MAX_ERRS).map(function (err) {
@@ -1100,7 +1111,6 @@
       L.push('- 状态:监视 ' + (lbSt.flags && lbSt.flags.watch ? '开' : '关') +
         ' · 开始下一轮 ' + (lbSt.flags && lbSt.flags.auto ? '开' : '关') +
         ' · ' + (lbSt.phase || '?') +
-        (lbSt.round ? (' · 第 ' + lbSt.round + ' 轮') : '') +
         ' · 圆钮显示「' + (lbSt.badge || '?') + '」');
       L.push('- 计时:扫描 ' + (lbSt.timers && lbSt.timers.tick ? '在跑' : '停了') +
         ' · 圆钮刷新 ' + (lbSt.timers && lbSt.timers.badge ? '在跑' : '停了') +
@@ -1209,6 +1219,36 @@
       }
     }
     L.push('');
+
+    /* ---- 六·五、滚动链(上滑/下滑圆钮) ---- */
+    var schn = snap.scrollChain;
+    if (schn) {
+      L.push('## 六·五、滚动链(上滑/下滑圆钮)');
+      L.push('- 页顶锚点:' + (schn.anchorFound ? '认到' : '**没认到**') +
+        ' · 购物车容器:' + (schn.cartFound ? '认到' : '**没认到**') +
+        ' · 商品行:' + schn.rows + ' · 全页可滚容器:' + schn.scrollableCount +
+        ' · 链上:' + schn.chainLen + ' · windowY:' + schn.winY);
+      if (schn.cart) {
+        L.push('- 购物车容器:' + schn.cart.tag + (schn.cart.id ? '#' + schn.cart.id : '') +
+          ' .' + (schn.cart.cls || '').split(' ').join(' .') +
+          ' · scrollTop ' + schn.cart.st + ' / 内容高 ' + schn.cart.sh + ' / 可视高 ' + schn.cart.ch +
+          ' · overflowY ' + (schn.cart.ov || '?') +
+          (schn.cart.rect ? ' · rect ' + schn.cart.rect.join(',') : ''));
+      }
+      L.push('- 链上容器(' + schn.chain.length + '):');
+      schn.chain.forEach(function (c) {
+        L.push('  - ' + c.tag + (c.id ? '#' + c.id : '') + ' .' + (c.cls || '').split(' ').join(' .') +
+          ' · scrollTop ' + c.st + ' / ' + c.sh + '/' + c.ch + ' · ' + (c.ov || '?') +
+          (c.rect ? ' · ' + c.rect.join(',') : ''));
+      });
+      L.push('- 全页可滚容器(' + schn.scrollables.length + '):');
+      schn.scrollables.forEach(function (c) {
+        L.push('  - ' + c.tag + (c.id ? '#' + c.id : '') + ' .' + (c.cls || '').split(' ').join(' .') +
+          ' · scrollTop ' + c.st + ' / ' + c.sh + '/' + c.ch + ' · ' + (c.ov || '?') +
+          (c.rect ? ' · ' + c.rect.join(',') : ''));
+      });
+      L.push('');
+    }
 
     /* ---- 七、环境 ---- */
     L.push('## 七、环境');

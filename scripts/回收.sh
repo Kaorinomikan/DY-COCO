@@ -11,6 +11,8 @@
 # 用法:
 #   bash scripts/回收.sh 回到顶部          自检+合并+自动清理,一步完成
 #   bash scripts/回收.sh 回到顶部 只看     只预检,不动任何东西
+#   DYC_SMOKE_OK=1 bash scripts/回收.sh <名字>
+#       任务改过 src/** 或 manifest.json 时，--go 合并必须带当次真机冒烟确认
 # ============================================================
 
 HERE="$(dirname "$0")"

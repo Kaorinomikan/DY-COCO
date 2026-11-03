@@ -13,7 +13,7 @@
  *      (key 必须与下面的 flag 一致)
  *   5. 到 manifest.json 的中控台 content_scripts 数组**末尾追加**你的脚本路径
  *      —— 只追加到末尾,不要插到中间,否则并行合并时会冲突
- *   6. 跑一次三道闸门(见文末),通过后提交
+ *   6. 中间态每轮跑语法；口径定稿后由回收脚本自动跑全部闸门
  *
  * 【关键:为什么加功能不用改宿主文件】
  *
@@ -47,13 +47,13 @@
  *   .dyc-tool-btn  按钮(makeButton 自动加)
  *   位置样式见 src/live/nav.css(共用 .dyb-nav-box 的对齐方式)
  *
- * 【三道闸门 —— 提交前必跑,它们是并行开发的护栏】
+ * 【闸门落点 —— 中间态只查语法,定稿后回收自动查其余项】
  *
- *   python scripts/check-manifest-order.py   # manifest 脚本层级顺序
- *   node scripts/check-product-copy.js        # 文案长度、结构、错误承诺
- *   node --check src/live/<功能名>.js         # 自己的源码语法
+ *   python scripts/check-syntax.py --changed  # 每轮中间态，约 0.1 秒
+ *   DYC_SMOKE_OK=1 bash scripts/回收.sh <名字> # 真机冒烟后合并，自动跑：
+ *     manifest 顺序 / 产品文案 / 性能 / 断言体检 / 相关行为自测
  *   行为自测写进 scripts/ 并提交；不得把 .tmp/ 下未入库脚本作为交接必跑入口。
- *   开工与收工都读 AGENTS.md 第 25 条；问号先说用途，最多补一条限制。
+ *   开工与收工都读 docs/agents/用户要求.md 第 25 条；问号先说用途，最多补一条限制。
  *
  * ⚠️ 本文件放在 scripts/ 而不是 src/live/,原因有二:
  *      ① 它不在 manifest 的 content_scripts 里,浏览器不会执行它;

@@ -169,6 +169,13 @@
     var refs = [];
     var anchor = findTopAnchor();
     if (anchor) refs.push(anchor);
+    /* 2026-11-03 修「购物车只有约 20 个品时,上滑/下滑控制不了购物车滚动条」
+     * (与 back-to-top.js 同口径同改):旧参照物②「全页 scrollHeight 最大的
+     * 可滚容器」在商品少时会旁落到比商品列表更高的侧栏容器(互动评论等),
+     * 购物车滚动容器脱链。新增参照物③:从 locate.js 的商品行向上取最近的
+     * 可滚祖先,恒为购物车自己的滚动容器,与商品数量无关。 */
+    var cart = findCartScroller();
+    if (cart && refs.indexOf(cart) < 0) refs.push(cart);
     var best = null, bestH = 0;
     for (var i = 0; i < all.length; i++) {
       var el = all[i];
@@ -177,6 +184,26 @@
     }
     if (best && refs.indexOf(best) < 0) refs.push(best);
     return refs;
+  }
+
+  /**
+   * 购物车自己的滚动容器(2026-11-03,参照物③,与 back-to-top.js 同款)。
+   * 从 locate.js 的 getProductItems() 取任一商品行,向上找最近的可滚祖先;
+   * locate.js 缺席或取不到行时返回 null,退回旧参照物(只增不改)。
+   */
+  function findCartScroller() {
+    try {
+      if (typeof getProductItems !== 'function') return null;
+      var rows = getProductItems() || [];
+      for (var i = 0; i < rows.length; i++) {
+        var el = rows[i];
+        while (el && el !== document.body && el !== document.documentElement) {
+          if (el.scrollHeight > el.clientHeight + 1) return el;
+          el = el.parentElement;
+        }
+      }
+    } catch (e) { /* 忽略,退回旧参照物 */ }
+    return null;
   }
 
   /** 页面滚动链:所有包含任一参照物的可滚容器(不含 html/body,页面级交 window) */

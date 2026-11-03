@@ -6,7 +6,10 @@
 #   bash scripts/wt-merge.sh <名字>                # 预检:能不能合、会不会冲突
 #   bash scripts/wt-merge.sh <名字> --go            # 真合并到 main(仍然不推送)
 #   bash scripts/wt-merge.sh <名字> --go --cleanup  # 合并后删掉工作树与分支
-#   ... --no-selftest                              # 跳过「合并前相关自测」（默认会跑）
+#   ... --no-selftest                              # 仅明确知道理由时跳过相关自测
+#
+# 改过 src/** 或 manifest.json 的任务，--go 合并时必须带当次真机冒烟确认：
+#   DYC_SMOKE_OK=1 bash scripts/回收.sh <名字>
 #
 # 它与 publish.sh 的分工:
 #   · 本脚本只把任务分支**合并进本地 main**;
@@ -21,7 +24,7 @@ NODE_BIN="C:/Users/79412/.workbuddy/binaries/node/versions/22.22.2-6/node.exe"
 REPO="C:/Develop project/DY-COCO"
 WT_ROOT="C:/Develop project/DY-COCO-wt"
 # 2026-10-13 用户定:桌面**只保留一个**测试档 COCO TEST,旧档「DY-COCO-调试」取消生成。
-# (原 AGENTS.md 第 18 条作废,口径并入第 19 条 —— 见本文件末尾的 sync_to_coco_test)
+# (原第 18 条已删除,口径并入第 19 条 —— 见本文件末尾的 sync_to_coco_test)
 
 NAME="$1"
 GO=""
@@ -99,6 +102,15 @@ if ! "$GIT" show-ref --verify --quiet "refs/heads/$BRANCH"; then
   exit 1
 fi
 echo "[✓] 分支存在:$BRANCH"
+
+# 本分支相对分叉点真正改了哪些文件。共享文件判定、烟测范围和后续各闸都用这一份，
+# 避免再写 `diff main $BRANCH`（分支落后 main 时方向会反）。
+MERGE_BASE=$("$GIT" merge-base main "$BRANCH" 2>/dev/null)
+if [ -n "$MERGE_BASE" ]; then
+  TASK_FILES=$("$GIT" diff --name-only "$MERGE_BASE" "$BRANCH" 2>/dev/null)
+else
+  TASK_FILES=$("$GIT" diff --name-only main "$BRANCH" 2>/dev/null)
+fi
 
 # 2) 该分支目录内无未提交改动(否则会把半成品丢掉)
 if [ -d "$WT_PATH" ]; then
@@ -286,47 +298,97 @@ else
   echo "[✓] 与 main 可干净合并(无冲突)"
 fi
 
-# 6) 代码自检(2026-10-11 用户定:自检必须在合并**之前**)——
-#    分支上改过的每个 .js 都要过语法检查,不合格直接拦在合并前
-#    --diff-filter=d 排除「被删除的文件」:删掉的文件在分支上读不到,
-#    不加这个会把正常的删除动作误判成「读不到分支上的 xx.js」而挡住合并。
-JS_FILES=$("$GIT" diff --name-only --diff-filter=d "main...$BRANCH" | grep '\.js$' || true)
-if [ -n "$JS_FILES" ]; then
-  JS_N=$(printf '%s\n' "$JS_FILES" | wc -l | tr -d ' ')
-  JS_FAIL=0
-  # 临时文件同样落进 .tmp/（已忽略），并带任务名，避免并发会话互踩
-  mkdir -p "$REPO/.tmp"
-  TMP_JS="$REPO/.tmp/nodecheck-$NAME.js"
-  for f in $JS_FILES; do
-    if ! "$GIT" show "$BRANCH:$f" > "$TMP_JS" 2>/dev/null; then
-      echo "[✗] 语法自检:读不到分支上的 $f"
-      JS_FAIL=1
-      continue
-    fi
-    if ! "$NODE_BIN" --check "$TMP_JS" >/dev/null 2>&1; then
-      echo "[✗] 语法自检不通过:$f(修复后重新提交,再回收)"
-      JS_FAIL=1
-    fi
-  done
-  rm -f "$TMP_JS"
-  if [ $JS_FAIL -ne 0 ]; then
-    FAIL=1
+echo ""
+
+# 5.5) 真机冒烟确认（只要求改过扩展运行内容的任务）
+# 脚本无法自动证明平台真实行为；这里机械要求当次明确声明，避免“合并后才发现”。
+NEEDS_SMOKE=0
+printf '%s\n' "$TASK_FILES" | grep -Eq '^(src/|manifest\.json$)' && NEEDS_SMOKE=1
+if [ "$NEEDS_SMOKE" = "1" ]; then
+  if [ "${DYC_SMOKE_OK:-0}" = "1" ]; then
+    echo "[✓] 已声明本次完成真机冒烟"
+  elif [ -n "$GO" ]; then
+    echo "[✗] 本任务改过扩展运行内容，但缺少当次真机冒烟确认。"
+    echo "     在任务工作树完成主路径 + 一个异常路径 + 控制台检查后，执行："
+    echo "       DYC_SMOKE_OK=1 bash scripts/回收.sh $NAME"
+    exit 1
   else
-    echo "[✓] 语法自检通过($JS_N 个 .js)"
+    echo "[!] 本任务改过扩展运行内容；预检不拦，但 --go 合并时必须带 DYC_SMOKE_OK=1。"
   fi
 else
-  echo "[✓] 无 .js 改动,跳过语法自检"
+  echo "[✓] 纯脚本/文档任务，无需真机冒烟声明"
 fi
 
 echo ""
 
+# 6) 代码自检(2026-10-11 用户定:自检必须在合并**之前**)——
+#    快速入口与中间态共用 scripts/check-syntax.py，避免两套实现漂移。
+if [ -d "$WT_PATH" ] && [ -f "$WT_PATH/scripts/check-syntax.py" ]; then
+  if ( cd "$WT_PATH" && "$PY" scripts/check-syntax.py --changed ); then
+    :
+  else
+    echo "[✗] 语法自检未通过（修复并提交后重跑）"
+    FAIL=1
+  fi
+else
+  echo "[✗] 任务工作树缺失或找不到 scripts/check-syntax.py，无法执行语法自检"
+  FAIL=1
+fi
+
+echo ""
+
+# 6.2) manifest 顺序闸（只在本任务动过 manifest.json 时跑）
+if printf '%s\n' "$TASK_FILES" | grep -qx 'manifest.json'; then
+  echo "── manifest 脚本顺序检查 ──"
+  if ( cd "$WT_PATH" && "$PY" scripts/check-manifest-order.py ); then
+    echo "[✓] manifest 顺序通过"
+  else
+    echo "[✗] manifest 顺序未通过"
+    FAIL=1
+  fi
+  echo ""
+fi
+
+# 6.3) 产品文案闸（只在本任务动过开关文案时跑；发布期仍会再查更新说明）
+if printf '%s\n' "$TASK_FILES" | grep -qx 'src/content/flags.js'; then
+  echo "── 产品文案检查（相对本任务分叉点）──"
+  if ( cd "$WT_PATH" && DYC_GIT="$GIT" "$NODE_BIN" scripts/check-product-copy.js --gate --base "$MERGE_BASE" ); then
+    echo "[✓] 产品文案新增违规为 0"
+  else
+    echo "[✗] 产品文案检查未通过"
+    FAIL=1
+  fi
+  echo ""
+fi
+
+# 6.4) 性能闸（静态秒级；先于行为自测，便宜的先失败）
+# 成功时只显示结论，避免每次回收被几十条既有【提示】淹没；失败才展开全文。
+echo "── 性能常规检查 ──"
+mkdir -p "$REPO/.tmp"
+PERF_LOG="$REPO/.tmp/perf-$NAME.log"
+if ( cd "$WT_PATH" && "$PY" scripts/perf-check.py --gate > "$PERF_LOG" 2>&1 ); then
+  grep -E '^结论:' "$PERF_LOG" | sed 's/^/   /'
+  echo "[✓] 性能闸通过"
+else
+  sed 's/^/   /' "$PERF_LOG"
+  echo "[✗] 性能闸未通过"
+  FAIL=1
+fi
+rm -f "$PERF_LOG"
+echo ""
+
+# 6.45) 脆弱断言体检（只在本任务改过自测时提示，不阻断）
+if printf '%s\n' "$TASK_FILES" | grep -q '^scripts/自测-'; then
+  echo "── 自测断言写法体检（提示，不阻断）──"
+  ( cd "$WT_PATH" && "$PY" scripts/selfcheck-assertions.py --changed ) || true
+  echo ""
+fi
+
 # 6.5) 合并**前**跑「与本任务改动相关」的自测（2026-11-02 新增）
-# ★ 为什么放在合并前、且只跑相关子集：
-#   合并之后才发现红，代价是「重开工作树 → 再改 → 再回收」一整轮；
-#   在合并前用 5 秒跑相关用例，能挡掉绝大多数这种返工。
-#   必须在**任务工作树**里跑 —— 主工作区那时还是合并前的代码，
-#   在上面跑等于测旧版，红了才是误报。
-#   全量仍由推送期 publish.sh 负责（这里不重复跑全量）。
+# ★ 只在口径定稿后的回收预检跑，不再要求每轮手跑：
+#   中间态口径未稳，红的多是断言没跟上；定稿后一次验证最终内容。
+#   必须在**任务工作树**里跑 —— 主工作区那时还是合并前的代码。
+#   全量由发布期 publish.sh --release-gate 负责（这里不重复跑全量）。
 if [ "$SELFTEST" != "0" ] && [ -d "$WT_PATH" ] && [ -f "$WT_PATH/scripts/run-selftests.py" ]; then
   echo "── 合并前自测（在任务工作树内，只跑与本任务改动相关的用例）──"
   SELFTEST_LOG="$REPO/.tmp/selftest-$NAME.log"

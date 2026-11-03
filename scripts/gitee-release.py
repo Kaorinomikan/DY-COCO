@@ -334,7 +334,7 @@ def list_assets(owner, repo, release_id, token):
        「403 Forbidden (Rate Limit Exceeded)」，被下面的 `return []` 吞成
        「附件一个都没有」，于是 --audit 在附件**明明传成功**时误报
        「商家按直下链接会 404」。2026-10-11 发布 26.10.10.8 时踩到，
-       详见 AGENTS.md 踩坑记录。
+       详见 docs/agents/踩坑记录.md。
        带令牌后额度是 5000 次/小时，不会撞限流。
     """
     code, obj, raw = api_get("/repos/%s/%s/releases/%s/attach_files"

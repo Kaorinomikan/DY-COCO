@@ -29,7 +29,7 @@ const path = require('path');
 const crypto = require('crypto');
 
 const ROOT = path.resolve(__dirname, '..');
-const TAG = 'v26.11.01.2';
+const TAG = process.env.DYC_TAG || 'v26.11.03.2';
 const OWNER = 'Kaorinomikan';
 const REPO = 'DY-COCO';
 
@@ -104,7 +104,7 @@ async function main() {
     console.log('失败明细:');
     for (const s of failed) console.log('  ✗ ' + s);
   } else {
-    console.log('★ 72 文件全部逐字节一致 ⇒ 失去 Gitee 后商家更新可完整完成');
+    console.log('★ %d 文件全部逐字节一致 ⇒ 失去 Gitee 后商家更新可完整完成', manifest.files.length);
   }
   process.exit(fail ? 1 : 0);
 }

@@ -226,7 +226,7 @@ def main():
         for p in problems:
             print('  - %s' % p)
         print('')
-        print('约定详见 AGENTS.md「页面匹配 → content_scripts 脚本顺序约定」。')
+        print('约定详见 docs/agents/组件职责.md「content_scripts 脚本顺序约定」。')
         print('新增功能脚本请插在「功能层」末尾(入口脚本之前),')
         print('不要插到 flags.js 之前,也不要插到入口脚本之后。')
         return 1

@@ -13,7 +13,7 @@
 #   · 不再需要用户人工验收 —— 由助手自己审核（代码审阅 + 本脚本的机械闸门），
 #     确认没有问题即可推送。
 #   · 但要**攒批**：攒够 5 个**有效功能点**再推一次，不要一个改动推一次（用户嫌烦）。
-#     计数与门槛的唯一事实来源是 scripts/计点.sh（规则见其头部 + AGENTS.md 第 1 条）：
+#     计数与门槛的唯一事实来源是 scripts/计点.sh（规则见其头部 + docs/agents/用户要求.md 第 1 条）：
 #       - **功能点**：只有扩展本体里**用户可感知的独立特性 / 修复**才计，逐项计；
 #       - **基建点**：文档 / 脚本 / 流程 / 定时任务等非扩展本体改动，
 #         无论多少条**合并只算 1 点（上限 1）**（用户 2026-10-13 修订：
@@ -45,7 +45,7 @@
 #      保留这道闸门的价值：强制在推送前停下来做一次显式自查。
 #   2. 【硬性】禁止强制推送 —— Gitee 会显示「强制推送」标签不好看。
 #      遇到非快进冲突时中止并报告，不自行 --force
-#   3. 【硬性】推送前检查说明文档 —— README/开发日志/AGENTS/RELEASE_NOTES 必须与代码一致
+#   3. 【硬性】推送前检查说明文档 —— README/开发日志/RELEASE_NOTES 必须与代码一致（AGENTS.md 为索引与铁律，不再逐项对版本）
 #   4. 备份统一收纳到 C:/WorkBuddy-backup/，不污染开发目录
 #   5. 备份目录恒定只留一个 bundle，覆盖式更新，可恢复
 #   6. 推送后立刻断开远程，防误推保险常驻
@@ -59,7 +59,7 @@
 #      也不再生成面向商家的分发包。
 #      依据：自更新链路（检测读 …/tags.atom、下载读 …/raw/<标签>/…）
 #      完全不依赖发行版；而 Gitee 会清理旧发行版（v26.10.10.3/.4/.5
-#      在发布 .8 后不久即消失，详见 AGENTS.md 踩坑记录）。
+#      在发布 .8 后不久即消失，详见 docs/agents/踩坑记录.md）。
 #      scripts/gitee-release.py 保留（历史能力），但已加硬闸门默认拒绝执行。
 #  10. 所以本脚本的终点是：主干与标签都已推送，且标签指向主干 HEAD。
 #      商家要装新版时的安装包分发方式，不再由本脚本承担。
@@ -240,7 +240,7 @@ echo "===== 4/6 检查说明文档是否与代码同步 ====="
 
 DOC_PROBLEMS=""
 
-# AGENTS.md 必须存在 —— 它是跨模型交接的入口文档
+# AGENTS.md 必须存在 —— 它是跨模型交接的入口文档（索引 + 铁律）
 if [ ! -f "AGENTS.md" ]; then
   DOC_PROBLEMS="${DOC_PROBLEMS}缺少 AGENTS.md（交接文档必须随代码一起维护）\n"
 else
@@ -311,7 +311,7 @@ if [ -n "$DOC_PROBLEMS" ]; then
   echo "[中止] 说明文档未与代码同步："
   printf "  - $DOC_PROBLEMS"
   echo ""
-  echo "规则：推送前必须先检查并更新 README.md / 开发日志.md / AGENTS.md，"
+  echo "规则：推送前必须先检查并更新 README.md / 开发日志.md / RELEASE_NOTES.md，"
   echo "      做出全面对应的修改并自行审阅，确认无误后才推送。"
   exit 1
 fi
@@ -324,7 +324,15 @@ COPY_BASE=$("$GIT" describe --tags --match 'v[0-9]*' --exclude "v$LOCAL_VER" --a
 COPY_ARGS=(--gate)
 [ -n "$COPY_BASE" ] && COPY_ARGS+=(--base "$COPY_BASE")
 if ! DYC_GIT="$GIT" "$COPY_NODE" "$REPO/scripts/check-product-copy.js" "${COPY_ARGS[@]}"; then
-  echo "[中止] 产品文案检查未通过。按 AGENTS.md 第 25 条修改；不得缩小检查范围或改写基线绕开。"
+  echo "[中止] 产品文案检查未通过。按 docs/agents/用户要求.md 第 25 条修改；不得缩小检查范围或改写基线绕开。"
+  exit 1
+fi
+
+echo ""
+echo "===== 附加闸门 · manifest 脚本顺序 ====="
+PY="${PY:-C:/Users/79412/.workbuddy/binaries/python/versions/3.13.12/python.exe}"
+if ! "$PY" scripts/check-manifest-order.py; then
+  echo "[中止] manifest 脚本顺序未通过，发布已暂停。"
   exit 1
 fi
 
@@ -467,6 +475,17 @@ if ! "$PY" scripts/perf-check.py --gate; then
 fi
 
 echo ""
+echo "===== 附加闸门 · 发布全量行为自测 ====="
+# 以前只在敏感词自动改写后才跑全量，未改写时反而没有发布全量兜底。
+# 现在每次发布必跑；同一受测内容（含预演与正式推）复用通过凭据，
+# 内容一变（含自动改写）指纹随之变化，旧凭据自动失效。
+if ! "$PY" scripts/run-selftests.py --release-gate; then
+  echo ""
+  echo "[中止] 发布全量自测未通过，未备份、未建标签、未推送任何内容。"
+  exit 1
+fi
+
+echo ""
 echo "===== 附加闸门 · 敏感词检测（2026-11-01 立 · Gitee 封禁后）====="
 # 【硬性 · 最高优先】为什么必须有这道闸门：
 #   Gitee 于 2026-11-01 屏蔽了本账号（远端报
@@ -514,8 +533,8 @@ fi
 # 两类真问题（都会让功能静默失效）。
 if ! "$GIT" diff --quiet -- src/ "scripts/" 2>/dev/null; then
   echo ""
-  echo "----- 自动优化后复跑自测（确认没改坏功能）-----"
-  if ! "$PY" scripts/run-selftests.py; then
+  echo "----- 自动优化后复跑全量自测（内容已变，旧凭据失效）-----"
+  if ! "$PY" scripts/run-selftests.py --release-gate; then
     echo ""
     echo "[中止] 自动优化改坏了功能 —— 已回滚自动改写，请人工处理。"
     echo "       （自测没过时带着坏代码发布 = 商家拿到坏版本，比不发更糟）"
@@ -742,4 +761,4 @@ echo ""
 echo "【硬性规则 · 用户 2026-10-11 定，最高优先级】"
 echo "  禁止创建 Gitee 发行版。本脚本不建 Release、不传 zip 附件，"
 echo "  也不再生成面向商家的分发包。扩展自更新只需「主干 + 标签」即可工作。"
-echo "  详见 AGENTS.md「用户的个性化要求」第 8 条。"
+echo "  详见 docs/agents/用户要求.md 第 8 条。"

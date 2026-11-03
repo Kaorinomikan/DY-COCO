@@ -295,6 +295,14 @@
     var refs = [];
     var anchor = findTopAnchor();
     if (anchor) refs.push(anchor);
+    /* 2026-11-03 修「购物车只有约 20 个品时,上滑/下滑控制不了购物车滚动条」:
+     * 旧参照物②「全页 scrollHeight 最大的可滚容器」依赖商品列表恒为全页最高
+     * 这一事实;商品少时(20 个品 ≈ 内容高 2800px)它比侧栏互动区等容器矮,
+     * 参照物旁落,购物车滚动容器脱链,按钮对它完全失控。
+     * 新增参照物③:从 locate.js 的商品行出发,取最近的可滚祖先 ——
+     * 恒为购物车自己的滚动容器,与商品数量、与其它容器高矮均无关。 */
+    var cart = findCartScroller();
+    if (cart && refs.indexOf(cart) < 0) refs.push(cart);
     var best = null, bestH = 0;
     for (var i = 0; i < all.length; i++) {
       var el = all[i];
@@ -303,6 +311,27 @@
     }
     if (best && refs.indexOf(best) < 0) refs.push(best);
     return refs;
+  }
+
+  /**
+   * 购物车自己的滚动容器(2026-11-03,参照物③)。
+   * 从 locate.js 的 getProductItems() 取任一商品行,向上找最近的
+   * 可滚祖先。locate.js 缺席或取不到行时返回 null,退回旧参照物,
+   * 行为与旧版完全一致(只增不改)。
+   */
+  function findCartScroller() {
+    try {
+      if (typeof getProductItems !== 'function') return null;
+      var rows = getProductItems() || [];
+      for (var i = 0; i < rows.length; i++) {
+        var el = rows[i];
+        while (el && el !== document.body && el !== document.documentElement) {
+          if (el.scrollHeight > el.clientHeight + 1) return el;
+          el = el.parentElement;
+        }
+      }
+    } catch (e) { /* 忽略,退回旧参照物 */ }
+    return null;
   }
 
   /** 页面滚动链:所有包含任一参照物的可滚容器(不含 html/body,页面级交 window) */
@@ -364,6 +393,51 @@
     chainCache = { list: collectPageChain(), anchorEl: anchor || null };
     return chainCache.list;
   }
+
+  /* ---------- 滚动链诊断导出(2026-11-03,随调试报告回传) ----------
+   * 「购物车少商品时圆钮失控」这类 bug 远程看不出链子实际圈了谁,
+   * 把锚点 / 购物车容器 / 参照物 / 链上容器连同滚动量一起导出,
+   * diag.js 快照时收进报告的 scrollChain 段(仅手动生成报告时执行,
+   * 日常滚动路径零开销)。 */
+  window.__dycChainDebug = function () {
+    function desc(el) {
+      if (!el) return null;
+      var d = {
+        tag: el.tagName ? el.tagName.toLowerCase() : '?',
+        id: el.id || '',
+        cls: (typeof el.className === 'string' ? el.className : '').slice(0, 90),
+        st: Math.round(el.scrollTop), sh: el.scrollHeight, ch: el.clientHeight
+      };
+      try {
+        var b = el.getBoundingClientRect();
+        d.rect = [Math.round(b.left), Math.round(b.top), Math.round(b.width), Math.round(b.height)];
+        d.ov = getComputedStyle(el).overflowY;
+      } catch (e) { /* 忽略 */ }
+      return d;
+    }
+    var all = collectScrollables();
+    var anchor = findTopAnchor();
+    var cart = findCartScroller();
+    var refs = chainRefs(all);
+    var chain = collectPageChain();
+    var rows = -1;
+    try {
+      if (typeof getProductItems === 'function') rows = (getProductItems() || []).length;
+    } catch (e) { /* 忽略 */ }
+    return {
+      anchorFound: !!anchor,
+      anchor: desc(anchor),
+      cartFound: !!cart,
+      cart: desc(cart),
+      rows: rows,
+      scrollableCount: all.length,
+      scrollables: all.slice(0, 20).map(desc),
+      refs: refs.map(desc),
+      chainLen: chain.length,
+      chain: chain.map(desc),
+      winY: Math.round(window.scrollY || 0)
+    };
+  };
 
   /* ---------- 按钮行为 ---------- */
 

@@ -25,7 +25,7 @@ cat <<EOF
 1. $WT/AGENTS.md 的「多会话并行开发」一章
    —— 告诉你:哪些文件能改、哪些是共享文件只允许「末尾追加」、
       以及五条绝对不能碰的红线
-2. $WT/AGENTS.md 的「用户的个性化要求」
+2. $WT/docs/agents/用户要求.md
    —— 用户定的硬性规矩,优先级最高
 3. $WT/开发待办.md 里跟本任务相关的部分(未开发计划统一在这里)
 
@@ -58,11 +58,13 @@ $WT/manifest.json 对应页面的 js 数组
     → 把你的脚本加在**末尾**
 **不要插在中间** —— 插中间会跟别的会话打架。
 
-━━━ 六、做完按顺序跑这两道自检,全过才算完 ━━━
+━━━ 六、中间态只跑快速语法；定稿后回收自动跑其余闸 ━━━
 
 cd "$WT"
-node --check src/live/$NAME.js
-python scripts/check-manifest-order.py
+python scripts/check-syntax.py --changed
+
+改过扩展运行内容时，真机冒烟后用 DYC_SMOKE_OK=1 bash scripts/回收.sh <名字>；
+回收脚本自动检查 manifest 顺序、文案、性能和相关自测。
 
 ⚠️ **不要**跑 make-update-manifest.py、**不要**碰 update-manifest.json ——
    它是推送期在主干(main)上统一生成的产物(红线第 4 条)。

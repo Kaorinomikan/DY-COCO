@@ -17,11 +17,14 @@
   与真实行为为主的脚本必须给出不同结论。
 """
 import importlib.util
-import io
 import os
+import subprocess
 import sys
+import tempfile
+from pathlib import Path
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+ROOT = Path(HERE).parent
 ENTRY = os.path.join(HERE, "run-selftests.py")
 
 
@@ -60,9 +63,15 @@ def main():
            f"picked={len(picked)} reason={reason}")
 
     # ---------- ② 单个功能文件 ⇒ 只跑引用它的 ----------
+    # 福袋自测 2026-11-04 拆成多组（并行跑），断言按**前缀**认全部分组：
+    # 改一次源码必须跑全部组，漏一组就是「改了源码却只跑 1 组」的假绿。
+    # 不绑死具体文件名，将来再加/再拆组也不用改这里。
+    bag_groups = sorted(s.name for s in scripts if s.name.startswith("自测-超级福袋"))
     picked, reason = m.select_changed(scripts, index, {"src/live/lucky-bag.js"})
-    ok("改幸运福袋 ⇒ 含「超级福袋」自测",
-       "自测-超级福袋.js" in {s.name for s in picked}, str([s.name for s in picked]))
+    picked_names = {s.name for s in picked}
+    ok("改幸运福袋 ⇒ 命中全部福袋分组（漏一组=假绿）",
+       bool(bag_groups) and set(bag_groups) <= picked_names,
+       f"命中 {len(set(bag_groups) & picked_names)}/{len(bag_groups)} 组")
     ok("改幸运福袋 ⇒ 不跑无关的「罗盘商品表」",
        "自测-罗盘商品表.js" not in {s.name for s in picked},
        str([s.name for s in picked]))
@@ -77,12 +86,14 @@ def main():
                                  {"src/live/compass-table.js", "src/live/lucky-bag.js"})
     picked_names = {s.name for s in picked}
     ok("多文件改动 ⇒ 取并集",
-       {"自测-罗盘商品表.js", "自测-超级福袋.js"} <= picked_names, str(sorted(picked_names)))
+       {"自测-罗盘商品表.js"} | set(bag_groups) <= picked_names, str(sorted(picked_names)))
 
     # ---------- ③ 改自测本身 ⇒ 至少跑它自己，不是全量 ----------
-    picked, _ = m.select_changed(scripts, index, {"scripts/自测-超级福袋.js"})
+    # 取一个现存的福袋分组做样本（不写死文件名，避免再拆/改名时误红）
+    sample = bag_groups[0] if bag_groups else scripts[0].name
+    picked, _ = m.select_changed(scripts, index, {"scripts/" + sample})
     ok("改某自测 ⇒ 含它自己",
-       "自测-超级福袋.js" in {s.name for s in picked}, str([s.name for s in picked]))
+       sample in {s.name for s in picked}, str([s.name for s in picked]))
     ok("改某自测 ⇒ 不因此退回全量", len(picked) < len(scripts), f"picked={len(picked)}")
 
     # ---------- ④ 闸门脚本 ⇒ 对应自测 ----------
@@ -135,6 +146,28 @@ def main():
     blind = [s.name for s in scripts if not index.get(s) and s.name not in
              ("自测-发布回收.py", "自测-敏感词邻近匹配.py", "自测-自测调度.py")]
     ok("除脚本类自测外，都在正文里引用了被测源文件", not blind, str(blind))
+
+    # ---------- ⑩ 发布凭据指纹：内容变即失效 ----------
+    base = Path(tempfile.mkdtemp(prefix="release-fingerprint-", dir=ROOT / ".tmp"))
+    git = "git"
+    subprocess.run([git, "init", "-b", "main"], cwd=base, capture_output=True)
+    subprocess.run([git, "config", "user.email", "selftest@example.invalid"], cwd=base, capture_output=True)
+    subprocess.run([git, "config", "user.name", "selftest"], cwd=base, capture_output=True)
+    sample = base / "src"
+    sample.mkdir()
+    target = sample / "demo.js"
+    target.write_text("const value = 1;\n", encoding="utf-8")
+    subprocess.run([git, "add", "."], cwd=base, capture_output=True)
+    subprocess.run([git, "commit", "-m", "base"], cwd=base, capture_output=True)
+    first = m.release_fingerprint(base)
+    ok("发布凭据能计算内容指纹", bool(first and len(first) == 64), str(first))
+    target.write_text("const value = 2;\n", encoding="utf-8")
+    second = m.release_fingerprint(base)
+    ok("受测内容变化 ⇒ 指纹失效", bool(first and second and first != second), f"{first} / {second}")
+    untracked = sample / "new.js"
+    untracked.write_text("const added = true;\n", encoding="utf-8")
+    third = m.release_fingerprint(base)
+    ok("未跟踪的新自测/源码也纳入指纹", bool(second and third and second != third), f"{second} / {third}")
 
     print(f"自测调度：{passed} 项通过，{len(failed)} 项失败。")
     for f in failed:
