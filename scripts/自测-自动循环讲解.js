@@ -343,8 +343,12 @@ ok('自己滚屏触发的 scroll 事件不再把胶囊藏起来', (function () {
 ok('找商品期间时间槽显示「定位中」', /slot\.textContent = state\.busyLabel \|\| '定位中'/.test(src) &&
   /state\.busyLabel = '搜索中'/.test(src));
 ok('busy 文案排在 phase 分支之前(否则永远轮不到)', (function () {
+  /* 2026-11-05:原来按「paint 起 1200 字符」切,加了无限模式的分支后窗口不够,
+   * 断言变成 indexOf=-1 互比 —— 过时的是切片,不是代码。改成按函数边界截取。 */
   const i = src.indexOf('function paint()');
-  const seg = src.slice(i, i + 1200);
+  let j = src.indexOf('function paintReadout()', i);
+  if (j < 0) j = i + 2000;
+  const seg = src.slice(i, j);
   return seg.indexOf("state.busyLabel || '定位中'") < seg.indexOf("key = 'run:'");
 })());
 ok('动作开始/收尾都重画一次(文案进得去也出得来)',

@@ -961,8 +961,13 @@ function dycWriteFlag(key, value) {
   if (!meta) return Promise.reject(new Error('未知开关:' + key));
 
   // 所有弹窗通过同一个后台队列写入，避免多个窗口同时读改写丢掉另一项。
+  // store 随消息带上：万一后台还是旧缓存包、不认识这个键，它仍能按正确位置
+  // 落库，而不是直接回「无效设置」（2026-11-05）。
   return new Promise(function (resolve, reject) {
-    chrome.runtime.sendMessage({ type: 'dyc:writeFlag', key: key, value: !!value }, function (res) {
+    chrome.runtime.sendMessage({
+      type: 'dyc:writeFlag', key: key, value: !!value,
+      store: meta.store === 'debug' ? 'debug' : 'features'
+    }, function (res) {
       var error = chrome.runtime.lastError;
       if (error || !res || !res.ok) {
         reject(new Error((error && error.message) || (res && res.error) || '设置未保存'));

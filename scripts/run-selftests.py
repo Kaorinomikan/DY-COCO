@@ -62,6 +62,7 @@ SCRIPT_TARGETS = {
     'scripts/publish.sh': '自测-发布回收.py',
     'scripts/publish-github-api.py': '自测-发布回收.py',
     'scripts/make-dist.py': '自测-发布回收.py',
+    'scripts/check-sw-build.py': '自测-更新生效.js',
 }
 
 

@@ -410,6 +410,28 @@
    * （常态 9px、hover/拖动 10px），两端外沿才恰好与轨道端点相切、不出界。
    * 刻度、圆钮共用这个内缩域，拖动映射也用同一套，指针与圆心严格对齐。 */
   var SLIDE_INSET = 10;
+  /* 「发福袋间隔」滑条（2026-11-05 用户）。
+   * 用户原话：「当倒计时结束后，会自动数这个设定的时间，时间到了才会执行
+   * 下一轮福袋，当然在这个前提下，依然遵守自动发福袋的流程」。
+   *   · 量程 0~5 分钟、步进 30 秒；默认 0（保持原有节奏）；
+   *   · **0 ≠ 0 秒抢发**（2026-11-05 用户二次强调「滑动在 0 的话，不是真的
+   *     0 秒杀，依然是我之前设定的时间秒数间隔，防止前后冲突」）。
+   *     0 只表示这一层「不额外加等」；它后面那串原有的安全间隔一条都不减：
+   *       - AFTER_DRAW_LAG_MS（15 秒）结果落定后的收尾冷却；
+   *       - RESUME_QUIET_MS（30 秒）结束证据窗口（没读到「已结束」才要等）；
+   *       - holdDrawAt 到期、anyRunningNow 防双开、lockUntil 防连点、
+   *         真人开抽屉 10 秒让路。
+   *     换句话说：这条滑条只在「本来已经允许发」的基础上再往后推，
+   *     不是「允许发」的唯一或第一道闸。
+   *   · 只在「自动发福袋」开关打开时生效，关着时滑条置灰不可拖；
+   *   · 起算点是**上一轮倒计时到期时刻**（lastRoundEndAt），不是「最后一次
+   *     看到进行中」—— 后者可能比真正结束早十几秒，会让间隔缩水。
+   * 单位统一用「秒」存盘：30 秒一档用分钟小数存会出现 0.5 的浮点误差。 */
+  var GAP_KEY = 'dycBagGapSec';
+  var GAP_MIN = 0;
+  var GAP_MAX = 300;
+  var GAP_STEP = 30;
+  var GAP_DEF = 0;
   var CONFIRM_OPEN_WAIT = 1200;   // 点开抽屉后等它渲染
   var CONFIRM_READ_WAIT = 400;    // 面板出来后到读数之间再留一拍
   var CONFIRM_HARD_GAP = 60000;   // 硬上限：一分钟内绝不再开第二次
@@ -650,6 +672,18 @@
   var slide = { cur: CHECK_DEF, target: CHECK_DEF, raf: 0, drag: null, rect: null };
   var slideApi = null;           // 自测用的拖动入口（每次建面板时重建）
   var slideWinEnd = null;        // 滑条的 window pointerup 监听（销毁面板时对称摘除）
+  /* 「发福袋间隔」滑条的状态（2026-11-05）：与确认间隔那套完全独立 ——
+   * 量程/步进/吸附都不同，共用一套状态只会把两路拖拽互相干扰。
+   * gapDrag 只用于一件事：拖动期间 paintPanel 不许把值刷回去。 */
+  var gapSec = GAP_DEF;
+  var gapSlide = { cur: GAP_DEF, target: GAP_DEF, raf: 0, drag: null, rect: null };
+  var gapApi = null;
+  var gapDrag = false;
+  var gapWinEnd = null;          // 间隔滑条的 window pointerup（销毁面板时对称摘除）
+  /* 上一轮倒计时的**到期时刻**，发福袋间隔从这里起算（2026-11-05）。
+   * 0 = 本场还没读到过到期时刻（冷启动/刚切进来）⇒ 不额外等，
+   * 免得把「用户刚打开插件」也当成「刚刚结束了一轮」。 */
+  var lastRoundEndAt = 0;
   var ring = [];
 
   /* 确认节拍（2026-11-01 05:0x）：滑块值 + 该开的时刻 + 是不是我们开的抽屉 */
@@ -1295,11 +1329,33 @@
    *   · 内容里出现只在抽屉内部才有的词（DRAWER_MARKS）。
    * 命中多个取**面积最小**的那个 = 最贴合的抽屉根，避免收成整页容器。
    */
+  /* 2026-11-05 性能自检:抽屉根的**正结果缓存**。
+   * 这个函数的成本不低 —— querySelectorAll('div, section, aside, form') 最多物化
+   * 9000 个容器,再逐个读 textContent(会走整棵子树)。它挂在 2500ms 的拍点上,
+   * 抽屉开着时每一拍都要把这一趟重跑一遍,纯属重复劳动。
+   * 抽屉根一旦认准就是那个大容器,页面不重建它不会变 ⇒ isConnected 为真即可复用。
+   * 复用前仍按**与下方完全同口径**的几何判据复核(够大 + 贴右):抽屉被关掉时
+   * 矩形会归零,缓存自然失效 —— 不会把「已关闭」误报成「开着」。
+   * 注意只缓存**正结果**:找不到时不缓存,免得把「抽屉刚打开」延迟一拍才发现,
+   * 那会让路判断(bagYieldToRefresh)在抽屉弹出那一瞬误判。 */
+  var drawerCache = null;
+
   function drawerRootByText() {
     var vw = 0;
     try {
       vw = window.innerWidth || (document.documentElement && document.documentElement.clientWidth) || 0;
     } catch (e0) { vw = 0; }
+
+    if (drawerCache && drawerCache.isConnected) {
+      var cr = null;
+      try { cr = drawerCache.getBoundingClientRect(); } catch (e3) { cr = null; }
+      if (cr && cr.width >= 380 && cr.height >= 260
+          && (!vw || (cr.right >= vw - 24 && cr.left >= vw * 0.25))) {
+        return drawerCache;
+      }
+      drawerCache = null;
+    }
+
     var all = document.querySelectorAll('div, section, aside, form');
     var n = all.length > 9000 ? 9000 : all.length;
     var best = null, bestArea = 0;
@@ -1326,6 +1382,7 @@
       var area = r.width * r.height;
       if (!best || area < bestArea) { best = el; bestArea = area; }
     }
+    drawerCache = best;
     return best;
   }
 
@@ -2089,6 +2146,53 @@
     }
   }
 
+  /* ── 「发福袋间隔」滑条（2026-11-05）────────────────────────
+   * 与确认间隔同一套长久记忆（chrome.storage.local），默认 0 分钟。
+   * 默认 0 是刻意的：这条只该在用户主动拖过之后改变节奏，不能因为
+   * 升级就让所有老用户的每一轮都凭空晚几分钟。 */
+  function loadGapSec() {
+    try {
+      if (!(window.chrome && chrome.storage && chrome.storage.local)) return;
+      chrome.storage.local.get(GAP_KEY, function (r) {
+        var v = r && r[GAP_KEY];
+        if (typeof v === 'number' && isFinite(v)) {
+          gapSec = clampGap(v);
+          gapSlide.cur = gapSlide.target = gapSec;
+          paintPanel();
+        }
+      });
+    } catch (e) { /* 读不到就按 0 走 */ }
+  }
+
+  function saveGapSec(v) {
+    gapSec = clampGap(v);
+    try {
+      var obj = {};
+      obj[GAP_KEY] = gapSec;
+      chrome.storage.local.set(obj);
+    } catch (e) { /* 存不上就只在本页生效 */ }
+    paintPanel();
+  }
+
+  /** 钳进 0~300 秒并吸附到 30 秒档（拖动中与松手都走这一支，
+   *  所以画面上的值与存盘的值永远是同一套刻度）。 */
+  function clampGap(v) {
+    v = Math.round(Number(v) || 0);
+    if (v < GAP_MIN) v = GAP_MIN;
+    if (v > GAP_MAX) v = GAP_MAX;
+    return Math.round(v / GAP_STEP) * GAP_STEP;
+  }
+
+  /** 0 → 「0 分钟」；30 → 「0 分 30 秒」；90 → 「1 分 30 秒」。
+   *  不用小数分钟（0.5 分钟）—— 面板上出现小数反而比秒数难读。 */
+  function fmtGap(sec) {
+    sec = Math.max(0, Math.round(Number(sec) || 0));
+    var m = Math.floor(sec / 60);
+    var s = sec % 60;
+    if (!s) return m + ' 分钟';
+    return m + ' 分 ' + s + ' 秒';
+  }
+
   /* ==========================================================
    * 五、主循环
    * ========================================================== */
@@ -2121,9 +2225,17 @@
      * 「最近一次确认的结果」，混进跃迁事件会让排查时读不懂。 */
     if (prevLive !== 'live' && liveState === 'live') {
       nextConfirmAt = Date.now() + 3000;      // 开播 3 秒后抓一次基线
+      /* 发福袋间隔的锚点**故意不在这里复位**（2026-11-05）：
+       * unknown ↔ live 在直播中是常态（平台重渲染那几拍判据就掉一拍），
+       * 每次回到 live 都清锚点，等于把用户设的间隔永久废掉 —— 比「跨场多等
+       * 几分钟」严重得多。跨场残留最多让新一场第一轮多等一个间隔，
+       * 而且这个值 5 分钟封顶，属于可接受的行为。 */
       paintPanel();
     } else if (prevLive === 'live' && liveState !== 'live') {
       nextConfirmAt = 0;                      // 下播 / 判不出：复位，下次开播重新计时
+      /* 这一支同样不动 lastRoundEndAt：条件里的 `!== 'live'` 包含 unknown，
+       * 而 unknown 在直播中是常态抖动。在这里清锚点 = 间隔时灵时不灵。
+       * 锚点只在读到新的到期时刻时往后推，语义上也不需要跟着场次复位。 */
       paintPanel();
     }
 
@@ -2367,6 +2479,13 @@
       drawAt = earliest;
       paintBadge();
     }
+    /* 发福袋间隔的起算点（2026-11-05）：把「本轮什么时候结束」钉下来。
+     * 两个来源取更晚的那个 ——
+     *   · earliest = 平台当下给的倒计时到期时刻（平台延长会跟着变大）；
+     *   · holdDrawAt = 现场消失后继续走秒的兜底读数（卡片被收走时唯一锚点）。
+     * 只在更大时覆盖：倒计时走完那一刻之后，不会再被「读不到」清零。 */
+    var endAnchor = Math.max(earliest || 0, holdDrawAt || 0);
+    if (endAnchor > lastRoundEndAt) lastRoundEndAt = endAnchor;
     /* 兜底读数跟着现场一起刷新（2026-11-03 00:20 真机「获取到倒计时，但是
      * 一两秒后直接变回未开始」）：
      * 旧版在「读到现场」那一拍就把 hold 清成 0，以为现场会一直在 —— 可是
@@ -2427,6 +2546,23 @@
      * phase 已停在 starting，这里再显式拦一道 —— 这个分支只看 pendingClick，
      * 不看 phase，漏了就等于复核期间照发第二个。 */
     if (gateOpen && flags.auto && pendingCand && !pendingClick && !reverify && !probe) {
+      /* 发福袋间隔（2026-11-05 用户）：「当倒计时结束后，会自动数这个设定的
+       * 时间，时间到了才会执行下一轮福袋，当然在这个前提下，依然遵守自动
+       * 发福袋的流程」。
+       *   · 静默等待：等待不是异常，不播「已在进行中」那句（那是双开闸的话术）；
+       *   · **0 也照样走下面全部校验**（2026-11-05 用户二次强调）：滑条调到 0
+       *     只是让这一层判断整条跳过，不是把「能不能发」变成无条件 ——
+       *     下面的 holdDrawAt 到期、防双开、结束证据、收尾冷却、防连点
+       *     一条都不少，所以 0 档的实际最短间隔仍是 15 秒级，不会 0 秒抢发；
+       *   · 只约束**正常续轮**：halted 是停机后的补发，越快越好，而且它另有
+       *     30 秒冷却，再叠一层间隔只会让人白等；
+       *   · 到点之后照旧走下面完整的「防双开 → 结束证据 → 收尾冷却」链路，
+       *     不因为「时间到了」就跳过任何一道校验 —— 这正是用户强调的那句
+       *     「依然遵守自动发福袋的流程，而不是倒计时结束立刻发」。 */
+      if (phase !== 'halted' && autoOn && gapSec > 0 && lastRoundEndAt &&
+          Date.now() < lastRoundEndAt + gapSec * 1000) {
+        return;
+      }
       /* 真人刚亲手开过抽屉（2026-11-04）：这 10 秒里不自动点。
        * 用户报的「我一开抽屉它就无脑发、尝试连发两次」就出在这里 ——
        * 他开抽屉是为了「看看到底有没有」，不是为了「让它再发一个」。 */
@@ -3974,6 +4110,7 @@
       }
       loadAuto();
       loadCheckMin();
+      loadGapSec();
       dycWatchFlags(applyFlags);
     });
   }
@@ -4516,6 +4653,12 @@
       window.removeEventListener('pointerup', slideWinEnd, true);
       slideWinEnd = null;
     }
+    /* 间隔滑条同一条规矩（2026-11-05）：不摘就会「开一次面板叠一条监听」，
+     * 闭包还攥着已脱离文档的旧 gtk/pRefs。 */
+    if (gapWinEnd) {
+      window.removeEventListener('pointerup', gapWinEnd, true);
+      gapWinEnd = null;
+    }
     if (panelHost) {
       try { if (window.dycOverlayGuard) window.dycOverlayGuard.unbind(panelHost); } catch (e) {}
       if (panelHost.parentNode) panelHost.parentNode.removeChild(panelHost);
@@ -4526,6 +4669,8 @@
     pRefs = null;             // 引用一并丢掉，下次打开重新建
     slideApi = null;
     sliderDrag = false;
+    gapApi = null;
+    gapDrag = false;
   }
 
   function buildPanel() {
@@ -4627,6 +4772,39 @@
       'border-radius:50%;background:#fff;box-shadow:0 1px 3px rgba(31,35,41,.25);',
       'transition:left .15s}',
       '.sw.on::after{left:16px}',
+      /* ── 「发福袋间隔」滑条（2026-11-05）──
+       * 常驻在「自动发福袋」开关下方，关闭时整组置灰（用户原话：
+       * 「打开按钮【自动发福袋】之后，他的下方常驻的一个灰色滑动条会恢复颜色」）。
+       * 灰态只改颜色与光标，不改几何 —— 开关一开立刻原地变红，不跳动。
+       * 轨道比确认间隔那条细一档（6px vs 8px）：它调的是节奏，不是主参数。 */
+      '.gwrap{margin-top:10px;transition:opacity .12s}',
+      '.gwrap.off{opacity:.6}',
+      '.gtk{position:relative;height:24px;margin:10px 0 0;cursor:pointer;touch-action:none;outline:none}',
+      '.grail{position:absolute;left:0;right:0;top:10px;height:6px;border-radius:3px;background:#f0ede8;',
+      'box-shadow:inset 0 1px 2px rgba(31,35,41,.07);transition:background .12s,box-shadow .12s}',
+      '.gin{position:absolute;left:10px;right:10px;top:0;bottom:0}',
+      '.gfill{position:absolute;left:0;top:10px;height:6px;border-radius:3px;',
+      'background:linear-gradient(90deg,#ff5a33,#ff005c);pointer-events:none;transition:background .12s}',
+      '.gmk{position:absolute;top:5px;width:1px;height:4px;background:#d9d4cb;transform:translateX(-50%);',
+      'pointer-events:none}',
+      '.gthumb{position:absolute;top:13px;left:0;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;',
+      'background:#fff;border:2px solid #ff3a4a;box-shadow:0 2px 6px rgba(255,58,74,.28);',
+      'pointer-events:none;transition:width .12s,height .12s,margin .12s,border-color .12s,box-shadow .12s}',
+      '.gthumb::after{content:"";position:absolute;left:50%;top:50%;width:4px;height:4px;',
+      'margin:-2px 0 0 -2px;border-radius:50%;background:#ff3a4a;transition:background .12s}',
+      '.gtk:hover .gthumb,.gtk.on .gthumb{width:18px;height:18px;margin:-9px 0 0 -9px}',
+      '.glabs{position:relative;height:12px;color:#9aa1ab;font-size:10px;margin:2px 10px 0}',
+      '.glabs span{position:absolute;transform:translateX(-50%);white-space:nowrap}',
+      '.glabs span.f{transform:translateX(0)}',
+      '.glabs span.l{transform:translateX(-100%)}',
+      /* 灰态：轨道、填充、圆钮、刻度、数字全退成同族灰；指针不显示可拖 */
+      '.gwrap.off .gtk{cursor:default}',
+      '.gwrap.off .grail{box-shadow:none}',
+      '.gwrap.off .gfill{background:#d9d4cb}',
+      '.gwrap.off .gthumb{border-color:#c9cdd4;box-shadow:none}',
+      '.gwrap.off .gthumb::after{background:#c9cdd4}',
+      '.gwrap.off .glabs span{color:#c9cdd4}',
+      '.gwrap.off .slab b{color:#b9bdc4}',
       /* ── 「手动刷新」按钮行（2026-11-02 凌晨）──
        * 整行小按钮，克制风：白底灰边，hover 转红系（面板同一套语言）；
        * 刷新中禁用置灰。宽撑满、独立一行，与开关行隔开。 */
@@ -4905,6 +5083,68 @@
       arow.appendChild(ak); arow.appendChild(aq); arow.appendChild(atip); arow.appendChild(asw);
       box.appendChild(arow);
 
+      /* ── 「发福袋间隔」滑条（2026-11-05 用户）──
+       * 常驻在开关下方；开关关着时整组灰掉、不可拖（`.gwrap.off`）。
+       * 与上面那条确认间隔滑条用完全独立的类名与状态：两者量程、步进、
+       * 吸附都不同，共用一个元素引用迟早会互相把值刷回去。 */
+      var gw = document.createElement('div'); gw.className = 'gwrap';
+      var grow = document.createElement('div'); grow.className = 'slab';
+      var gk = document.createElement('span'); gk.textContent = '发福袋间隔';
+      var gq = document.createElement('button');
+      gq.type = 'button';
+      gq.className = 'qh';
+      gq.textContent = '?';
+      gq.setAttribute('aria-label', '说明：倒计时结束后再等这么久才发下一轮；0 只是不加等，防冲突间隔照旧；只在打开「自动发福袋」后生效。');
+      var gtip = document.createElement('span');
+      gtip.className = 'qtip';
+      gtip.textContent = '倒计时结束后再等这么久才发下一轮；0 只是不加等，防冲突间隔照旧；只在打开「自动发福袋」后生效。';
+      function gtipOn() { gtip.classList.add('show'); gq.classList.add('on'); }
+      function gtipOff() { gtip.classList.remove('show'); gq.classList.remove('on'); }
+      gq.addEventListener('pointerenter', gtipOn);
+      gq.addEventListener('pointerleave', gtipOff);
+      gq.addEventListener('focus', gtipOn);
+      gq.addEventListener('blur', gtipOff);
+      gq.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (gtip.classList.contains('show')) gtipOff(); else gtipOn();
+      });
+      var gv = document.createElement('b'); gv.textContent = fmtGap(gapSec);
+      grow.appendChild(gk); grow.appendChild(gq); grow.appendChild(gtip); grow.appendChild(gv);
+      gw.appendChild(grow);
+
+      var gtk = document.createElement('div');
+      gtk.className = 'gtk';
+      gtk.setAttribute('role', 'slider');
+      gtk.setAttribute('tabindex', '0');
+      gtk.setAttribute('aria-label', '发福袋间隔秒数');
+      gtk.setAttribute('aria-valuemin', String(GAP_MIN));
+      gtk.setAttribute('aria-valuemax', String(GAP_MAX));
+      var grail = document.createElement('div'); grail.className = 'grail';
+      var gfill = document.createElement('div'); gfill.className = 'gfill';
+      gtk.appendChild(grail); gtk.appendChild(gfill);
+      /* 每 30 秒一根刻度：11 根刚好铺满，0 / 5 两端由标签说明单位 */
+      var gmarks = document.createElement('div');
+      var gmh = '';
+      for (var gsec = GAP_MIN; gsec <= GAP_MAX; gsec += GAP_STEP) {
+        gmh += '<div class="gmk" style="left:' + gapPctOf(gsec) + '%"></div>';
+      }
+      gmarks.innerHTML = gmh;
+      var gtin = document.createElement('div'); gtin.className = 'gin';
+      gtin.appendChild(gmarks);
+      var gthumb = document.createElement('div'); gthumb.className = 'gthumb';
+      gtin.appendChild(gthumb);
+      gtk.appendChild(gtin);
+      gw.appendChild(gtk);
+
+      var glabs = document.createElement('div'); glabs.className = 'glabs';
+      var gl0 = document.createElement('span'); gl0.className = 'f'; gl0.textContent = '0';
+      gl0.style.left = gapPctOf(GAP_MIN) + '%';
+      var gl1 = document.createElement('span'); gl1.className = 'l'; gl1.textContent = '5 分钟';
+      gl1.style.left = gapPctOf(GAP_MAX) + '%';
+      glabs.appendChild(gl0); glabs.appendChild(gl1);
+      gw.appendChild(glabs);
+      box.appendChild(gw);
+
       /* ── 「手动刷新」按钮行（2026-11-02 凌晨 用户原话）──
        * 「点击这个按钮，重新自己抓一次进行中的活动，然后关闭抽屉」：
        * 走确认节拍同一套「开抽屉→读一轮→1.2 秒内关掉」的流程，
@@ -4944,11 +5184,18 @@
       mrow.appendChild(mbtn);
       box.appendChild(mrow);
 
-      pRefs = { val: v1, unit: u1, min: v2, tk: tk, fill: fill, thumb: thumb, sw: asw, fbtn: fbtn, mbtn: mbtn, gate: g8 };
+      pRefs = { val: v1, unit: u1, min: v2, tk: tk, fill: fill, thumb: thumb, sw: asw, fbtn: fbtn, mbtn: mbtn, gate: g8,
+        gwrap: gw, gtk: gtk, gfill: gfill, gthumb: gthumb, gval: gv };
       pRefs.sw.classList.toggle('on', autoOn);
       slide.cur = slide.target = checkMin;
       paintSlide();
       bindSlide(tk);
+      gapSlide.cur = gapSlide.target = gapSec;
+      paintGapSlide();
+      bindGapSlide(gtk);
+      /* 开关关着 ⇒ 一建出来就是灰的（用户要的「常驻灰条」） */
+      gw.classList.toggle('off', !autoOn);
+      gtk.setAttribute('aria-disabled', autoOn ? 'false' : 'true');
     }
 
     /* 以下每次只改文字（值没变就不碰 DOM） */
@@ -5007,6 +5254,35 @@
       var ariaNow = pRefs.sw.getAttribute('aria-checked');
       var ariaWant = autoOn ? 'true' : 'false';
       if (ariaNow !== ariaWant) pRefs.sw.setAttribute('aria-checked', ariaWant);
+    }
+
+    /* 「发福袋间隔」滑条跟着开关与存储走（2026-11-05）：
+     * 关闭 ⇒ 整组灰 + 不可聚焦/不可拖，但值照旧显示（用户看得见自己被存了多少）。 */
+    if (pRefs.gwrap) {
+      var gOff = !autoOn;
+      if (pRefs.gwrap.classList.contains('off') !== gOff) {
+        pRefs.gwrap.classList.toggle('off', gOff);
+      }
+      if (pRefs.gtk) {
+        var adWant = gOff ? 'true' : 'false';
+        if (pRefs.gtk.getAttribute('aria-disabled') !== adWant) {
+          pRefs.gtk.setAttribute('aria-disabled', adWant);
+        }
+        var tiWant = gOff ? '-1' : '0';
+        if (pRefs.gtk.getAttribute('tabindex') !== tiWant) {
+          pRefs.gtk.setAttribute('tabindex', tiWant);
+        }
+      }
+      /* 拖动中不覆盖（与确认间隔同一条理由）。
+       * 拖动中值文本由 paintGapSlide 自己写，这里只在非拖动时对账。 */
+      if (!gapDrag && pRefs.gval) {
+        var gtxt = fmtGap(gapSec);
+        if (pRefs.gval.textContent !== gtxt) pRefs.gval.textContent = gtxt;
+        if (Math.abs(gapSlide.target - gapSec) > 0.001) {
+          gapSlide.cur = gapSlide.target = gapSec;
+          paintGapSlide();
+        }
+      }
     }
   }
 
@@ -5209,6 +5485,175 @@
   }
 
   /* ==========================================================
+   * 十一·六、发福袋间隔滑条（2026-11-05）
+   * ----------------------------------------------------------
+   * 与上面那条确认间隔滑条同形不同参：0~300 秒、30 秒一档、没有推荐值。
+   * 为什么不把 bindSlide 泛化：那条已经背着 6 组自测的行为约定（整数吸附、
+   * 方向键 ±1 分钟、松手才写盘），为一条新滑条去动它，风险远大于复制这
+   * 几十行。三条拖拽规矩照抄 —— ① move 挂 document（面板重排时不丢）、
+   * ② up 挂 window 且只认真手势（平台合成事件不算松手）、
+   * ③ pointercancel 给 900ms 宽限（表格重排会发它，不是松手）。
+   * ========================================================== */
+
+  function gapPctOf(v) {
+    var p = (v - GAP_MIN) / (GAP_MAX - GAP_MIN) * 100;
+    return Math.max(0, Math.min(100, p));
+  }
+
+  /** 把当前值画到轨道上（只写两个 style，不读布局） */
+  function paintGapSlide() {
+    if (!pRefs || !pRefs.gfill) return;
+    var p = gapPctOf(gapSlide.cur);
+    /* 与确认间隔同一套坐标：填充条从轨道最左端起，宽度算到圆钮圆心 */
+    pRefs.gfill.style.width = 'calc(' + SLIDE_INSET + 'px + (100% - '
+      + (SLIDE_INSET * 2) + 'px) * ' + (p / 100) + ')';
+    pRefs.gthumb.style.left = p + '%';
+    if (pRefs.gtk) pRefs.gtk.setAttribute('aria-valuenow', String(Math.round(gapSlide.cur)));
+    /* 拖动中数字跟着走（松手时才写盘，与确认间隔同口径）。
+     * 这里读 **target** 而不是 cur：cur 是动画中间态（可能是 135.4 秒），
+     * 显示出来就是「2 分 15 秒」这种不在刻度上的值，与「步进 30 秒」矛盾。
+     * target 已经过 clampGap 吸附，永远是 30 的倍数。 */
+    if (gapDrag && pRefs.gval) {
+      var t = fmtGap(gapSlide.target);
+      if (pRefs.gval.textContent !== t) pRefs.gval.textContent = t;
+    }
+  }
+
+  function gapDampStep() {
+    var d = gapSlide.target - gapSlide.cur;
+    /* 半秒以内直接落位：这条的最小刻度是 30 秒（1800ms），
+     * 追到 0.01 的精度没有视觉意义，只会多跑几帧。 */
+    if (Math.abs(d) < 0.5) {
+      gapSlide.cur = gapSlide.target;
+      paintGapSlide();
+      gapSlide.raf = 0;
+      return;
+    }
+    gapSlide.cur += d * 0.45;
+    paintGapSlide();
+    gapSlide.raf = requestAnimationFrame(gapDampStep);
+  }
+
+  function gapKick() {
+    if (!gapSlide.raf) gapSlide.raf = requestAnimationFrame(gapDampStep);
+  }
+
+  function gapDampTo(v) {
+    gapSlide.target = clampGap(v);
+    gapKick();
+  }
+
+  function bindGapSlide(tk) {
+    var cancelAt = 0;
+
+    function isReal(e) {
+      if (!e) return true;
+      if (typeof window.__dycTestTrusted === 'function') return window.__dycTestTrusted(e) !== false;
+      return e.isTrusted !== false;
+    }
+
+    function markUserDrag(on) {
+      window.__dycUserDragUntil = on ? Date.now() + 1500 : 0;
+    }
+
+    function valueAt(clientX) {
+      var r = gapSlide.rect;
+      if (!r || !r.width) return gapSlide.target;
+      var usable = Math.max(1, r.width - SLIDE_INSET * 2);
+      var x = Math.min(Math.max(clientX - r.left - SLIDE_INSET, 0), usable);
+      return GAP_MIN + (x / usable) * (GAP_MAX - GAP_MIN);
+    }
+
+    function onMove(e) {
+      if (!gapSlide.drag) return;
+      if (typeof e.buttons === 'number' && e.buttons === 0 && isReal(e)) { onEnd(e); return; }
+      cancelAt = 0;
+      gapDampTo(valueAt(e.clientX));    // clampGap 里已经吸附到 30 秒档
+      markUserDrag(true);
+      e.stopPropagation();
+    }
+
+    function onCancel() {
+      if (!gapSlide.drag) return;
+      cancelAt = Date.now();
+      setTimeout(function () {
+        if (gapSlide.drag && cancelAt && Date.now() - cancelAt >= 850) onEnd();
+      }, 900);
+    }
+
+    function attach() {
+      document.addEventListener('pointermove', onMove, true);
+      document.addEventListener('pointercancel', onCancel, true);
+    }
+
+    function detach() {
+      document.removeEventListener('pointermove', onMove, true);
+      document.removeEventListener('pointercancel', onCancel, true);
+    }
+
+    function onEnd(e) {
+      if (!gapSlide.drag) return;
+      if (!isReal(e)) return;              // 合成事件不算松手
+      gapSlide.drag = null;
+      detach();
+      markUserDrag(false);
+      gapDrag = false;
+      if (pRefs && pRefs.gtk) pRefs.gtk.classList.remove('on');
+      var v = clampGap(gapSlide.target);
+      gapDampTo(v);
+      if (v !== gapSec) saveGapSec(v);
+      paintPanel();
+    }
+
+    function startDrag(clientX) {
+      /* 关着自动发福袋就是灰条：按下不启动拖拽（视觉上也不该有按压反馈） */
+      if (!autoOn) return;
+      gapSlide.rect = tk.getBoundingClientRect();
+      gapSlide.drag = { at: Date.now() };
+      gapDrag = true;
+      tk.classList.add('on');
+      cancelAt = 0;
+      attach();
+      markUserDrag(true);
+      gapDampTo(valueAt(clientX));
+    }
+
+    tk.addEventListener('pointerdown', function (e) {
+      if (!autoOn) { e.preventDefault(); e.stopPropagation(); return; }
+      startDrag(e.clientX);
+      try { tk.setPointerCapture(e.pointerId); } catch (e2) { /* 老内核可能没有 */ }
+      e.preventDefault();
+      e.stopPropagation();
+    });
+
+    gapWinEnd = onEnd;
+    window.addEventListener('pointerup', onEnd, true);
+
+    /* 键盘：左右/上下箭头各走一档（30 秒） */
+    tk.addEventListener('keydown', function (e) {
+      if (!autoOn) return;
+      var d = e.key === 'ArrowRight' || e.key === 'ArrowUp' ? GAP_STEP
+        : (e.key === 'ArrowLeft' || e.key === 'ArrowDown' ? -GAP_STEP : 0);
+      if (!d) return;
+      e.preventDefault();
+      var v = clampGap(gapSec + d);
+      gapSlide.cur = gapSlide.target = v;
+      paintGapSlide();
+      saveGapSec(v);
+      paintPanel();
+    });
+
+    /* 给自测用的直接落点（与确认间隔同名同义） */
+    gapApi = {
+      to: function (clientX) { startDrag(clientX); },
+      move: function (clientX) { gapDampTo(valueAt(clientX)); },
+      end: function () { onEnd({ isTrusted: true }); },
+      live: function () { return gapSlide.cur; },
+      target: function () { return gapSlide.target; }
+    };
+  }
+
+  /* ==========================================================
    * 十二、启动（工具栏按钮已删，2026-11-01 深夜 用户「这个福袋按钮删掉，
    *   我一直说的福袋按钮是福袋浮动框按钮的意思」—— 中控台工具栏上那颗
    *   「福袋」文字按钮与右下浮动圆钮重复，一直被认成两码事；开关面板
@@ -5375,6 +5820,21 @@
     panelGeom: function () { return panelHost ? panelHost.__dycGeom || null : null; },
     setCheckMin: function (v) { saveCheckMin(v); paintPanel(); },
     checkMin: function () { return checkMin; },
+    /* 「发福袋间隔」滑条（2026-11-05）：元素出口 + 直接落点 + 到期锚点读写。
+     * 到期锚点真实由 tick 维护，自测里时间不真走，需要能摆到指定时刻。 */
+    panelGapSlider: function () { return pRefs ? pRefs.gtk : null; },
+    panelGapWrap: function () { return pRefs ? pRefs.gwrap : null; },
+    panelGapValue: function () { return pRefs ? pRefs.gval : null; },
+    gapState: function () {
+      return { cur: gapSlide.cur, target: gapSlide.target, live: !!gapSlide.drag, sec: gapSec };
+    },
+    gapTo: function (clientX) { if (gapApi) gapApi.to(clientX); },
+    gapMove: function (clientX) { if (gapApi) gapApi.move(clientX); },
+    gapEnd: function () { if (gapApi) gapApi.end(); },
+    setGapSec: function (v) { saveGapSec(v); paintPanel(); },
+    gapSec: function () { return gapSec; },
+    lastRoundEndAt: function () { return lastRoundEndAt; },
+    setRoundEndAtForTest: function (t) { lastRoundEndAt = Number(t) || 0; },
     /* 「自动发福袋」面板开关（2026-11-01 深夜）：自测直落点 + 元素出口 */
     setAutoForTest: function (v) { autoOn = !!v; flags.auto = flags.watch && autoOn; paintPanel(); },
     autoOn: function () { return autoOn; },

@@ -993,7 +993,9 @@ function finishSuccess(version, repeated) {
   log('正在重新加载扩展…本窗口即将自动关闭。', 'dim');
   if (repeated) {
     // 温度门槛：只有短时间内连着更新第二次才啰嗦这一句
-    log('提示：短时间内已连续更新多次。若功能表现异常，请到扩展管理页点一次「重新加载」。', 'dim');
+    // 不再引导用户去扩展管理页手动「重新加载」：自动重载已经有多条兜底路径，
+    // 教用户手点只会让人以为「每次更新都得按一次」（2026-11-05 用户反馈）。
+    log('提示：短时间内已连续更新多次。若功能表现异常，重启浏览器一次即可。', 'dim');
   }
   running = true;
   renderRunButtons();
@@ -1002,25 +1004,55 @@ function finishSuccess(version, repeated) {
 
 /**
  * 收尾统一走这里（用户 2026-10-11 定：安装成功后窗口自动关闭）。
- * 顺序有讲究：旧实现只在本页调 chrome.runtime.reload()，重载会销毁本页，
- * 窗口却留在屏幕上变成僵尸页，用户每次都要手动关。现在改成：
- *   1. 先发消息给 Service Worker，由**它**在 900ms 后执行重载 ——
- *      本页随窗口关掉也不影响重载（SW 是独立上下文）；
- *   2. 本页 500ms 后 window.close() 自关（本窗口是扩展自己开的
- *      popup 窗口，扩展页面有权关闭它；不碰用户任何标签页）；
- *   3. 本页 1200ms 后兜底 reload：万一窗口没关成、消息又丢了，
- *      旧链路仍能重载（窗口已关时这段根本不会执行）。
+ *
+ * ═══ 2026-11-05 重做：兜底链路不能再被 close() 掐断 ═══
+ * 用户报「更新后第一次用扩展，设置存不进；重启浏览器才应用新更新；现在必须
+ * 去扩展管理页手动点『重新加载』，四个浏览器就要按四次」。
+ *
+ * 旧实现的真实缺陷：本页 500ms 就 window.close()，而本页 1200ms 的兜底
+ * reload 依赖「页面还活着」——窗口一关、上下文销毁，这条兜底**永远不会执行**。
+ * 于是整条链只剩「后台 SW 里那个 setTimeout(900) 重载」一根独木桥；它一旦
+ * 没跑到（内核把空闲 SW 掐掉），磁盘已是新版、跑的还是旧代码：
+ *   · 弹窗读新 flags.js、后台跑旧 flags.js ⇒ 新开关被判非法，弹窗报「设置未保存」；
+ *   · 扩展整体没重载 ⇒ 只能手动刷新或重启浏览器。
+ *
+ * 现在改成「后台主导 + 本页双兜底」，且以回执为准：
+ *   1. 本页发消息，后台**立即回执** {armed:true}，然后在关窗回调里直接重载
+ *      （不用 setTimeout，链路越短越不容易被内核判空闲掐掉）；
+ *   2. 本页收到回执 ⇒ 交给后台，自己不再抢着 reload；
+ *   3. 回执没到、或回执到了但页面还活着 ⇒ 本页兜底 closeThenReload()。
+ * 多一条路径就多一次机会：任何一条跑通，扩展都会从磁盘重新加载。
  */
 function finishAndClose() {
+  let armed = false;
+
   try {
-    chrome.runtime.sendMessage({ type: 'dyc:update-finish' }).catch(function () {});
-  } catch (e) { /* 消息通道异常时靠本页兜底重载 */ }
+    chrome.runtime.sendMessage({ type: 'dyc:update-finish' }, function (res) {
+      // 必须读一次 lastError：回调式不发这条，未处理错误只会在控制台留痕。
+      if (chrome.runtime.lastError) return;
+      armed = !!(res && res.armed);
+    });
+  } catch (e) { /* 通道异常 → 交给下面的兜底 */ }
+
+  // 兜底一：1.2 秒后本页还活着 ⇒ 后台没接管，本页直接完成重载。
   setTimeout(function () {
-    try { window.close(); } catch (e) { /* 极少数内核限制,走兜底 */ }
-  }, 500);
-  setTimeout(function () {
-    try { chrome.runtime.reload(); } catch (e) { /* 尽力而为 */ }
+    if (armed) return;
+    closeThenReload();
   }, 1200);
+
+  // 兜底二：回执到了，但 2.6 秒后本页仍在 ⇒ 后台的关窗与重载都没生效。
+  // 正常情况后台早已重载、本页被销毁，这段根本不会执行。
+  setTimeout(closeThenReload, 2600);
+}
+
+/**
+ * 先请求关窗、再重载。
+ * close() 是异步的，紧跟其后的 reload() 仍会执行；顺序倒过来（先 reload）
+ * 会留下一张僵尸页 —— 这是旧实现的实测结论（2026-10-11）。
+ */
+function closeThenReload() {
+  try { window.close(); } catch (e) { /* 少数内核不许扩展页自关，继续重载 */ }
+  try { chrome.runtime.reload(); } catch (e) { /* 尽力而为 */ }
 }
 
 /* ============ 按钮与自动开跑 ============ */

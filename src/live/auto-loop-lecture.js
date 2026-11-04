@@ -85,6 +85,32 @@
   var HARD_STOP_MS = 300000;
   var ENABLED_KEY = 'dybAutoLoopEnabled';
 
+  /* ★★ 无限模式(2026-11-05 用户定,方案评审稿 v1)
+   * ----------------------------------------------------------
+   * 用户原话:「做一个无限循环的模式,旨在不会因为短期讲解没有接上就停止……
+   *   但为了防止 15 秒状态下每隔 15 秒就操作一下导致页面一直被占用」。
+   * 核心不是「多试几次」,而是把**循环寿命**从**单次动作成败**里拆出来:
+   *   动作失败 ⇒ 不熔断,转入「守夜(VIGIL)」,只读探针、不再点也不再滚。
+   * 动作分三级,节流只对第三级生效:
+   *   L0 只读探针(读行内按钮文案)          —— 5ms,页面无感,不限次数
+   *   L1 轻写(点一次讲解 / 取消讲解)        —— 一次点击,受设定间隔约束
+   *   L2 重定位(平台搜索 / 滚屏 / 刷新列表) —— 真抢页面,5 分钟滑窗 ≤1 次
+   * 为什么用**滑窗**而不是「距上次计时」:后者在抖动(接了又断)时每恢复一次
+   *   就能把计时器刷回 0,等于把配额变成间隔,页面照样被占满。
+   * 唯一会真停:连续 30 分钟页面上连一个「讲解」按钮都找不到(离开直播页/列表空)。 */
+  var INFINITE_KEY = 'dybAutoLoopInfinite';
+  var VIGIL_PROBE_FAST_MS = 5000;    // 进守夜首 15 秒的加密节奏
+  var VIGIL_PROBE_MID_MS = 15000;    // 15~60 秒
+  var VIGIL_PROBE_MS = 30000;        // 稳态:一拍只读几毫秒,平均 15 秒抓到
+  var VIGIL_WARM_MS = 60000;         // 加密确认阶段时长
+  var VIGIL_JITTER_MS = 60000;       // 距上次退出守夜不足这么久 ⇒ 阶梯不从 5 秒重起
+  var VIGIL_FIRST_RELOC_MS = 60000;  // 进守夜满 60 秒才给第一次重定位
+  var RELOC_WINDOW_MS = 300000;      // 重定位滑窗:最近 5 分钟
+  var RELOC_MAX = 1;                 // 滑窗内最多几次
+  var RESUME_COOLDOWN_MS = 30000;    // 补讲没确认 ⇒ 30 秒内不再点
+  var RESUME_FAIL_MAX = 3;           // 连续补讲失败到此就不再主动点,只留探针
+  var VIGIL_DEAD_MS = 1800000;       // 30 分钟一个讲解按钮都找不到 ⇒ 真停
+
   var MIN_MIN = 1;                      // 滑条下限(应急档,秒杀/憋单用)
   var MAX_MIN = 15;                     // 滑条上限
   var DEF_MIN = 5;                      // 默认值
@@ -251,7 +277,22 @@
      *   ⚠ 只在内存里,不落盘:列表顺序在直播中随时会变,像素偏移跨场次必然失效 ——
      *     真要跨场次定位只能靠商品 ID 搜索,那是另一种机制。 */
     rowAnchor: null,
-    anchorHits: 0           // 记忆连续命中几次(落空即归零;诊断用,也说明"记忆靠不靠得住")
+    anchorHits: 0,          // 记忆连续命中几次(落空即归零;诊断用,也说明"记忆靠不靠得住")
+    /* ★ 无限模式(2026-11-05):开关 + 守夜账本。全部只在内存里,不落盘 ——
+     *   开关值单独存 INFINITE_KEY;守夜进度、配额一律不记忆,
+     *   刷新后从「按设定间隔重新起算」开始,避免恢复一个过期倒计时。 */
+    infinite: false,        // 无限模式开关(缺省关)
+    vigilAt: 0,             // 进守夜的时刻
+    vigilLeft: 0,           // 上次退出守夜的时刻(抖动抑制用:60 秒内二次进入不重新加密)
+    vigilWhy: '',           // 为什么进守夜(文案与诊断)
+    probeAt: 0,             // 下一次只读探针的时刻
+    probeCount: 0,          // 本次守夜探了几拍(诊断用)
+    relocAt: 0,             // 下一次允许重定位的时刻(滑窗之外的兜底下限)
+    relocLog: [],           // 最近几次重定位的时刻(滑窗判定,只留窗口内的)
+    resumeAt: 0,            // 下一次允许补讲的时刻(冷却)
+    resumeFails: 0,         // 连续补讲失败次数
+    lastBtnSeen: 0,         // 最后一次看见任何「讲解 / 取消讲解」按钮的时刻(30 分钟兜底)
+    vigilPaintAt: 0         // 守夜文案上次刷新时刻(秒级刷新,不另开定时器)
   };
 
   var host = null;          // Shadow DOM 宿主(fixed)
@@ -547,7 +588,12 @@
   function onUserCancelClick(e) {
     if (!e || !e.isTrusted) return;
     if (!state.on) return;
-    if (state.phase !== 'run' && state.phase !== 'error') return;
+    /* ★ 2026-11-05:守夜(vigil)也必须认这一下。
+     *   否则会出现最糟的一幕:用户在守夜里滚回那一行、亲手点了「取消讲解」,
+     *   我们因为 phase 不是 run/error 而忽略,紧接着探针读到按钮变「讲解」,
+     *   当成"真断了"当场补讲 —— 等于把用户刚关掉的讲解又强行打开。
+     *   守夜不是"暂停",是循环还在跑,所以真人意图必须优先。 */
+    if (state.phase !== 'run' && state.phase !== 'error' && state.phase !== 'vigil') return;
     var el = e.target;
     if (!el) return;
     var s = '';
@@ -1797,6 +1843,17 @@
     '.panel.open{opacity:1;visibility:visible;transform:none;pointer-events:auto}',
     '.ph{display:flex;align-items:center;justify-content:space-between}',
     '.ph b{font-size:12.5px;font-weight:600;color:#1f2329}',
+    /* 无限模式开关(2026-11-05):标题行右端那枚胶囊 —— 用户截图上画红框的位置。
+       关=灰描边,开=品牌蓝实心;高度 18px,与 12.5px 标题视觉齐平,不撑高标题行。 */
+    '.inf{height:18px;padding:0 7px;border-radius:999px;border:1px solid #e5e6eb;background:#fff;',
+    '  color:#86909c;font-size:10px;line-height:16px;cursor:pointer;font-family:inherit;',
+    '  display:inline-flex;align-items:center;gap:3px;flex:none}',
+    '.inf:hover{border-color:#c9cdd4;color:#4e5969}',
+    '.inf[aria-pressed="true"]{border-color:#165dff;background:#165dff;color:#fff}',
+    '.inf[aria-pressed="true"]:hover{border-color:#165dff;color:#fff}',
+    /* 收起态胶囊上的 ∞ 角标:面板收起来时也要看得出无限模式开着,否则用户
+       只能靠"接不上还不死"来推断开关状态。11px,不撑高胶囊。 */
+    '.inf-mark{font-size:11px;line-height:1;color:#165dff;font-weight:600;margin-left:1px;flex:none}',
     /* 2026-10-30:秒档与分钟档各装进一个**可选的大框**,点框内任意位置就是选它。
        未启用的整框压到 45% 并把填充转灰 —— 分主次靠视觉权重,不靠隐藏,也不禁点。 */
     '.grp{border:1px solid #e8e9ec;border-radius:8px;background:#fafbfc;padding:9px 12px 10px;margin-top:9px;cursor:pointer}',
@@ -1891,6 +1948,7 @@
       '<path d="M3.7 7.3a4.3 4.3 0 0 0 8.6 0"/><path d="M8 11.6v2.2"/>' +
       '<path d="M6.4 13.8h3.2"/></svg>' +
       '<span class="txt">循环讲解</span>' +
+      '<span class="inf-mark" hidden aria-hidden="true">&#8734;</span>' +
       '<span class="slot">未开启</span></button>' +
       '<button type="button" class="power">开启</button>';
     shadow.appendChild(cap);
@@ -1898,7 +1956,9 @@
     var panel = document.createElement('div');
     panel.className = 'panel';
     panel.innerHTML = [
-      '<div class="ph"><b>自动循环讲解</b></div>',
+      '<div class="ph"><b>自动循环讲解</b>' +
+      '<button type="button" class="inf" aria-pressed="false" title="无限循环:接不上只守候,不停表">' +
+      '<span aria-hidden="true">&#8734;</span> 无限</button></div>',
       '<div class="grp" data-g="sec" aria-pressed="true">',
       '<div class="gh"><span class="rd"></span><span class="gt">秒档</span></div>',
       '<div class="seg"></div></div>',
@@ -1914,6 +1974,7 @@
 
     refs.cap = cap;
     refs.capSlot = cap.querySelector('.slot');
+    refs.capInf = cap.querySelector('.inf-mark');
     refs.panel = panel;
     refs.capMain = cap.querySelector('.cap-main');
     refs.power = cap.querySelector('.power');
@@ -1928,6 +1989,7 @@
     refs.r1 = panel.querySelector('.r1');
     refs.r2 = panel.querySelector('.r2');
     refs.r3 = panel.querySelector('.r3');
+    refs.inf = panel.querySelector('.inf');
 
     buildSecButtons();
     buildTicks();
@@ -1943,6 +2005,13 @@
       e.stopPropagation();
       setOn(!state.on, true);
     });
+    /* 无限模式开关:只改「失败后停不停」,不动总闸与间隔。 */
+    if (refs.inf) {
+      refs.inf.addEventListener('click', function (e) {
+        e.stopPropagation();
+        setInfinite(!state.infinite, true);
+      });
+    }
 
     /* 点框内任意位置 = 选这一组。落在档位按钮上的由按钮自己处理（它还要改值），
        所以这里往上找一层看是不是 .sg，是就交给子控件。 */
@@ -2122,6 +2191,20 @@
   /** 第三行:只有异常(跳过 / 让路 / 已停止)才出现,正常态不占高度 */
   function paintStatusLine() {
     if (!refs.r3) return;
+    /* 守夜期常驻这一行:胶囊槽只有 3 个字,守了多久、探了几次得有个地方看见。
+     * 由 vigilTick 每秒刷一次(它本来就 2 秒一拍),不额外加定时器。 */
+    if (state.on && state.phase === 'vigil') {
+      refs.r3.hidden = false;
+      refs.r3.className = 'r3 warn';
+      /* 进守夜的原因只在头 60 秒显示:它是"为什么进来的",不是常驻状态,
+       * 一直挂着会把真正有用的"守了多久 / 探了几次"挤没了。 */
+      var why = (Date.now() - state.vigilAt < 60000 && state.vigilWhy)
+        ? ' · ' + state.vigilWhy : '';
+      refs.r3.textContent = '无限 · 守候中 ' + fmtLeft(Date.now() - state.vigilAt) +
+        ' · 探 ' + state.probeCount + ' 次' + why +
+        (state.resumeFails ? ' · 补讲 ' + state.resumeFails + ' 次未成' : '');
+      return;
+    }
     var t = state.status || '';
     refs.r3.hidden = !t;
     refs.r3.textContent = t.text || '';
@@ -2679,6 +2762,15 @@
     if (!refs.cap) return;
     var cap = refs.cap;
     var slot = refs.capSlot;
+    /* 无限模式开关的选中态跟着 state 走 —— 每次 paint 都刷,避免 reload 后
+     * 胶囊(用户看得到的那个)与面板里的按钮不同步。 */
+    if (refs.inf) {
+      refs.inf.setAttribute('aria-pressed', state.infinite ? 'true' : 'false');
+      refs.inf.title = state.infinite
+        ? '无限循环已开:接不上只守候,不停表'
+        : '无限循环:接不上只守候,不停表';
+    }
+    if (refs.capInf) refs.capInf.hidden = !state.infinite;
     /* ★ 必须把 off 一起清掉:off 的样式写在 on/wait/err 之后,
      *   残留一个 off 会把已开启时的绿/黄盖回灰色 —— 这正解释了
      *   「只见过绿色以外的颜色都没见过/关掉再开还是灰」这类现象。 */
@@ -2702,6 +2794,12 @@
       cap.classList.add('on');
       key = 'busy:' + (state.busyLabel || '定位中');
       slot.textContent = state.busyLabel || '定位中';
+    } else if (state.phase === 'vigil') {
+      /* 守夜:循环还活着,但页面上什么都不做。胶囊用 wait(黄)而不是 err(红)——
+       * 红是"出错了",黄是"还在等",语义不同。槽里固定 3 个字,宽度与「待讲解」一致。 */
+      cap.classList.add('wait');
+      key = 'vigil';
+      slot.textContent = '守候中';
     } else if (state.phase === 'run') {
       cap.classList.add('on');
       var left = fmtLeft(state.nextAt - Date.now());
@@ -2772,7 +2870,7 @@
 
   function readSettings(mark) {
     return Promise.all([readMinutes(),
-      chrome.storage.local.get([GROUP_KEY, MODE_KEY, SECONDS_KEY, ENABLED_KEY])])
+      chrome.storage.local.get([GROUP_KEY, MODE_KEY, SECONDS_KEY, ENABLED_KEY, INFINITE_KEY])])
       .then(function (result) {
         if (mark !== setupSeq) return;
         var r = result[1] || {};
@@ -2788,6 +2886,9 @@
         state.seconds = isFinite(seconds) ? snapSec(Math.max(15, seconds)) : SEC_DEF;
         state.on = r[ENABLED_KEY] !== false;
         state.stopped = !state.on;
+        /* 无限模式:缺省关(用户 2026-11-05 定「这个按钮默认是关闭的,有记忆功能」)。
+         * 只认真正的 true —— 旧版本没这个键时是 undefined,必须落回 false。 */
+        state.infinite = r[INFINITE_KEY] === true;
         /* 从存盘恢复「开」时也要记下起跑时刻,否则报告里「节奏」会算成 0 秒/轮
          * (实机 02:39:36 就是这个现象:完成 4 次、已跑 0 秒)。 */
         if (state.on) { state.runSince = Date.now(); state.cycles = 0; }
@@ -2832,6 +2933,27 @@
     restartInterval();
   }
 
+  /**
+   * 无限模式开关(2026-11-05)。
+   * 只改「接不上之后停不停」——不动总闸、不动间隔、不动档位。
+   * 关掉时如果正处在守夜,按老规则立刻停表;不能留一个「已经关了却还在守」的幽灵状态。
+   */
+  function setInfinite(on, userAction) {
+    state.infinite = !!on;
+    if (userAction) {
+      writeSetting(INFINITE_KEY, state.infinite);
+      try { window.localStorage.setItem(INFINITE_KEY, state.infinite ? '1' : '0'); } catch (e) { /* 忽略 */ }
+    }
+    if (userAction && typeof debugLog === 'function') {
+      debugLog('无限模式:' + (state.infinite ? '开' : '关'));
+    }
+    if (!state.infinite && state.phase === 'vigil') {
+      stopVigil('已关闭无限模式');
+      return;
+    }
+    paint();
+  }
+
   function setOn(on, userAction) {
     abortCycle();
     state.on = !!on;
@@ -2857,6 +2979,18 @@
       state.blindRefreshAt = 0;
       state.softFails = 0;
     }
+    /* 守夜账本一起清:重开是新的开始,不继承上一轮的探针节奏与配额。
+     * 注意 relocLog 也清 —— 用户主动关掉再开,等于重置一次,这是他的明确动作。 */
+    state.vigilAt = 0;
+    state.vigilLeft = 0;
+    state.vigilWhy = '';
+    state.probeAt = 0;
+    state.probeCount = 0;
+    state.relocAt = 0;
+    state.relocLog = [];
+    state.resumeAt = 0;
+    state.resumeFails = 0;
+    state.lastBtnSeen = 0;
     paint();
     if (userAction && typeof debugLog === 'function') {
       debugLog('自动循环讲解:' + (state.on ? '开' : '关'));
@@ -2975,6 +3109,8 @@
   }
 
   function stopFast(why) {
+    /* 无限模式:秒档的任何「到顶」都转守夜(2026-11-05)。 */
+    if (state.infinite && enterVigil(why)) return;
     var who = productName();
     noteDiag('秒档停止:' + why);
     boxNote(BOX_FAIL, 'alert', who, why + ' · 已停止');
@@ -3419,6 +3555,9 @@
     if (wakeTimer) { clearTimeout(wakeTimer); wakeTimer = 0; }
     if (!state.on) return;
     if (state.busy) return;
+    /* 无限模式的守夜态单独走一条路:只读探针,不进两档的常规链路。
+     * 放在分档之前 —— 守夜是**跨档**的状态,与秒/分无关。 */
+    if (state.phase === 'vigil') { vigilTick(); return; }
     if (state.group === 'sec') { checkFastNow(); return; }
     var row = findLiveRow();
     var now = Date.now();
@@ -3492,6 +3631,8 @@
           diagOnce('lost-streak', '已连续 ' + LOST_STREAK_LIMIT + ' 拍看不见那一行,仍在继续计时');
         }
         if (gone > LOST_GIVEUP_MS) {
+          /* 无限模式:15 分钟没找回来也不放弃,转守夜等它回来(2026-11-05)。 */
+          if (state.infinite) { enterVigil('15 分钟没找回来'); return; }
           diagOnce('lost', '连续 ' + Math.round(gone / 60000) + ' 分钟找不回来 ⇒ 判定没有在讲解');
           resetToWait();
           return;
@@ -3500,6 +3641,8 @@
         return;
       }
       if (state.phase !== 'wait') {
+        /* 无限模式:看不见行不等于停播,转守夜(2026-11-05)。 */
+        if (state.infinite && enterVigil('连续找不到那一行')) return;
         diagOnce('lost', '连续找不到那一行 ⇒ 判定没有在讲解');
         resetToWait();
       }
@@ -3923,6 +4066,265 @@
     }
   }
 
+  /* ==========================================================
+   * 五·五、守夜(VIGIL)—— 无限模式的常驻态(2026-11-05)
+   * ----------------------------------------------------------
+   * 用户原话:「做一个无限循环的模式,旨在不会因为短期讲解没有接上就停止……
+   *   但为了防止 15 秒状态下每隔 15 秒就操作一下导致页面一直被占用」。
+   *
+   * 设计要点(与方案评审稿逐条对应):
+   *   ① 循环寿命与单次成败解耦:所有「以前会停表」的出口,无限模式下都改成进守夜。
+   *   ② 守夜只做 L0 只读探针:每 5~30 秒读一次行内按钮文案,几毫秒,页面无感。
+   *   ③ 探针三种结局,决定它不会傻等:
+   *        · 行在 + 按钮「取消讲解」⇒ 商品一直在讲,虚惊一场 ⇒ 回倒计时,不点不搜
+   *        · 行在 + 按钮「讲解」    ⇒ 真断了            ⇒ 当拍补讲(L1)
+   *        · 行不在                ⇒ 继续探,满 60 秒才允许一次重定位(L2)
+   *   ④ L2 重定位走**滑窗配额**:最近 5 分钟最多 1 次。用滑窗而不是「距上次计时」,
+   *      是因为抖动(接了又断)时后者会被反复刷回 0,配额形同虚设。
+   *   ⑤ 唯一的真停:连续 30 分钟页面上一个「讲解」按钮都找不到。
+   * ========================================================== */
+
+  /** 守夜期的探针间隔:刚进去加密确认,之后稳定在 30 秒。 */
+  function probeGap() {
+    var now = Date.now();
+    var since = now - state.vigilAt;
+    /* 抖动抑制:60 秒内二次进守夜(接了又断),不重新走 5 秒加密 ——
+     * 否则反复抖动会退化成「每 5 秒读一次」,虽然还是只读,但没必要。 */
+    var warm = (now - state.vigilLeft) >= VIGIL_JITTER_MS;
+    if (!warm) return since >= VIGIL_WARM_MS ? VIGIL_PROBE_MS : VIGIL_PROBE_MID_MS;
+    if (since < 15000) return VIGIL_PROBE_FAST_MS;
+    if (since < VIGIL_WARM_MS) return VIGIL_PROBE_MID_MS;
+    return VIGIL_PROBE_MS;
+  }
+
+  /**
+   * 进守夜。**不停表、不报"已停止"** —— 这是无限模式与旧行为的唯一分叉点。
+   * 返回 true 表示已接管(调用方立刻 return,不再走原来的停表逻辑)。
+   */
+  function enterVigil(why) {
+    if (!state.on) return false;
+    if (state.phase === 'vigil') return true;      // 已经在守,不重复记账
+    var now = Date.now();
+    state.phase = 'vigil';
+    state.vigilAt = now;
+    state.vigilWhy = why || '';
+    state.probeCount = 0;
+    state.probeAt = now + probeGap();
+    /* 第一次重定位:进守夜满 60 秒。刚断就搜多半撞上平台还没重渲染完,白花 2.9 秒。 */
+    state.relocAt = now + VIGIL_FIRST_RELOC_MS;
+    state.resumeAt = 0;
+    state.resumeFails = 0;
+    if (!state.lastBtnSeen) state.lastBtnSeen = now;
+    /* 失败计数全部清零:守夜不是失败态,是等待态。
+     * 留着它们只会让下次判死提前触发(而无限模式下判死本来就不该存在)。 */
+    state.fails = 0;
+    state.retryAt = 0;
+    state.skips = 0;
+    state.softFails = 0;
+    state.failSince = 0;
+    state.status = null;
+    state.busyLabel = '';
+    noteDiag('进守夜(无限模式):' + (why || ''));
+    boxNote(BOX_FAIL, 'warn', productName(), '守候中' + (why ? ' · ' + why : '') + ' · 不停表');
+    paint();
+    return true;
+  }
+
+  /** 守夜 → 正常倒计时。商品其实没断、或补讲已成功时走这条。 */
+  function resumeToWait(now, why) {
+    state.vigilLeft = now;
+    state.phase = 'run';
+    state.startedAt = now;
+    state.nextAt = now + intervalMs();
+    state.lastShotAt = now;
+    state.fails = 0;
+    state.retryAt = 0;
+    state.skips = 0;
+    state.softFails = 0;
+    state.failSince = 0;
+    state.status = null;
+    state.probeAt = 0;
+    noteDiag('守夜结束 ⇒ 恢复计时(' + why + ')');
+    paint();
+  }
+
+  /** 守夜的真停(30 分钟兜底 / 用户关掉无限模式)。 */
+  function stopVigil(why) {
+    var who = productName();
+    var held = state.vigilAt ? fmtLeft(Date.now() - state.vigilAt) : '';
+    state.vigilLeft = Date.now();
+    noteDiag('守夜停止:' + (why || ''));
+    setOn(false, true);                    // 会 resetToWait + paint
+    setStatusLine('已停止 · ' + (why || ''), 'stop');
+    boxNote(BOX_FAIL, 'alert', who, (held ? '守候 ' + held + ' · ' : '') + (why || '已停止'));
+    paint();
+  }
+
+  /** 滑窗配额:最近 RELOC_WINDOW_MS 内用掉几次重定位。顺手把过期的丢掉。 */
+  function relocAllowed(now) {
+    var keep = [];
+    for (var i = 0; i < state.relocLog.length; i++) {
+      if (now - state.relocLog[i] < RELOC_WINDOW_MS) keep.push(state.relocLog[i]);
+    }
+    state.relocLog = keep;
+    return keep.length < RELOC_MAX;
+  }
+
+  /**
+   * 守夜拍点。**每拍只读 DOM,绝不点击** —— 点击一律走 doVigilResume。
+   * 由 checkNow 在 phase==='vigil' 时直接调用,2 秒一拍,未到 probeAt 时立即返回。
+   */
+  function vigilTick() {
+    if (!state.on || state.phase !== 'vigil' || state.busy) return;
+    var now = Date.now();
+    /* 30 分钟兜底:一个「讲解」按钮都没见过 ⇒ 认定已离开商品页 / 列表空了。
+     * 这是无限模式唯一会自己停的条件,其余一律守到底。 */
+    if (now - state.lastBtnSeen > VIGIL_DEAD_MS) {
+      stopVigil('连续 30 分钟没有可讲解的商品');
+      return;
+    }
+    if (now < state.probeAt) {
+      /* 没到探针时刻,但文案要跟着秒走 —— 只在守夜期,拍点本身就是 2 秒一次。 */
+      if (now - (state.vigilPaintAt || 0) >= 1000) {
+        state.vigilPaintAt = now;
+        paintStatusLine();
+      }
+      return;
+    }
+    state.probeAt = now + probeGap();
+    state.probeCount += 1;
+    /* 用户正在滚/点 ⇒ 这一拍让路,不读也不抢(下一拍再来)。 */
+    if (userBusy()) { noteDiag('守夜探针让路:用户正在操作'); return; }
+
+    var row = null, btn = null;
+    try { row = findRowByKey(); } catch (e) { row = null; }
+    if (!row && state.product) {
+      try { row = findRowByName(state.product); } catch (e) { row = null; }
+    }
+    if (row) {
+      try { btn = findLectureBtn(row); } catch (e) { btn = null; }
+    }
+    if (btn) {
+      state.lastBtnSeen = now;
+      var label = txt(btn);
+      /* ① 还在讲:行只是被虚拟滚动回收了。不点、不搜,回到原来的倒计时。 */
+      if (label === '取消讲解' || isLecturing(row)) {
+        resumeToWait(now, '商品仍在讲解');
+        return;
+      }
+      /* ② 真断了:当拍补讲,不等一个间隔 —— 这正是「接不上就断」的反面。 */
+      if (label === '讲解') {
+        if (now < state.resumeAt) {
+          noteDiag('守夜:补讲冷却中(' +
+            Math.round((state.resumeAt - now) / 1000) + ' 秒),下一拍再试');
+          return;
+        }
+        doVigilResume(btn);
+        return;
+      }
+    }
+    /* ③ 行不在(或按钮文案不认识):继续守。满 60 秒且配额允许才重定位。 */
+    if (now >= state.relocAt && relocAllowed(now)) {
+      doVigilReloc();
+    }
+  }
+
+  /** L1:守夜期的一次补讲(只点一次讲解 + 观察窗,不滚不搜)。 */
+  async function doVigilResume(firstBtn) {
+    if (state.busy) return;
+    var mark = abortSeq;
+    state.busy = true;
+    state.busyLabel = '补讲中';
+    paint();
+    try {
+      var ok = await clickLectureAndVerify(mark, firstBtn);
+      if (aborted(mark)) return;
+      if (ok) {
+        state.resumeFails = 0;
+        state.resumeAt = 0;
+        var n = findRowByKey();
+        if (n) {
+          state.key = rowKey(n);
+          state.product = rowName(n) || state.product;
+        }
+        var held = state.vigilAt ? Math.round((Date.now() - state.vigilAt) / 1000) : 0;
+        state.round += 1;
+        state.cycles += 1;
+        noteDiag('守夜补讲成功 ⇒ 恢复计时(守候 ' + held + ' 秒)');
+        resumeToWait(Date.now(), '补讲成功');
+        boxNote(BOX_CYCLE, 'success', productName(),
+          '守候 ' + fmtLeft(held * 1000) + ' 后接上 · 第 ' + state.round + ' 轮');
+        paint();
+        return;
+      }
+      state.resumeFails += 1;
+      /* 连续失败到上限就不再主动点,只留探针等重定位窗口 ——
+       * 防「按钮看着能点、点了没反应」时被反复空点。 */
+      state.resumeAt = Date.now() +
+        (state.resumeFails >= RESUME_FAIL_MAX ? 60000 : RESUME_COOLDOWN_MS);
+      noteDiag('守夜补讲未确认 ' + state.resumeFails + '/' + RESUME_FAIL_MAX);
+      setStatusLine('守候中 · 补讲没确认,稍后再试', 'warn');
+    } catch (e) {
+      state.resumeFails += 1;
+      state.resumeAt = Date.now() + RESUME_COOLDOWN_MS;
+      noteDiag('守夜补讲异常:' + (e && e.message ? e.message : e));
+    } finally {
+      state.busy = false;
+      state.busyLabel = '';
+      paint();
+    }
+  }
+
+  /**
+   * L2:守夜期的重定位(唯一会真动页面的动作)。
+   * 只用平台搜索,不用分段滚屏 —— 滚屏 8 秒一段,在守夜里代价太大,
+   * 而「商品被滚走」时 state.key 里的 id 一定还在,搜索够用。
+   */
+  async function doVigilReloc() {
+    if (state.busy) return;
+    var now = Date.now();
+    state.relocLog.push(now);
+    state.relocAt = now + RELOC_WINDOW_MS;
+    var id = (state.key && idOfKey(state.key)) || '';
+    if (!id) {
+      noteDiag('守夜重定位:没有商品 id ⇒ 跳过(只留探针)');
+      return;
+    }
+    var mark = abortSeq;
+    var resumeBtn = null;
+    var stillLive = false;
+    state.busy = true;
+    state.busyLabel = '搜索中';
+    paint();
+    try {
+      noteDiag('守夜重定位:平台搜索一次(窗口内第 ' + state.relocLog.length + ' 次)');
+      var r = await locateBySearch(id, mark);
+      if (r === 'abort') return;
+      if (r && r.row) {
+        var b = findLectureBtn(r.row);
+        var label = b ? txt(b) : '';
+        if (label === '讲解') resumeBtn = b;
+        else if (label === '取消讲解' || isLecturing(r.row)) stillLive = true;
+      } else {
+        noteDiag('守夜重定位没搜到目标');
+      }
+    } catch (e) {
+      noteDiag('守夜重定位异常:' + (e && e.message ? e.message : e));
+    } finally {
+      /* 先把用户的筛选词还原,再去补讲 —— 否则补讲时点的是被筛过的列表,
+       * 平台一还原节点就整批换掉,点了等于白点。 */
+      await restoreSearchNow();
+      state.busy = false;
+      state.busyLabel = '';
+      paint();
+      if (stillLive) {
+        resumeToWait(Date.now(), '重定位发现仍在讲解');
+      } else if (resumeBtn) {
+        doVigilResume(resumeBtn);
+      }
+    }
+  }
+
   /**
    * 到点了、页面上却没有任何商品在讲解 ⇒ **停止计时**,不滚、不点、不算失败(2026-10-27)。
    * 用户原话:「我点取消讲解,但是你的按钮没反应过来…… 3 次全局滚动搜索,浪费了我超多时间」。
@@ -3930,6 +4332,10 @@
    * 连续 3 次。现在只要确认「那一行确实不在讲解」就直接停,并说清是用户自己取消的。
    */
   function stopByNoLecture(why, shown) {
+    /* 无限模式:任何「没交接上」的出口都先转守夜,不停表(2026-11-05)。
+     * 注意「用户手动取消」不走这里 —— 那条由 onUserCancelClick(isTrusted) 直接停,
+     * 以及 checkNow 里 resetToWait 那条(行还在、讲解中没了)。所以这里整段转守夜是安全的。 */
+    if (state.infinite && enterVigil(shown || why || '没接上')) return;
     diagOnce('no-lecture', '没有在讲解的商品 ⇒ 停止计时｜' + (why || ''));
     var who = productName();          // 「谁在被执行」先取,reset 之后 state 就空了
     var tail = stopValue();           // 「已停止 · 共 N 轮」
@@ -3966,6 +4372,8 @@
      *   这条与「连续 3 次」共用 BOX_FAIL 键 ⇒ 盒子里的失败记录始终只有一格,
      *   内容从「已放慢重试」就地变成「已停止循环」。 */
     if (state.fails >= FAIL_MAX) {
+      /* 无限模式:到这里不停表,转守夜(2026-11-05)。 */
+      if (state.infinite && enterVigil('连续 ' + FAIL_MAX + ' 次没接上')) return;
       diagOnce('fail-max', '连续 ' + state.fails + ' 次没接上 ⇒ 停止循环｜' + (why || ''));
       var who = productName();        // 同上:先取再 reset
       setOn(false, true);

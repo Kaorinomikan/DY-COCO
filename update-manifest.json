@@ -1,5 +1,5 @@
 {
-  "version": "26.11.04.1",
+  "version": "26.11.05.1",
   "algorithm": "sha256",
   "files": [
     {
@@ -20,12 +20,12 @@
     {
       "path": "manifest.json",
       "size": 8439,
-      "sha256": "e57125d54c33f31384c55506fb1823b66aff03389b7b99c8ba90d3d6d8be16a5"
+      "sha256": "3f121f554dc6ff74a37d0614346b9fbd02bb06c71ff82be5973736af679376c6"
     },
     {
       "path": "src/background/service-worker.js",
-      "size": 73862,
-      "sha256": "b37068054b0a080a9fce89169558d4222a261694ae14bfb291af28cfcacec899"
+      "size": 75634,
+      "sha256": "2d81d962b3306fe2000eed999da41146f7ae740c1176dde58b9725a2a1e68a42"
     },
     {
       "path": "src/content/anchor.js",
@@ -74,8 +74,8 @@
     },
     {
       "path": "src/content/flags.js",
-      "size": 78474,
-      "sha256": "8b131152acdbfed4f44244312bffec9f6c41b8e96b7cb177541a71d86d299559"
+      "size": 78722,
+      "sha256": "33c8979a0fb470da85774769b83e6f9e70108d30896ea3aa91647a60642cdccc"
     },
     {
       "path": "src/content/inject-button.js",
@@ -174,8 +174,8 @@
     },
     {
       "path": "src/live/auto-loop-lecture.js",
-      "size": 222953,
-      "sha256": "888b725566431f6ae2f296c3399b7631da6e49f5c76c67b1de54188e3d17a06c"
+      "size": 243554,
+      "sha256": "2252ccefa913fc6ad379b28f8c8387747980977ed4466786b93e83a56824797c"
     },
     {
       "path": "src/live/auto-refresh.js",
@@ -194,8 +194,8 @@
     },
     {
       "path": "src/live/cart-paste.js",
-      "size": 27746,
-      "sha256": "f87f5aa80adabda990bbbfcbafb6bbc18c2335c04ac87577b100170ef4342638"
+      "size": 35307,
+      "sha256": "3babb13fa7694af724975ddd70e613efe9ef796684924b711a5f4717d481b93a"
     },
     {
       "path": "src/live/compass-table.js",
@@ -214,8 +214,8 @@
     },
     {
       "path": "src/live/live-detail-jump.js",
-      "size": 8065,
-      "sha256": "ad8d325694f7814c62fedd1dfabdec563c56debc9fe466e81c739c7637bf3728"
+      "size": 8385,
+      "sha256": "0bb9b431001c1168a661d7358959bd49b32571e73df087c6d6ede050df2b83eb"
     },
     {
       "path": "src/live/live-detail-tab.js",
@@ -239,8 +239,8 @@
     },
     {
       "path": "src/live/lucky-bag.js",
-      "size": 283655,
-      "sha256": "4fb43cd2d609017cb3fa3e06d65362f9e9c3249573d67ab6fdadd02db9cf755d"
+      "size": 307157,
+      "sha256": "d4ffe22bf46511b5d1c4282701f9b44463afe8142801a82c5a22de2dacf424f0"
     },
     {
       "path": "src/live/name-wrap.js",
@@ -369,8 +369,8 @@
     },
     {
       "path": "src/update/update.js",
-      "size": 61819,
-      "sha256": "c905ce3f85f6a537dfc257ecd6a60865e143fcfba6b43e1a1d2056d37f14f79c"
+      "size": 63548,
+      "sha256": "6f20fe599706cfa30fa920bcbf221e2d995e876a56d1084d70b503e3846477f2"
     }
   ]
 }

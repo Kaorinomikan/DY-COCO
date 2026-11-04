@@ -385,48 +385,24 @@ fi
 
 echo ""
 echo "===== 附加闸门 · Service Worker 构建标记 ====="
-# 【硬性】为什么必须有这道闸门：
-#   MV3 的 Service Worker 脚本会被浏览器缓存，缓存键是**主脚本自身的内容**。
-#   若只改动了被 importScripts 引入的文件（本工程即 src/shared/gitee.js），
-#   而 service-worker.js 字节完全没变，浏览器会复用上一次缓存的整个脚本包
-#   —— 连旧的 gitee.js 一起 —— 结果就是「磁盘已更新，后台仍跑旧代码」。
+# 【硬性】为什么必须有这道闸门（用户 2026-11-05 实测，代价很大）：
+#   MV3 的 Service Worker 脚本包按**主脚本自身的字节**做缓存键。只要
+#   service-worker.js 一个字节都不变，浏览器就继续复用上次缓存的整个包
+#   —— 连 importScripts 进来的 flags.js / gitee.js 一起。结果是：
+#     · 弹窗读新 flags.js、后台跑旧 flags.js ⇒ 新开关键被判非法，
+#       用户点开关得到「设置未保存」，得重启浏览器才恢复；
+#     · chrome.runtime.reload() 之后仍跑旧包 ⇒ 必须去扩展管理页手动点
+#       「重新加载」，四个浏览器就要按四次。
 #
-#   实测（360 极速浏览器X，2026-10-10）：把修复后的 gitee.js 拷进扩展目录，
-#   重新加载扩展也不生效，检测仍报旧的 403；给 service-worker.js 加了一行
-#   构建标记 DYC_BUILD 之后，重新加载立刻生效。
-#   事故详情见 AGENTS.md 踩坑记录第 26 条。
-#
-#   这道闸门机械拦住它：src/shared 有改动时，DYC_BUILD 的值必须跟着变。
-#   注意：这里写死了 src/shared —— 对应 service-worker.js 里的
-#   importScripts('../shared/gitee.js')。若将来新增 importScripts 且不在
-#   src/shared 下，记得同步放宽这个判断。
+#   旧版闸门把 src/shared 写死在脚本里，而 SW 的第二处 importScripts 是
+#   ../content/flags.js —— 它改了、闸门不管、构建号不动，缓存包永不重建。
+#   现在改由 scripts/check-sw-build.py 统一判定：依赖从源码自动解析，
+#   规则是「每次发布 DYC_BUILD 必须与上一标签不同」（= 主脚本必变一字节）。
+#   详见该脚本头部注释。
 if [ -n "$PREV_TAG" ]; then
-  SHARED_CHANGED=$("$GIT" diff --name-only "$PREV_TAG" HEAD -- src/shared 2>/dev/null || true)
-  OLD_BUILD=$("$GIT" show "$PREV_TAG:src/background/service-worker.js" 2>/dev/null | grep -m1 "^var DYC_BUILD" | cut -d"'" -f2 || true)
-  NEW_BUILD=$("$GIT" show "HEAD:src/background/service-worker.js" 2>/dev/null | grep -m1 "^var DYC_BUILD" | cut -d"'" -f2 || true)
-
-  if [ -n "$SHARED_CHANGED" ]; then
-    if [ -z "$NEW_BUILD" ] || [ "$OLD_BUILD" = "$NEW_BUILD" ]; then
-      echo "[中止] src/shared 有改动，但 Service Worker 的构建标记没变。"
-      echo ""
-      echo "       改动文件："
-      echo "$SHARED_CHANGED" | sed 's/^/         /'
-      echo "       构建标记：$PREV_TAG 是 '$OLD_BUILD'，现在是 '${NEW_BUILD:-（读不到）}'"
-      echo ""
-      echo "       这会让浏览器复用缓存的旧 SW 脚本包，商家更新后后台仍跑旧代码，"
-      echo "       表现就是「磁盘已是新版，点检查更新仍报 403」。"
-      echo ""
-      echo "       处理：把 src/background/service-worker.js 里的"
-      echo "             var DYC_BUILD = '<新版本号>+swN';"
-      echo "             的 N 自增（例 26.10.10.5+sw2 → 26.10.10.6+sw3），提交后重跑。"
-      exit 1
-    fi
-    echo "构建标记已更新：'$OLD_BUILD' → '$NEW_BUILD'  ✓"
-  else
-    echo "src/shared 无改动，无需更新构建标记"
-  fi
+  "$PY" scripts/check-sw-build.py --prev-tag "$PREV_TAG" || exit 1
 else
-  echo "（无历史标签，跳过构建标记校验）"
+  "$PY" scripts/check-sw-build.py || exit 1
 fi
 
 echo ""

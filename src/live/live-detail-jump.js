@@ -76,13 +76,16 @@
   /** 找锚点:「直播大屏」可点元素,可见者中取最靠顶的一个 */
   function findAnchor() {
     var nodes = document.querySelectorAll('button, a, [role="button"]');
-    var best = null;
+    var best = null, bestTop = 0;
     for (var i = 0; i < nodes.length; i++) {
       var el = nodes[i];
       if (normText(el) !== ANCHOR_TEXT) continue;
       var r = el.getBoundingClientRect();
       if (r.width < 8 || r.height < 8) continue;          // 不可见 / 被折叠
-      if (!best || r.top < best.getBoundingClientRect().top) best = el;
+      /* 2026-11-05 性能自检:原写法是 `r.top < best.getBoundingClientRect().top`,
+       * 每命中一个候选就**重读一次 best 的矩形** —— 布局查询次数随候选数线性增长,
+       * 而 best 自己那一拍读过的 top 我们本来就有。改为记在 bestTop 里复用。 */
+      if (!best || r.top < bestTop) { best = el; bestTop = r.top; }
     }
     return best;
   }

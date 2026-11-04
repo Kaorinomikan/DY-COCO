@@ -22,6 +22,9 @@
  *   → 逐条解析商品 → 车内已有的挑出来不重复加 → 其余的**一次 bind 批量提交**
  *   → 点一下平台「刷新列表」让列表显现 → 已在车的定位 + 闪烁 + 「这个商品已经在购物车了~」
  *   → 一条汇总消息(来源=粘贴加车,三段式)。
+ *   · 满载(2026-11-05):小黄车满 200 个时不报「失败」—— 粘贴前先数车内商品数,满了
+ *     直接提示「车满了,先删几个」且**不发**绑定请求;平台若仍以「上限/已满」类原因
+ *     驳回(我们没数准的情况),同样换成这条口径,不退回笼统失败。
  *
  * 【请求通道】优先经 stock-net-probe 的 sendRequest(页面世界 XHR,自动带平台平台校验头),
  *   探针不在场时退回隔离世界 fetch。平台校验/网络失败都按平台原文报出来,不静默。
@@ -35,6 +38,19 @@
 
   const BTN_TEXT = '粘贴加车';
   const SOURCE = '粘贴加车';
+
+  /* 小黄车商品数上限(用户 2026-11-05 反馈:车到 200 个以后再加,只剩一句「失败」,
+     看不出是车满了)。主动预判用这个数;平台侧另有文案识别(RE_CART_FULL),
+     两处任一生效即可 —— 预判避免白发一次请求,识别兜住「我们没数准」的情况。 */
+  const CART_LIMIT = 200;
+
+  /* 平台「车满」类失败文案的识别口径。
+     ⚠️ 这是**平台原文**的词,不按我们自己的文案改写 —— 改错了匹配不到,就退化成静默失效;
+     也不加 g 标志(带 g 的 test 会记 lastIndex,同一句第二次判成 false)。 */
+  const RE_CART_FULL = /上限|已满|装满|满了|超出.{0,6}(数量|限制|个|件)|超过.{0,6}(数量|限制|个|件)|最多.{0,6}(个|件|款)/;
+
+  /* failure_list 每条里可能装原因的字段(平台字段名未定死,挨个试,取第一个非空) */
+  const FAIL_REASON_FIELDS = ['fail_reason', 'reason', 'fail_msg', 'err_msg', 'msg'];
 
   let on = false;
   let busy = false;
@@ -263,6 +279,13 @@
       '&source_type=force', { method: 'GET' });
     const j = safeJson(r.text);
     const list = j && j.data && j.data.basic_list;
+    /* 真机诊断用(2026-11-05):满载预判依赖这里的条数,若平台在这个接口上分页
+       (只回一部分),预判就会漏判 —— 把顶层键打出来,真机一眼能看出有没有
+       total / 分页字段可以改用。 */
+    if (j && j.data && typeof j.data === 'object') {
+      log('粘贴加车:basic_list ' + (Array.isArray(list) ? list.length : 0) + ' 条,data 键 ' +
+        Object.keys(j.data).join(','));
+    }
     const set = new Set();
     const order = [];
     if (Array.isArray(list)) {
@@ -354,7 +377,29 @@
     return { scanned: items.length, matches };
   }
 
-  /** 批量加车(接口 ③),返回成功加入的产品 */
+  /** failure_list 单条里取失败原因(取不到返回 '',不编造) */
+  function failReasonOf(item) {
+    if (!item) return '';
+    for (const k of FAIL_REASON_FIELDS) {
+      const v = item[k];
+      if (v && typeof v === 'string') return v;
+    }
+    return '';
+  }
+
+  /** 这段平台文案是不是在说「车满/装不下」 */
+  function isCartFullText(text) {
+    return !!text && RE_CART_FULL.test(String(text));
+  }
+
+  /**
+   * 批量加车(接口 ③)。返回成功加入的产品。
+   * @returns {Promise<{ok:boolean, why:string, added:Array, failedCount:number,
+   *                    full:boolean, failedItems:Array<{id:string,title:string,why:string}>}>}
+   *   full = 平台把这次驳回(或部分驳回)的原因指向「车满」;
+   *          可能是 code!==0 的 msg,也可能是 success_count 之外逐条 failure_list 的原因。
+   *   调用方据此换成满载提示,而不是笼统的「失败」(用户 2026-11-05)。
+   */
   async function bindPromotions(ewid, promos) {
     const body = {
       promotions: promos.map((p) => ({
@@ -371,17 +416,49 @@
     });
     const j = safeJson(r.text);
     if (!j || j.code !== 0) {
-      return { ok: false, why: (j && j.msg) || ('HTTP ' + r.status), added: [] };
+      const why = (j && j.msg) || ('HTTP ' + r.status);
+      return { ok: false, why, added: [], failedCount: promos.length, full: isCartFullText(why), failedItems: [] };
     }
     const d = j.data || {};
     const failList = Array.isArray(d.failure_list) ? d.failure_list : [];
     const okCount = Number(d.success_count || 0);
     const added = [];
+    const failedItems = [];
+    let full = false;
     for (const p of promos) {
-      const failed = failList.some((f) => String(f.promotion_id || '') === p.promotion_id);
-      if (!failed && okCount > 0) added.push(p);
+      const hit = failList.find((f) => String((f && f.promotion_id) || '') === p.promotion_id);
+      if (hit) {
+        const why = failReasonOf(hit);
+        if (isCartFullText(why)) full = true;
+        failedItems.push({ id: p.product_id, title: p.title, why: why });
+      }
+      if (!hit && okCount > 0) added.push(p);
     }
-    return { ok: true, added, failedCount: Number(d.failure_count || 0) };
+    /* failure_list 为空但整单没加进时,原因可能只落在 data.msg / 顶层 msg 上 */
+    if (!added.length && !failedItems.length) {
+      if (isCartFullText(d.msg) || isCartFullText(j.msg)) full = true;
+    }
+    return { ok: true, added, failedCount: Number(d.failure_count || 0) || failedItems.length, full, failedItems };
+  }
+
+  /**
+   * 满载提示的三段式文案(2026-11-05 用户定:条上短句「车满了,先删几个」)。
+   * 条上只留一句(状态条宽度有限);「满的是 200 个」和「删几个、再粘一次」
+   * 这两件用户真正需要的事都进 opts.full,盒子点开能看全。
+   * 标点跟随本模块既有消息(半角),避免同屏两条消息一个全角一个半角。
+   * @param {number} addedCount 本次已经加进去的数量(0 = 一个都没加进)
+   * @param {Array} blocked 被挡在车外的商品(用于在全文里点名)
+   * @returns {{message:string, count:string, full:string}}
+   */
+  function cartFullCopy(addedCount, blocked) {
+    const list = Array.isArray(blocked) ? blocked : [];
+    const names = list.map((p) => p.title || ('商品 ' + p.product_id)).join('、');
+    const message = addedCount > 0 ? ('车满了,只加了 ' + addedCount + ' 个') : '车满了,先删几个';
+    const count = addedCount > 0 ? '其余未加入' : '未加入';
+    let full = '购物车已满 ' + CART_LIMIT + ' 个(平台小黄车放不下更多了),没有空位再加。' +
+      '请先在小黄车里删掉几个不需要的商品,再重新粘贴加车。';
+    if (names) full += '没能加入的:' + names + '。';
+    return { message, count, full };
   }
 
   /** 点一下平台自己的「刷新列表」,让刚绑定的商品显现(有就点,没有就算了) */
@@ -470,6 +547,12 @@
         log('粘贴加车:车内列表读取失败,按「都不在车内」继续 ' + (err && err.message));
       }
 
+      /* 车内商品数 = basic_list 的顺序长度(order 只收 promotion_id,不含重复计入的
+         product_id,所以不能用 cartIds.size)。取不到列表时是 0 —— 这时不预判,
+         交给下面的平台文案识别兜底,不会误判成车满。 */
+      const cartCount = cartOrder.length;
+      log('粘贴加车:车内商品 ' + cartCount + ' 个(上限 ' + CART_LIMIT + ')');
+
       // ② 目标商品解析(链接或款号,统一成一个 targets 列表)
       let targets = [];
       if (links.length) {
@@ -542,22 +625,50 @@
         return;
       }
 
+      /* 满载预判(2026-11-05 用户反馈:车到 200 个后粘贴只剩一句「失败」,看不出是车满):
+         数到车内已满就直接给满载提示,**不发这一次注定被驳回的绑定请求**。
+         位置说明:必须排在判重之后 —— 车满但商品本来就在车里,上面已按「已在车内」
+         报过,不能误报成满载;也必须排在待加数量闸门之后 —— 一次撞上几十个是款号
+         问题,先按那条报更准确。 */
+      if (toBind.length && cartCount >= CART_LIMIT) {
+        const copy = cartFullCopy(0, toBind);
+        // dropRunning:满载是快速返回,别让「正在加车」的过程条和结果条同时挂在屏幕上
+        setStatus(copy.message, 'alert',
+          { source: SOURCE, count: copy.count, full: copy.full, keepHistory: true, dropRunning: true });
+        resultText = '车已满';
+        resultKind = 'failure';
+        log('粘贴加车:车内已满 ' + cartCount + '/' + CART_LIMIT + ',不提交绑定 · ' + subject);
+        return;
+      }
+
       // ③ 一次批量绑定
       let added = [];
+      let fullBlocked = false;    // 平台驳回原因指向「车满」→ 提示换成满载口径
+      let blocked = [];           // 没加进去的(满载提示里点名用)
       if (toBind.length) {
         const b = await bindPromotions(ewid, toBind);
         if (!b.ok) {
+          fullBlocked = !!b.full;
+          blocked = toBind.slice();
           for (const p of toBind) failed.push({ id: p.product_id, why: b.why, title: p.title });
-          log('粘贴加车:绑定请求失败 ' + b.why);
+          log('粘贴加车:绑定请求失败 ' + b.why + (fullBlocked ? ' → 判为车满' : ''));
         } else {
           added = b.added;
           const addedIds = new Set(added.map((p) => p.product_id));
+          const reasonOf = (pid) => {
+            const it = (b.failedItems || []).find((f) => f.id === pid);
+            return (it && it.why) || '平台未确认加入';
+          };
           for (const p of toBind) {
             if (!addedIds.has(p.product_id)) {
-              failed.push({ id: p.product_id, why: '平台未确认加入', title: p.title });
+              blocked.push(p);
+              failed.push({ id: p.product_id, why: reasonOf(p.product_id), title: p.title });
             }
           }
-          log('粘贴加车:绑定完成,成功 ' + added.length + ',失败 ' + (b.failedCount || 0));
+          // 平台没全确认、且原因指向车满 → 同样换成满载口径(车位不够,只加进了 N 个)
+          if (blocked.length && b.full) fullBlocked = true;
+          log('粘贴加车:绑定完成,成功 ' + added.length + ',失败 ' + (b.failedCount || 0) +
+            (fullBlocked ? ' → 判为车满' : ''));
         }
       }
 
@@ -597,7 +708,17 @@
       // ⑤ 一条消息(用户 2026-10-24 定稿口径):
       //    商品名放「值」段(强),结果词放右端弱化位(不写数字);
       //    已在车内用橙色(warning)并收进消息盒子,弱化位补「第 N 号」。
-      if (added.length) {
+      // 满载口径优先(2026-11-05):车满时只说「失败」等于没说,换成「车满了,先删几个」
+      // + 盒子全文;只加进一部分时说清只加了几个,不混进普通「部分加入」。
+      if (fullBlocked) {
+        const copy = cartFullCopy(added.length, blocked.length ? blocked : toBind);
+        // dropRunning:满载是快速返回,别让「正在加车」的过程条和结果条同时挂在屏幕上
+        setStatus(copy.message, 'alert',
+          { source: SOURCE, count: copy.count, full: copy.full, keepHistory: true, dropRunning: true });
+        resultText = added.length ? '部分加入' : '车已满';
+        resultKind = 'failure';
+        log('粘贴加车:车满 · 已加入 ' + added.length + ' 个,挡回 ' + blocked.length + ' 个');
+      } else if (added.length) {
         const name = added.map((p) => p.title || ('商品 ' + p.product_id)).join('、');
         const tail = inCart.length ? ('已加入小黄车 · 另 ' + inCart.length + ' 个已在车内') : '已加入小黄车';
         resultText = failed.length ? '部分加入' : '已加车 ✓';

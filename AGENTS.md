@@ -74,7 +74,9 @@ Chromium 内核浏览器扩展（360 极速X / 夸克等），为抖店（抖音
 17. **新功能先出方案评审稿，用户定稿后才开工**；纯修复/基建免评审稿但不免分支。
 18. （条款已删除）
 19. **桌面 `COCO TEST` 是唯一测试档**：单向同步 源码→测试档，
-    汇报前必须已同步并校验（`scripts/sync-coco-test.sh`）。
+    汇报前必须已同步并校验（`scripts/sync-coco-test.sh`）；未合并的改动要真机验证，
+    走 `--from <工作树名>` 把它镜像进测试档（扩展 ID 不变、设置保留，只需重载扩展），
+    当前装的是哪份代码用 `--status` 查。
 20. **反馈处理顺序：先分类 → 再阅读 → 再规划**；分析可自动出 HTML 评审页，
     修复/开发必须等用户拍板；看板四栏只收评审通过项、不留已放弃占位。
 21. **消息/状态栏文案一律三段式「来源 ｜ 值 ｜ 结果数」**：来源词先登记再写码；
@@ -126,8 +128,9 @@ Chromium 内核浏览器扩展（360 极速X / 夸克等），为抖店（抖音
 **4. 推送期（攒够 5 个有效功能点后的一次性收尾）：**
 
 1. `bash scripts/next-version.sh` 查在线版、定版本号（离线加 `--offline`）。
-2. 改 `manifest.json` 的 `"version"`；若本轮动过 `src/shared/`，同步自增
-   `src/background/service-worker.js` 的 `DYC_BUILD`。
+2. 改 `manifest.json` 的 `"version"`；**每版都必须**跑
+   `python scripts/check-sw-build.py --fix` 同步 `src/background/service-worker.js`
+   的 `DYC_BUILD`（依赖由脚本从 `importScripts` 自动解析，不再只盯 `src/shared`）。
 3. 重生成更新清单：`python scripts/make-update-manifest.py`。
 4. 一次性同步文档：`README.md`、`RELEASE_NOTES.md`、`docs/agents/当前状态.md`；
    `开发日志.md` 按本批 git log 批量补记。

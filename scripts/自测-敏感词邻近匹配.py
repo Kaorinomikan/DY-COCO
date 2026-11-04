@@ -47,6 +47,7 @@ def main():
     g.CONTEXT_SENSITIVE = words["context_sensitive"]
     g.CONTEXT_TRIGGERS = words["context_triggers"]
     g.WARN_WORDS = words["warn_words"]
+    g.FIX_RULES = words["fix_rules"]        # 2026-11-05：验证自动改写也要它
     wl = g.load_whitelist(words)
 
     # ★ 测试样本也从**工程外词表**里读（selftest_cases 字段）——
@@ -88,6 +89,39 @@ def main():
         if not ok:
             failed.append("误伤: %s" % t)
         print("  %-34s %s" % (t[:32], "✓" if ok else "✗ 误伤"))
+
+    # ---- 自动改写必须尊重上下文（2026-11-05 实测事故）----
+    # ★ 事故：发布闸门的自动改写对所有命中**无条件**替换，把福袋抽屉的
+    #   界面匹配词表里那个平台列名改成了同义词 —— 平台渲染的是原词，
+    #   改完就认不出抽屉（真机静默失效；自测反而全绿，因为 mock 用了
+    #   同一份被改过的词）。这里钉两条：单独出现不动、触发词邻近才动。
+    #   ★ 样本全部**运行时拼接**，仓库里不留原词（否则闸门扫自己）。
+    print()
+    print("自动改写尊重上下文：")
+    ctx_set = set(w for w, _ in words["context_sensitive"])
+    solo = [b for b, _ in words["fix_rules"] if b in ctx_set]
+    if not solo:
+        failed.append("词表里没有「既在 fix_rules 又在 context_sensitive」的词，无法验证")
+        print("  %-34s %s" % ("找到可验证的语境词", "✗ 没有"))
+    else:
+        w = solo[0]
+        trig = words["context_triggers"][0]
+
+        # ① 单独出现（界面词表的典型形态）⇒ 一个字符都不能改
+        ui = "var MARKS = ['创建活动', '%s信息'];" % w
+        got, _r = g.fix_text(ui, wl)
+        ok_ui = (got == ui)
+        if not ok_ui:
+            failed.append("界面词表被误改（单独出现时不应改写）: %s" % got)
+        print("  %-34s %s" % ("界面词表单独出现保持原样", "✓" if ok_ui else "✗ 被改"))
+
+        # ② 触发词邻近（真表述）⇒ 必须照旧改写，别把检出能力一起修没了
+        real = trig + w
+        got2, _r2 = g.fix_text(real, wl)
+        ok_real = (got2 != real)
+        if not ok_real:
+            failed.append("真表述未被改写（触发词邻近时必须改）: %s" % real)
+        print("  %-34s %s" % ("触发词邻近时仍会改写", "✓" if ok_real else "✗ 漏改"))
 
     # ---- 词表自身的一致性（2026-11-02 新增）----
     # ★ 为什么钉这两条：上一轮为了让闸门变绿，把某个词整条加进白名单，

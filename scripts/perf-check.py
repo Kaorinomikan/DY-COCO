@@ -176,7 +176,25 @@ WHITELIST = [
      "调用点是 20 秒一拍的 checkNow;"
      "④findCartPanel 只在面板打开时随 place() 走,最多 6 层。"
      "整体节奏 = 20 秒拍点 + 250ms 跟位(只重读标题行一个矩形),"
-     "不挂 MutationObserver、不在循环里写样式"),
+     "不挂 MutationObserver、不在循环里写样式"),    ("src/live/lucky-bag.js", "R6", 1377,
+     "2026-11-05 性能自检:drawerRootByText 的矩形读发生在**文本粗筛之后** ——"
+     "先按 textContent 长度与 DRAWER_MARKS/业务词过一遍,只有词命中者才读矩形,"
+     "属「先粗筛后精读」的正确范式;且同日已加正结果缓存,"
+     "稳态下每拍只校验缓存节点一次矩形,不再全页扫。"),
+    ("src/live/lucky-bag.js", "R6", 4209,
+     "2026-11-05 性能自检:pageClues 的全页标签扫描有 budget 递减 + out.length<20"
+     "双上限,且矩形读只在文本命中后执行;调用点是**调试诊断包导出**与导出表,"
+     "不在业务拍点上,页面静止时根本不跑。"),
+    ("src/live/live-detail-jump.js", "R6", None,
+     "2026-11-05 性能自检:findAnchor 是 2000ms 一拍的锚点查找,范围是全页"
+     "button/a/[role=button](该页量级中等),循环内**只读不写**、不与样式写入交错,"
+     "不会触发热重排;原本「对 best 重复读矩形」的浪费已在同轮修掉(改 bestTop 复用),"
+     "现在每个候选只读一次,保留循环读是因为「可见性」必须逐个量。"),
+    ("src/live/search.js", "R5", None,
+     "2026-11-05 性能自检:markNameOnRow 的通配查询范围**限定在单个商品行**"
+     "(rowEl,由调用方传入),不是全页查询;后续只对叶子取文本,矩形/样式零读取;"
+     "调用点是用户搜索后的染色,不在定时器拍点上。"),
+
     ("src/content/wx-goods-tools.js", "R1", None,
      "三处 setInterval 全部是「用户点一下、最多跑 2.5 秒」的短时轮询,不是常驻:"
      "①等待「规格/编码」弹层里出现 SKU 行(100ms×25,一命中就在 finish() 里 clearInterval);"

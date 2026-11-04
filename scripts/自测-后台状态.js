@@ -182,9 +182,20 @@ async function testFlags() {
     assert.equal(storage.data.dybFeatures.liveCopyCode, false);
   });
 
-  await test('未知开关键被拒绝且不写入存储', async () => {
+  // 2026-11-05 口径变更（有意）：旧断言要求「未知键必须拒绝」。
+  // 但 SW 的脚本包会被浏览器缓存，会出现「弹窗是新版、后台还是旧包」的瞬间：
+  // 弹窗认识新开关键、旧后台不认识，若继续硬拒，用户点开关就是「设置未保存」，
+  // 只有重启浏览器才恢复（用户 2026-11-05 报的正是这个）。现在改成按弹窗随
+  // 消息带来的 store 落库，只保留「值必须布尔」这道校验。
+  await test('未知开关键按弹窗声明的 store 落库，不再硬拒', async () => {
+    await ctx.writeFeatureFlag('__unknown__', true, 'features');
+    assert.strictEqual(storage.data.dybFeatures.__unknown__, true,
+      '旧后台遇到新开关键不应把用户的设置丢掉');
+  });
+
+  await test('未知开关键的值不是布尔时仍然拒绝且不写入', async () => {
     const before = structuredClone(storage.data.dybFeatures);
-    await assertReject(ctx.writeFeatureFlag('__unknown__', true), '未知键应拒绝');
+    await assertReject(ctx.writeFeatureFlag('__unknown__', 'yes', 'features'), '非法值应拒绝');
     assert.deepEqual(storage.data.dybFeatures, before);
   });
 }

@@ -371,6 +371,32 @@ def _near(text, word, trigger, window=4):
         start = i + 1
 
 
+def _near_at(text, pos, length, window=4):
+    """**这一处**语境词，附近有没有触发词（窗口口径与 _near 完全一致）。
+
+    ★ 与 _near 的分工（2026-11-05 加）：
+      · `_near` 回答「全文里有没有一处邻近」→ 用于**判定要不要阻断**；
+      · `_near_at` 回答「这一处邻近吗」→ 用于**逐处决定要不要自动改写**。
+      自动改写必须逐处判：同一文件里既有真表述（触发词紧邻语境词）、
+      又有平台界面词表里的界面列名时，用全文判断会把词表一起改掉。
+
+    ★ 为什么非要这道判断（2026-11-05 实测事故）：
+      `fix_rules` 原先对所有命中**无条件**替换，绕过了 context_sensitive
+      「必须与 自动/批量/循环 邻近才算真表述」的设计 —— 发布闸门因此把福袋
+      抽屉的界面匹配词 `DRAWER_MARKS` 里的「奖品信息」改成「奖励信息」。
+      平台渲染的是「奖品信息」，改完就认不出抽屉（真机静默失效；自测还是
+      全绿，因为自测 mock 同步用了同一份被改过的词）。注释里记录的真机页面
+      结构、用户原话也被一并篡改。
+    """
+    lo = max(0, pos - window)
+    hi = min(len(text), pos + length + window)
+    seg = text[lo:hi]
+    for t in CONTEXT_TRIGGERS:
+        if t in seg:
+            return True
+    return False
+
+
 def _mask_regex_literals(text):
     """找出**正则字面量**（/.../flags）的区间，返回 [(start, end), ...]。
 
@@ -725,16 +751,27 @@ def fix_text(text, wl, path_hint=""):
     records = []
     regions = _mask_code_regions(text, path_hint)
 
+    # ★ 语境词（平台活动类的短词）单独出现时**不再替换**（2026-11-05 修）：
+    #   它们本身不是违规表述，只有与 自动/批量/循环 这类触发词邻近才算 ——
+    #   这正是 context_sensitive + context_triggers 的原设计。
+    #   旧版对所有命中一律替换，等于绕过这层判断，会改坏界面匹配词。
+    #   逐处判用 _near_at，不用 _near（后者只看全文有没有一处邻近）。
+    ctx_only = set(w for w, _ in CONTEXT_SENSITIVE)
+
     hits = []
     for bad, good in FIX_RULES:
         if bad in wl:
             continue
+        need_near = bad in ctx_only
         idx = 0
         while True:
             pos = text.find(bad, idx)
             if pos < 0:
                 break
             if not _is_identifier_position(text, pos, pos + len(bad), regions):
+                if need_near and not _near_at(text, pos, len(bad)):
+                    idx = pos + len(bad)
+                    continue
                 hits.append((pos, pos + len(bad), bad, good))
             idx = pos + len(bad)
 

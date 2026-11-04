@@ -121,8 +121,17 @@ fi
 # make-update-manifest 生成清单，三处自动触发），正常路径不会漏。
 # 唯一的薄弱环节是「跳过合并、直接在主工作区改扩展本体」—— 那条靠自觉，
 # 这里把状态摆到看板上，漏了一眼就能看到。
+# 2026-11-05 加「来源」分支：sync-coco-test.sh 支持 --from <工作树名> 之后，
+# 测试档可能**故意**装着未合并的工作树代码（用户在真机验证）。
+# 那种状态跑无参 --check 必然报「不一致」，若照旧显示「补同步」，
+# 就会把用户指去跑一条会把新代码冲掉的命令。所以先看来源标记。
 SYNC_STATE="(未检查)"
-if [ -f "$HERE/sync-coco-test.sh" ]; then
+SYNC_MARK="$HERE/../.tmp/coco-test-source"
+SYNC_FROM=""
+[ -f "$SYNC_MARK" ] && SYNC_FROM=$(sed -n 's/^name=//p' "$SYNC_MARK" 2>/dev/null | head -1)
+if [ -n "$SYNC_FROM" ]; then
+  SYNC_STATE="▶ 正在测未合并的工作树「$SYNC_FROM」(合并时自动切回主干)"
+elif [ -f "$HERE/sync-coco-test.sh" ]; then
   if bash "$HERE/sync-coco-test.sh" --check >/dev/null 2>&1; then
     SYNC_STATE="✓ 与主干一致"
   else

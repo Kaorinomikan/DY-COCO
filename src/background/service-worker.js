@@ -48,18 +48,32 @@
 // │ 发布会被直接中止。不需要靠人记。                                 │
 // └──────────────────────────────────────────────────────────────────┘
 // 全面整改：后台统一设置写入、私有历史与反馈来源截图，更新导入的开关定义。
-var DYC_BUILD = '26.11.01.2+sw23';
+var DYC_BUILD = '26.11.05.1+sw25';
 
 // classic worker，可以 importScripts（manifest 里没有设 type: module）
 importScripts('../shared/gitee.js', '../content/flags.js');
 
 // 设置由后台串行更新；失败不阻塞队列中的下一次操作。
 var flagWriteQueue = Promise.resolve();
-function writeFeatureFlag(key, value) {
+
+/**
+ * 写一个开关。
+ *
+ * 2026-11-05 放宽「未知键」：旧实现拿不到 meta 就直接拒绝，而 meta 来自本文件
+ * importScripts 进来的 flags.js。SW 的脚本包被缓存时，「弹窗已是新版
+ * （认识新开关键）、后台还是旧包（不认识）」就会同时成立 —— 用户点开关得到
+ * 「设置未保存」，只有重启浏览器才恢复。现在未知键按弹窗随消息带来的 store
+ * 落库（弹窗侧已经用同一份 flags.js 校验过，键来自扩展自身，值是布尔）。
+ * 写错的唯一后果是 storage 里多一个没人读的键，比「用户设置存不进去」轻得多。
+ */
+function writeFeatureFlag(key, value, store) {
+  if (typeof key !== 'string' || !key || typeof value !== 'boolean') {
+    return Promise.reject(new Error('无效设置'));
+  }
   var meta = dycFlagMeta(key);
-  if (!meta || typeof value !== 'boolean') return Promise.reject(new Error('无效设置'));
+  var where = (meta && meta.store) || (store === 'debug' ? 'debug' : 'features');
   var task = flagWriteQueue.then(function () {
-    if (meta.store === 'debug') return chrome.storage.local.set({ dybDebug: value });
+    if (where === 'debug') return chrome.storage.local.set({ dybDebug: value });
     return chrome.storage.local.get(DYC_FLAGS_STORE_KEY).then(function (got) {
       var flags = Object.assign({}, got[DYC_FLAGS_STORE_KEY] || {});
       flags[key] = value;
@@ -298,7 +312,7 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   }
 
   if (msg.type === 'dyc:writeFlag') {
-    writeFeatureFlag(msg.key, msg.value).then(function () {
+    writeFeatureFlag(msg.key, msg.value, msg.store).then(function () {
       sendResponse({ ok: true });
     }, function (error) {
       sendResponse({ ok: false, error: (error && error.message) || '设置未保存' });
@@ -397,11 +411,26 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
 
   // 更新页收尾:它要自关窗口,重载扩展改由 SW 执行(页面先关也不影响)。
   // 只重载扩展自身,不碰用户任何标签页/窗口 —— 与设计原则 3 一致。
+  /* ---- 更新收尾（2026-11-05 重做）----
+   * 旧实现是 setTimeout(900) 之后再 reload。中间这 900ms 里只要内核把
+   * 空闲的 SW 掐掉，reload 就**永远不会执行** —— 磁盘已是新版、后台仍跑
+   * 旧缓存包，用户看到的就是「设置存不进」「必须手动点重新加载」。
+   * 现在改成：先回执（让更新页知道后台已接管），再关更新窗口，关窗回调
+   * 里立刻 reload。链路从「延迟执行」变成「回调执行」，少一个被掐的窗口。 */
   if (msg.type === 'dyc:update-finish') {
-    setTimeout(function () {
+    var finishWinId = sender && sender.tab && sender.tab.windowId;
+    var reloadNow = function () {
       try { chrome.runtime.reload(); } catch (e) { /* 尽力而为 */ }
-    }, 900);
-    sendResponse({ ok: true });
+    };
+    sendResponse({ ok: true, armed: true });
+    // 先关窗口再重载：反过来会留下一张僵尸页（2026-10-11 实测）。
+    if (typeof finishWinId === 'number' && chrome.windows && chrome.windows.remove) {
+      try {
+        chrome.windows.remove(finishWinId, reloadNow);
+        return false;
+      } catch (e) { /* 关不掉就直接重载 */ }
+    }
+    reloadNow();
     return false;
   }
 
