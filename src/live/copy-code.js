@@ -539,6 +539,7 @@
 
   function applyAll() {
     if (!enabled()) return 0;
+    if (dragHold()) return 0;    // 拖拽期不往 Draggable 内部插按钮（见 dragHold 注释）
     var items = getRows();
     var n = 0;
     for (var i = 0; i < items.length; i++) {
@@ -565,12 +566,32 @@
     return getProductItems();
   }
 
+  /**
+   * 拖拽期让路（2026-11-05 · 反馈 #130）
+   *
+   * 用户按住购物车行首把手调整讲解顺序时，react-beautiful-dnd 会持续插入
+   * 拖动克隆与占位节点。我们的补扫如果照常跑，会在这期间 insertBefore 注入
+   * 「货号」按钮 —— 等于当场改写 Draggable 的内部结构，rbd 判结构与尺寸
+   * 不一致即中止本次拖拽（「一拖就弹回」），同时全量重扫本身也在抢主线程。
+   *
+   * 所以拖拽期间整体让路，松手 400ms 后由闸门回调补一轮。闸门不存在时
+   * （旧构建 / 未注入）退回原行为。
+   */
+  function dragHold() {
+    if (typeof window.__dycDragBusy !== 'function' || !window.__dycDragBusy()) return false;
+    if (typeof window.__dycWhenDragIdle === 'function') {
+      window.__dycWhenDragIdle(scheduleApply);   // 去重由闸门负责
+    }
+    return true;
+  }
+
   function scheduleApply() {
+    if (dragHold()) return;
     if (pending) return;
     pending = true;
     setTimeout(function () {
       pending = false;
-      if (enabled()) applyAll();
+      if (enabled() && !dragHold()) applyAll();
     }, 300);
   }
 

@@ -582,6 +582,7 @@
 
   function applyAll() {
     if (!enabled()) return;
+    if (dragHold()) return;      // 拖拽期不量测、不写样式（见 dragHold 注释）
     var rows;
     try {
       rows = getRows();
@@ -647,17 +648,42 @@
    *
    * 补涂本身只扫可视区那几行，开销有界。
    */
+
+  /**
+   * 拖拽期让路（2026-11-05 · 反馈 #130「拖动购物车商品时非常卡」）
+   *
+   * 本模块的补涂要对每一行做 TreeWalker 并逐元素读 clientWidth / scrollWidth
+   * （强制同步布局）。中控台购物车由 react-beautiful-dnd 接管，拖拽时
+   * **每一帧**都会插入/移动拖动克隆节点 —— 观察器被每帧唤醒，补涂于是每帧
+   * 全量跑一遍，主线程被量测占满，表现为拖动极卡。同时补涂写的内联样式
+   * 会改写 Draggable 内部结构，rbd 判定结构不一致就会中止本次拖拽。
+   *
+   * 所以拖拽期间整体让路；松手 400ms（等落点动画结束）后由闸门回调补一轮，
+   * 省略号不会残留。闸门不存在时（旧构建/未注入）退回原行为。
+   */
+  function dragHold() {
+    if (typeof window.__dycDragBusy !== 'function' || !window.__dycDragBusy()) return false;
+    if (typeof window.__dycWhenDragIdle === 'function') {
+      window.__dycWhenDragIdle(scheduleApply);   // 去重由闸门负责
+    }
+    return true;
+  }
+
   function scheduleApply() {
+    if (dragHold()) return;
     if (!pending) {
       pending = true;
       var raf = window.requestAnimationFrame ||
                 function (fn) { return setTimeout(fn, 16); };
-      raf(function () { pending = false; applyAll(); });
+      raf(function () {
+        pending = false;
+        if (!dragHold()) applyAll();
+      });
     }
     if (tailTimer === null) {
       tailTimer = setTimeout(function () {
         tailTimer = null;
-        applyAll();
+        if (!dragHold()) applyAll();
       }, 300);
     }
   }

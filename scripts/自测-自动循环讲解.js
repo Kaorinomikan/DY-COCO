@@ -344,10 +344,12 @@ ok('找商品期间时间槽显示「定位中」', /slot\.textContent = state\.
   /state\.busyLabel = '搜索中'/.test(src));
 ok('busy 文案排在 phase 分支之前(否则永远轮不到)', (function () {
   /* 2026-11-05:原来按「paint 起 1200 字符」切,加了无限模式的分支后窗口不够,
-   * 断言变成 indexOf=-1 互比 —— 过时的是切片,不是代码。改成按函数边界截取。 */
+   * 断言变成 indexOf=-1 互比 —— 过时的是切片,不是代码。改成按函数边界截取。
+   * 2026-11-05 二次:兜底 2000 字符又被「胶囊 ∞ 常驻」那段挤出窗口,改成找
+   * 下一个同级函数开头(不再依赖字符数),以后往 paint 里加代码不会假红。 */
   const i = src.indexOf('function paint()');
-  let j = src.indexOf('function paintReadout()', i);
-  if (j < 0) j = i + 2000;
+  let j = src.indexOf('\n  function ', i + 10);
+  if (j < 0) j = i + 4000;
   const seg = src.slice(i, j);
   return seg.indexOf("state.busyLabel || '定位中'") < seg.indexOf("key = 'run:'");
 })());
@@ -775,10 +777,17 @@ ok('面板关闭只由「真人点空白」与「开关关掉」触发', (src.ma
 ok('真人按下即收(pointerdown 捕获,不用等 click)', /addEventListener\('pointerdown', onDocClick, true\)/.test(src));
 ok('点自身影子树不误收(composedPath 判据)', /composedPath\(\)\.indexOf\(host\)/.test(src));
 
-/* 2026-10-25 追加:D 版固定按钮(宽 138)+ 悬停浮层 */
-ok('按钮宽度写死 200px(含常驻启停位，不随文案变)', /width:200px;height:22px/.test(src));
+/* 2026-10-25 追加:D 版固定按钮(宽 138)+ 悬停浮层
+ * 2026-11-05:宽度不再是 200 —— 胶囊为容纳常驻 ∞ 按钮加宽到 224。
+ * 这里改成守**真正的契约**:CSS 里的固定宽必须与 place() 用的 CW_FULL 相等,
+ * 一旦有人只改一边,落点就会按错的宽度算(压到平台刷新按钮上)。 */
+ok('胶囊宽度写死，且与定位常量 CW_FULL 相等(不随文案变)', (function () {
+  const m = /\.cap\{[^']*width:(\d+)px;height:(\d+)px/.exec(src);
+  const c = /var CW_FULL = (\d+), CW_MINI = (\d+);/.exec(src);
+  return !!m && !!c && m[1] === c[1];
+})(), 'CSS 宽与 CW_FULL 必须一致');
 ok('中间文字恒定四字「循环讲解」', /<span class="txt">循环讲解<\/span>/.test(src));
-ok('时间槽定宽 46px + 等宽数字', /width:46px;text-align:right;font-variant-numeric:tabular-nums/.test(src));
+ok('时间槽定宽 + 等宽数字', /\.slot\{width:\d+px;text-align:right;font-variant-numeric:tabular-nums/.test(src));
 ok('不计时时槽位直接显示状态词(未开启 / 待讲解 / 重试中)', /'未开启'/.test(src) && /'待讲解'/.test(src) && /'重试中'/.test(src));
 ok('四态各自的槽位配色齐备', /\.cap\.wait \.slot\{color:#c25e00\}/.test(src) && /\.cap\.err \.slot\{color:#c62222\}/.test(src) && /\.cap\.off \.slot\{color:#a9aeb5/.test(src));
 ok('重绘时 off 类必须一起清(否则关过再开还是灰)', /remove\('on', 'wait', 'err', 'off'\)/.test(src));

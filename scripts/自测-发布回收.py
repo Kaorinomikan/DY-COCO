@@ -254,7 +254,12 @@ zh() {{ cat; }}
         source = (ROOT / 'publish.sh').read_text(encoding='utf-8')
         self.assertIn('COPY_ARGS=(--gate)', source)
         self.assertIn('check-product-copy.js" "${COPY_ARGS[@]}"', source)
-        self.assertIn('exit 1', source.split('check-product-copy.js', 1)[1].split('fi', 1)[0])
+        # 2026-11-05:发布脚本新增 0/6「更新说明预整理」，全文会出现两处
+        # check-product-copy.js。原断言取**第一处**再按 'fi' 切片，切到的是预整理
+        # 那段（它本就 `|| true` 不中止），于是永远找不到 exit 1 —— 过时的是切法，
+        # 不是闸门。改为取**最后一处**（真正带 --gate 的那次）后的调用块。
+        tail = source[source.rfind('check-product-copy.js'):]
+        self.assertIn('exit 1', tail[:600])
 
     def test_publish_always_runs_full_release_gate(self):
         source = (ROOT / 'publish.sh').read_text(encoding='utf-8')

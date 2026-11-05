@@ -1,0 +1,120 @@
+{
+  "_说明": "更新说明「发布基线」校验的能力词表：一条更新要点命中 words 里的词，就认为它讲的是这一组能力，进而用 files 判断本版到底动没动、用 flags 判断这个能力是不是本周期才出现的。维护纪律：新增一个用户可见功能时，在这里补一行（name / words / files / flags）；漏补不会误报，只会让这条要点落进「未覆盖」清单被打印出来，提醒补登记。words 要放用户能读懂的整词，不要放「更新」「优化」这类泛词。",
+  "_判据": "files 里的路径以 base..HEAD 的 git diff 为准：本版既没新增也没修改该文件，而更新说明却提到了它，说明这条要点写的是本版根本没动的东西（R3）。flags 里的开关 key 若不在上一发布版里，说明这个能力是本周期才出现的（R1）。",
+  "groups": [
+    {
+      "name": "福袋",
+      "words": ["福袋"],
+      "files": ["src/live/lucky-bag.js"],
+      "flags": ["luckyBag"]
+    },
+    {
+      "name": "全能搜索",
+      "words": ["全能搜索"],
+      "files": ["src/content/inject-button.js", "src/live/search.js"],
+      "flags": ["liveSearch"]
+    },
+    {
+      "name": "自动循环讲解",
+      "words": ["循环讲解", "自动讲解"],
+      "files": ["src/live/auto-loop-lecture.js"],
+      "flags": ["autoLoopLecture"]
+    },
+    {
+      "name": "小黄车自动刷新",
+      "words": ["小黄车", "自动刷新"],
+      "files": ["src/live/auto-refresh.js"],
+      "flags": ["liveAutoRefresh"]
+    },
+    {
+      "name": "粘贴加车",
+      "words": ["粘贴加车", "粘贴"],
+      "files": ["src/live/cart-paste.js"],
+      "flags": ["cartPaste"]
+    },
+    {
+      "name": "商品定位",
+      "words": ["商品定位", "定位"],
+      "files": ["src/live/locate.js"],
+      "flags": ["liveLocate", "omniSearch"]
+    },
+    {
+      "name": "商品名称不折叠",
+      "words": ["名称不折叠", "名称完整", "商品名称"],
+      "files": ["src/live/name-wrap.js", "src/content/shop-list-name.js"],
+      "flags": ["liveNameWrap", "shopListNameWrap"]
+    },
+    {
+      "name": "复制货号",
+      "words": ["复制货号", "货号"],
+      "files": ["src/live/copy-code.js", "src/content/wx-goods-tools.js", "src/live/compass-table.js"],
+      "flags": ["liveCopyCode", "compassCopyCode", "compassTableCopyCode", "wxRowCopy"]
+    },
+    {
+      "name": "直播明细",
+      "words": ["直播明细"],
+      "files": ["src/live/live-detail.js", "src/live/live-detail-jump.js", "src/live/live-detail-tab.js"],
+      "flags": ["liveDetailJump", "liveDetailAutoTab"]
+    },
+    {
+      "name": "页面滚动按钮",
+      "words": ["滚动按钮", "回到顶部", "回到顶部按钮", "下滑到底", "上滑到顶"],
+      "files": ["src/live/back-to-top.js", "src/live/back-to-bottom.js"],
+      "flags": ["scrollBtns", "backToTop", "backToBottom"]
+    },
+    {
+      "name": "隐藏页面元素",
+      "words": ["隐藏页面元素", "隐藏元素"],
+      "files": ["src/live/hide-elements.js"],
+      "flags": ["hideElements"]
+    },
+    {
+      "name": "微信小店",
+      "words": ["微信小店", "视频号"],
+      "files": ["src/content/wx-goods-title.js", "src/content/wx-goods-tools.js", "src/content/wx-link-main.js"],
+      "flags": ["wxGoodsFullTitle", "wxRowCopy", "channelOfflineDelete"]
+    },
+    {
+      "name": "库存",
+      "words": ["库存"],
+      "files": ["src/content/stock-direct.js", "src/content/channel-stock.js", "src/content/clear-stock.js"],
+      "flags": ["clearStock"]
+    },
+    {
+      "name": "中控台注入",
+      "words": ["中控台", "补注入"],
+      "files": ["src/live/live-control-flag.js", "src/shared/live-control-assets.js", "src/content/page-probe.js"],
+      "flags": []
+    },
+    {
+      "name": "扩展更新",
+      "words": ["检查更新", "更新包", "自更新", "安装更新"],
+      "files": ["src/update/update.js", "src/shared/gitee.js"],
+      "flags": []
+    },
+    {
+      "name": "拖动",
+      "words": ["拖动", "拖拽"],
+      "files": ["src/content/drag-gate.js"],
+      "flags": []
+    },
+    {
+      "name": "直播大屏",
+      "words": ["直播大屏", "大屏"],
+      "files": ["src/live/live-screen.js"],
+      "flags": ["liveScreenJump", "liveScreenPolish"]
+    },
+    {
+      "name": "渠道品",
+      "words": ["渠道品"],
+      "files": ["src/content/campaign-channel-tick.js", "src/content/channel-offline-delete.js"],
+      "flags": ["campaignChannelTick", "channelOfflineDelete"]
+    },
+    {
+      "name": "店铺名称",
+      "words": ["店铺名称"],
+      "files": ["src/content/shop-header-name.js"],
+      "flags": ["shopHeaderName"]
+    }
+  ]
+}

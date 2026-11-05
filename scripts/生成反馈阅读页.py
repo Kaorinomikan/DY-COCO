@@ -256,6 +256,17 @@ CSS = """
   .diag .ok{color:#00b42a}
   .diag .bad{color:#f53f3f;font-weight:700}
   .nodiag{margin-top:10px;font-size:12px;color:#c9cdd4}
+  /* 诊断快照默认折叠（2026-11-05 用户定）：技术采集数据不占视线，
+     卡片正文只留反馈原文 + 评审结论 + 初步方案；要查现场时点开。 */
+  .diag-fold{margin-top:12px;padding:8px 12px;background:#fafbfc;
+             border:1px dashed #e5e6eb;border-radius:8px}
+  .diag-fold>summary{font-size:12px;font-weight:700;color:#4e5969;cursor:pointer;
+                     list-style:none}
+  .diag-fold>summary::-webkit-details-marker{display:none}
+  .diag-fold>summary::before{content:'▸ ';color:#86909c}
+  .diag-fold[open]>summary::before{content:'▾ '}
+  .diag-fold[open]>summary{margin-bottom:4px}
+  .diag-fold .diag{margin-top:8px;padding:0;border:0;background:transparent}
   /* 页面结构折叠树（2026-10-22 新增）：默认收起，逐层展开 */
   .ds-wrap{margin-top:12px;border:1px dashed #e5e6eb;border-radius:8px;
            background:#fafbfc;padding:8px 12px}
@@ -377,7 +388,8 @@ def render_diag(diag, present=True):
 
     env = diag.get("env") or {}
     base = env.get("boot")
-    out = ['<div class="diag">']
+    out = ['<details class="diag-fold"><summary>诊断快照（环境 / 开关 / 注入控件 / 报错）</summary>'
+           '<div class="diag">']
 
     # ---- 环境 ----
     out.append('<div class="diag-h">环境</div>')
@@ -557,7 +569,7 @@ def render_diag(diag, present=True):
                    '<span class="v"><span class="bad">快照超 64KB，已按优先级截断</span>'
                    '</span></div>')
 
-    out.append("</div>")
+    out.append("</div></details>")
     return "".join(out)
 
 

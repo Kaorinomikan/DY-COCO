@@ -63,6 +63,10 @@ SCRIPT_TARGETS = {
     'scripts/publish-github-api.py': '自测-发布回收.py',
     'scripts/make-dist.py': '自测-发布回收.py',
     'scripts/check-sw-build.py': '自测-更新生效.js',
+    # 发布基线校验（2026-11-05）：闸门本体与它的能力词表改了一处，
+    # 都要跑对应自测 —— 词表失效是静默漏检，不能只靠人工记得跑。
+    'scripts/check-product-copy.js': '自测-更新日志口径.js',
+    'scripts/changelog-entities.json': '自测-更新日志口径.js',
 }
 
 

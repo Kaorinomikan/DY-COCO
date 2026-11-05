@@ -997,6 +997,71 @@ function dycWatchFlags(cb) {
 }
 
 /* ==========================================================
+ * 五·五、中控台作用域(2026-11-05)
+ *
+ * 只在 boot 时判一次 URL 不够用。中控台是 Garfish 微前端,pushState 换路由
+ * **不重载 document**:从 /live/control 切到别的子应用(如橱窗商品管理)时,
+ * content script 还活着,于是循环讲解 / 自动刷新 / 福袋 / 粘贴加车 这些
+ * 浮动控件跟着页面跑出去 —— 甚至会在别的页面上误认商品行、误点按钮。
+ *
+ * 这里只回答「此刻是不是中控台」,收什么、回来重建什么由各模块自己决定。
+ * 判定口径与各模块原有的 boot 守卫保持一致(两个入口)。
+ * ========================================================== */
+
+/**
+ * 是否在直播中控台。
+ * @param {string} [url] 省略时读 location.href
+ * @returns {boolean}
+ */
+function dycIsLiveControl(url) {
+  var u = '';
+  if (url === undefined || url === null) {
+    try { u = String((typeof location !== 'undefined' && location.href) || ''); } catch (e) { u = ''; }
+  } else {
+    u = String(url);          // 显式传串就按串判：空串 = 没有 URL，不是「读当前页」
+  }
+  return /^https:\/\/(?:fxg\.jinritemai\.com\/ffa\/content-tool\/live\/control|buyin\.jinritemai\.com\/dashboard\/live\/control)/.test(u);
+}
+
+/**
+ * 订阅「是否在中控台」的变化。首次立即回调一次,之后只在真假翻转时回调。
+ *
+ * 为什么用 500ms 轮询而不是只听 popstate:抖店这套后台切换走 pushState,
+ * 不触发任何导航事件;hide-elements.js 早已因此单独 hook 过 history。
+ * 轮询一次只是一次字符串判定,代价远小于再多包一层 history。
+ *
+ * @param {function(boolean)} cb
+ */
+function dycWatchLiveScope(cb) {
+  if (typeof cb !== 'function') return;
+  var st = window.__DYC_LIVE_SCOPE__;
+  if (!st) st = window.__DYC_LIVE_SCOPE__ = { subs: [], inScope: null, timer: 0 };
+  if (st.subs.indexOf(cb) >= 0) return;
+  st.subs.push(cb);
+
+  /**
+   * @param {boolean} force 越过「没翻转就不通知」
+   * @param {function} only 只通知这一个订阅（新订阅的首拍用；否则会把
+   *        已有订阅再通知一遍，某些模块会因此重建一遍 UI）
+   */
+  function evaluate(force, only) {
+    var now = dycIsLiveControl();
+    if (!force && now === st.inScope) return;
+    st.inScope = now;
+    (only ? [only] : st.subs.slice()).forEach(function (fn) {
+      try { fn(now); } catch (e) { /* 一个订阅出错不影响其它模块 */ }
+    });
+  }
+
+  if (!st.timer) {
+    st.timer = setInterval(function () { evaluate(false); }, 500);
+    window.addEventListener('popstate', function () { evaluate(false); });
+    window.addEventListener('hashchange', function () { evaluate(false); });
+  }
+  evaluate(true, cb);
+}
+
+/* ==========================================================
  * 六、隐藏页面元素:可隐藏目标登记表 + 勾选存取(2026-10-11 新增)
  *
  * 「隐藏页面元素」是一个**一对多**的功能:一个总开关管着若干个

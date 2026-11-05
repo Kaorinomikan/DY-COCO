@@ -133,12 +133,39 @@ async function toVigil(f) {
   /* ---------- ① 默认关闭 + 记忆 ---------- */
   const on = setup({}); on.api.apply({ autoLoopLecture: true }); await flush();
   check(on.api.state.infinite === false, '没存过就是关(默认关闭)');
+  /* 2026-11-05 二次改:∞ 必须**常驻显示**,关着时也在(灰),否则用户以为功能没做 */
+  check(!!on.ui('.inf-mark'), '∞ 入口常驻存在(与开关状态无关)');
+  check(on.ui('.inf-mark').classList.contains('on') === false, '关闭态 ∞ 不上色(灰)');
 
   const remembered = setup({ dybAutoLoopInfinite: true }); remembered.api.apply({ autoLoopLecture: true }); await flush();
   check(remembered.api.state.infinite === true, '存过 true 就恢复成开(有记忆)');
 
   const asNum = setup({ dybAutoLoopInfinite: 1 }); asNum.api.apply({ autoLoopLecture: true }); await flush();
   check(asNum.api.state.infinite === false, '非布尔值不当成开(只认真正的 true)');
+
+  /* ---------- ①·b 外置 ∞ 只是状态灯,点了不生效 ---------- */
+  const tap = setup({}); tap.api.apply({ autoLoopLecture: true }); await flush();
+  tap.ui('.inf-mark').dispatchEvent(new tap.w.MouseEvent('click', { bubbles: true, cancelable: true }));
+  await flush();
+  check(tap.api.state.infinite === false, '外置 ∞ 不可点:点了开关不变');
+  /* 点它等于点在胶囊上(CSS pointer-events:none 让事件穿透),面板会展开 —— 这是
+   * 胶囊本来的行为,符合「要操作就点开框框」的口径,因此不在这里断言「不展开」。 */
+  check(source.indexOf('refs.capInf.addEventListener') < 0, '源码没有给外置 ∞ 绑点击(只做状态显示)');
+  check(/\.inf-mark\{[\s\S]{0,260}?pointer-events:none/.test(source), '外置 ∞ 关掉鼠标事件(CSS 兜底)');
+  check((function () {
+    const a = source.indexOf('.inf-mark{width');
+    const b = source.indexOf('.inf-mark.on', a);
+    return a >= 0 && b > a && source.slice(a, b).indexOf('border') < 0;
+  })(), '外置 ∞ 没有边框(不是按钮外观)');
+  check((function () {
+    const m = /\.inf\{height:(\d+)px/.exec(source);
+    return !!m && Number(m[1]) >= 24;
+  })(), '面板右上角开关高度不少于 24px(够显眼)');
+  check((function () {
+    const m = /\.inf-mark\{width:(\d+)px;height:(\d+)px/.exec(source);
+    return !!m && Number(m[1]) >= 24 && Number(m[2]) >= 12;
+  })(), '外置 ∞ 图形不小于 24x12(用户两次要求放大)');
+  check(source.indexOf('viewBox="0 0 28 14"') >= 0, '∞ 用矢量图形,不靠字符基线对位');
 
   /* ---------- ② 无限关:三轮找不到仍然停表 ---------- */
   const off = await ready({ dybAutoLoopSeconds: 15, dybAutoLoopGroup: 'sec', dybAutoLoopEnabled: false }, false);
@@ -153,7 +180,7 @@ async function toVigil(f) {
   check(f.api.state.phase === 'vigil', '无限开:转入 vigil 阶段');
   check(f.ui('.slot').textContent === '守候中', '胶囊槽显示「守候中」');
   check(f.ui('.inf').getAttribute('aria-pressed') === 'true', '面板里的「无限」按钮是按下态');
-  check(f.ui('.inf-mark').hidden === false, '收起态胶囊上出现 ∞ 角标');
+  check(f.ui('.inf-mark').classList.contains('on') === true, '开启态 ∞ 上色(蓝)');
   check(f.api.state.fails === 0 && f.api.state.skips === 0, '进守夜把失败/跳过计数清零(等待态不是失败态)');
   check(f.ui('.r3') && f.ui('.r3').hidden === false, '第三行常驻守候信息');
   check(/守候中/.test(f.ui('.r3').textContent), '第三行写明守候中');

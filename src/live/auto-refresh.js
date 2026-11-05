@@ -1499,6 +1499,16 @@
     else stop();
   });
 
+  /* 作用域（2026-11-05）：中控台 pushState 换页不重载 document，
+   * 不跟着收，这盏灯会跑到橱窗商品页，那里也有「刷新商品」按钮，
+   * 找按钮的判据同样吃文本 ⇒ 会在别人的页面上点刷新。离开即停、回来重启。 */
+  if (typeof dycWatchLiveScope === 'function') {
+    dycWatchLiveScope(function (inScope) {
+      if (!inScope) { stop(); return; }
+      if (enabled()) start();
+    });
+  }
+
   /* ---------- 窗口尺寸变化:重新量一次坐标 ---------- */
   window.addEventListener('resize', function () {
     if (!lamp) return;

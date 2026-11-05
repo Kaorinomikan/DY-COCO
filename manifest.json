@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "可可助手",
-  "version": "26.11.05.1",
+  "version": "26.11.06.1",
   "description": "抖音抖店、微信小店、中控台小助手",
   "permissions": [
     "storage",
@@ -89,6 +89,8 @@
       ],
       "js": [
         "src/content/flags.js",
+        "src/live/live-control-flag.js",
+        "src/content/drag-gate.js",
         "src/content/diag.js",
         "src/content/cursor-fix.js",
         "src/content/anchor.js",
@@ -117,6 +119,16 @@
         "src/content/style.css",
         "src/live/nav.css",
         "src/content/msgbox.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.jinritemai.com/*"
+      ],
+      "js": [
+        "src/content/flags.js",
+        "src/live/live-agent.js"
       ],
       "run_at": "document_idle"
     },

@@ -123,9 +123,9 @@ case "$MODE" in
       printf '%s\n' "$ITEMS" | awk -F'\t' '$1=="N"{ printf "    · %s\n", $2 }'
     fi
     if [ "$TOTAL" -ge "$PUSH_GATE" ]; then
-      echo "  ★ 合计 $TOTAL 点(功能点 $CNT + 基建点 $BASE_PT),已达自动推送门槛($PUSH_GATE 点)"
+      echo "  ★ 合计 $TOTAL 点(功能点 $CNT + 基建点 $BASE_PT),已达推送门槛($PUSH_GATE 点) —— 推送须用户下令"
     else
-      echo "  合计 $TOTAL/$PUSH_GATE(功能点 $CNT + 基建点 $BASE_PT,还差 $((PUSH_GATE - TOTAL)) 点自动推送)"
+      echo "  合计 $TOTAL/$PUSH_GATE(功能点 $CNT + 基建点 $BASE_PT,还差 $((PUSH_GATE - TOTAL)) 点;攒批提示,推送须用户下令)"
     fi
     exit 0
     ;;
@@ -163,7 +163,7 @@ echo ""
 
 if [ "$MODE" = "--gate" ] || [ "$MODE" = "--detail" ]; then
   if [ "$TOTAL" -ge "$PUSH_GATE" ]; then
-    echo "结论:已达门槛(合计 $TOTAL >= $PUSH_GATE),可以自动推送。"
+    echo "结论:已达门槛(合计 $TOTAL >= $PUSH_GATE) —— 自审通过后等用户下令推送。"
     exit 0
   else
     echo "结论:未达门槛(合计 $TOTAL < $PUSH_GATE),继续攒 —— 还差 $((PUSH_GATE - TOTAL)) 点。"

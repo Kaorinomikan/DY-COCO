@@ -527,7 +527,16 @@
         timeline: timeline.slice(),
         autoLoop: collectAutoLoop(),
         luckyBag: collectLuckyBag(),
-        scrollChain: collectScrollChain()
+        scrollChain: collectScrollChain(),
+        /* 中控台作用域与补注入凭据（2026-11-05）。用户报「侧栏切进中控台
+         * 功能全不出现」时，这份报告要能直接回答三件事：探子装没装、脚本包
+         * 装没装、补注入报了什么错。只有布尔与一句原因，不含页面内容。 */
+        liveScope: {
+          in: (typeof dycIsLiveControl === 'function') ? dycIsLiveControl() : null,
+          installed: !!window.__DYC_LIVE_CTRL_LOADED__,
+          agent: !!window.__DYC_LIVE_AGENT__,
+          askError: clamp(String(window.__DYC_LIVE_INJECT_ERROR__ || ''), 120)
+        }
       };
       if (extra && Array.isArray(extra.swErrors) && extra.swErrors.length) {
         snap.swErrors = extra.swErrors.slice(-MAX_ERRS).map(function (err) {
@@ -1135,6 +1144,14 @@
           (ck.busy ? ' · 正在开' : '') +
           (ck.stat ? (' · ' + ck.stat) : '') +
           (ck.note ? (' · ⚠' + ck.note) : ''));
+      }
+      /* 续发闸（2026-11-05）：自动发福袋开着却「不续发」时，这条直接回答
+       * 「卡在哪一道」。lucky-bag 每拍记最后一次否决原因，这里只负责转述。 */
+      if (lbSt.auto) {
+        var la = lbSt.auto;
+        L.push('- 续发闸:' + (la.why || '?') +
+          ' · 下次开抽屉 ' + (la.lookIn > 0 ? (Math.round(la.lookIn / 1000) + ' 秒后') : '已到点') +
+          (la.gapSec ? (' · 发福袋间隔 ' + la.gapSec + ' 秒') : ''));
       }
       L.push('- 抽屉:' + (lbSc.panel ? ('已认出(' + (lbSc.by || '?') + ')') : '**没认出**') +
         ' · 行 ' + (lbSc.rows || 0) + ' 个 · 全页「开始活动」链接 ' + (lbSc.startLinks || 0) + ' 个' +

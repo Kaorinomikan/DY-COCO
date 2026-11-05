@@ -99,6 +99,29 @@ if [ "$DRY_RUN" = "1" ]; then
   echo ""
 fi
 
+echo "===== 0/6 更新说明预整理 ====="
+# 用户 2026-11-05：文案的写法由助手自己修，不能因为文案让发布中断。
+# 这里在**任何闸门之前**把不该出现在本版的条目删掉（只删，不改写句子），
+# 并把这个改动提交进去 —— 否则后面的「工作区必须干净」会让它无处安放，
+# 或者更糟：推上去的还是旧文案。
+# 阈值与判据只在 scripts/check-product-copy.js 定义，这里不复制规则。
+COPY_NODE="${COPY_NODE:-C:/Users/79412/.workbuddy/binaries/node/versions/22.22.2-6/node.exe}"
+PRE_BASE=$("$GIT" describe --tags --match 'v[0-9]*' HEAD 2>/dev/null || true)
+if [ "$DRY_RUN" = "1" ]; then
+  echo "[预演] 跳过自动整理（不改文件、不提交）；4/6 仍会检查，但措辞类问题不中止。"
+else
+  PRE_ARGS=(--autofix)
+  [ -n "$PRE_BASE" ] && PRE_ARGS+=(--base "$PRE_BASE")
+  DYC_GIT="$GIT" "$COPY_NODE" "$REPO/scripts/check-product-copy.js" "${PRE_ARGS[@]}" || true
+  if [ -n "$("$GIT" status --porcelain RELEASE_NOTES.md)" ]; then
+    "$GIT" add RELEASE_NOTES.md
+    "$GIT" commit -q -m "[不计点] 自动整理更新说明：删去不属于本版净差异的条目（发布前由闸门自动执行）"
+    echo "[OK] 已自动整理并提交 RELEASE_NOTES.md"
+  else
+    echo "[OK] 更新说明无需整理"
+  fi
+fi
+
 echo "===== 1/6 检查工作区 ====="
 if [ -n "$("$GIT" status --porcelain)" ]; then
   echo "[中止] 工作区有未提交改动："
@@ -319,12 +342,14 @@ echo "说明文档检查通过"
 
 # 产品文案闸门：沿用最近本地发布标签的原样存量，新增或改写的违规文案必须修正。
 # 这里只读本地标签，不查询在线版本；长度与结构阈值只在检查器定义。
-COPY_NODE="${COPY_NODE:-C:/Users/79412/.workbuddy/binaries/node/versions/22.22.2-6/node.exe}"
+# 措辞类问题在 0/6 已自动整理，或降为警告；这里只剩结构性问题才会中止。
 COPY_BASE=$("$GIT" describe --tags --match 'v[0-9]*' --exclude "v$LOCAL_VER" --abbrev=0 HEAD 2>/dev/null || true)
 COPY_ARGS=(--gate)
 [ -n "$COPY_BASE" ] && COPY_ARGS+=(--base "$COPY_BASE")
 if ! DYC_GIT="$GIT" "$COPY_NODE" "$REPO/scripts/check-product-copy.js" "${COPY_ARGS[@]}"; then
-  echo "[中止] 产品文案检查未通过。按 docs/agents/用户要求.md 第 25 条修改；不得缩小检查范围或改写基线绕开。"
+  echo "[中止] 更新说明有结构性缺陷（缺少「本版一句话」，或一条要点都没有）——"
+  echo "       这会让商家更新页显示异常，不是措辞问题，必须先补内容。"
+  echo "       措辞类问题不会走到这里：它们已在 0/6 被自动整理，或降为警告。"
   exit 1
 fi
 

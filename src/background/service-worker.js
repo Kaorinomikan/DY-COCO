@@ -48,10 +48,10 @@
 // │ 发布会被直接中止。不需要靠人记。                                 │
 // └──────────────────────────────────────────────────────────────────┘
 // 全面整改：后台统一设置写入、私有历史与反馈来源截图，更新导入的开关定义。
-var DYC_BUILD = '26.11.05.1+sw25';
+var DYC_BUILD = '26.11.06.1+sw29';
 
 // classic worker，可以 importScripts（manifest 里没有设 type: module）
-importScripts('../shared/gitee.js', '../content/flags.js');
+importScripts('../shared/gitee.js', '../content/flags.js', '../shared/live-control-assets.js');
 
 // 设置由后台串行更新；失败不阻塞队列中的下一次操作。
 var flagWriteQueue = Promise.resolve();
@@ -316,6 +316,20 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
       sendResponse({ ok: true });
     }, function (error) {
       sendResponse({ ok: false, error: (error && error.message) || '设置未保存' });
+    });
+    return true;
+  }
+
+  /* ---- 中控台补注入（2026-11-05）----
+   * 从侧栏 SPA 切进 /live/control 时 document 不重载，中控台那条
+   * content_scripts 根本没有机会命中，页面里一个功能都没有。
+   * 由全域探子 src/live/live-agent.js 发这条消息，这里按与 manifest
+   * 同一份清单补注脚本与样式。 */
+  if (msg.type === 'dyc:injectLiveControl') {
+    injectLiveControl(sender).then(function (r) {
+      sendResponse(r);
+    }, function (e) {
+      sendResponse({ ok: false, error: (e && e.message) || '补注入失败' });
     });
     return true;
   }
@@ -1389,6 +1403,76 @@ chrome.runtime.onConnect.addListener(function (port) {
     });
   });
 });
+
+/**
+ * 把中控台那套脚本补注入到当前标签页（2026-11-05）。
+ *
+ * 为什么要补：content_scripts 只在导航时注入。中控台那条 matches 是
+ * `…/live/control*`，而侧栏切页是 Garfish 微前端的 pushState —— document
+ * 不重载，那条 matches 永远等不到导航。结果就是「先开别的页、再切进中控台」
+ * 时所有功能都不出现，必须刷新一次。
+ *
+ * 为什么先探再注：原生注入与本函数都会往同一个 isolated world 里执行同一批
+ * 文件。重复执行的代价不是「多余一次」，而是 ——
+ *   · anchor.js / dialog.js / row-scan.js 有**顶层 const**，第二次执行整段
+ *     抛 SyntaxError，那三个文件等于没跑；
+ *   · 其余模块会叠出第二套 observer 与定时器，讲解/福袋直接双开。
+ * 所以标记（src/live/live-control-flag.js）必须在场即跳过。
+ *
+ * @param {Object} sender 消息发送者，取 tabId
+ * @returns {Promise<{ok:boolean, skipped?:boolean, count?:number, error?:string}>}
+ */
+async function injectLiveControl(sender) {
+  const tabId = sender && sender.tab && sender.tab.id;
+  if (tabId == null) return { ok: false, error: '拿不到标签页' };
+
+  const assets = (typeof DYC_LIVE_CONTROL_ASSETS !== 'undefined') ? DYC_LIVE_CONTROL_ASSETS : null;
+  if (!assets || !Array.isArray(assets.js) || !assets.js.length) {
+    return { ok: false, error: '注入清单缺失' };
+  }
+
+  /* 与文件里其它注入点同一套兼容策略：先看 chrome.scripting 在不在。
+   * MV3 下 tabs.executeScript 已不保证存在，所以这里只报清楚原因，不硬回退。 */
+  const api = chrome.scripting;
+  if (!api || !api.executeScript) {
+    return { ok: false, error: '本内核没有 chrome.scripting，无法补注入' };
+  }
+
+  // 只补顶层框架：这些功能全部作用于顶层文档，子框架里注入会重复建 UI
+  const target = { tabId: tabId, frameIds: [0] };
+
+  let probe = null;
+  try {
+    probe = await chromeCb(function (done) {
+      api.executeScript({
+        target: target,
+        func: function () { return !!window.__DYC_LIVE_CTRL_LOADED__; }
+      }, done);
+    }, 8000);
+  } catch (e) {
+    /* 探不到就**不注**：宁可这一次没补上（用户刷新即可恢复），
+     * 也不能重复注入 —— anchor / dialog / row-scan 有顶层 const，
+     * 第二次执行整段作废；其余模块会叠出第二套 observer 与定时器。 */
+    return { ok: false, error: '探针失败：' + ((e && e.message) || '未知原因') };
+  }
+  if (probe && probe[0] && probe[0].result) return { ok: true, skipped: true };
+
+  if (Array.isArray(assets.css) && assets.css.length && api.insertCSS) {
+    try {
+      await chromeCb(function (done) {
+        api.insertCSS({ target: target, files: assets.css }, done);
+      }, 8000);
+    } catch (e) {
+      /* 样式失败不阻断脚本：先把功能拉起来，样式下次进来还会补。
+       * 硬中止的后果是「功能完全没有」，比「控件没样式」严重得多。 */
+    }
+  }
+
+  await chromeCb(function (done) {
+    api.executeScript({ target: target, files: assets.js }, done);
+  }, 15000);
+  return { ok: true, count: assets.js.length };
+}
 
 /**
  * 把反馈面板注入到「最像当前页」的标签上。

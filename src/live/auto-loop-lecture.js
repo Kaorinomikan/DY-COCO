@@ -1799,14 +1799,14 @@
     /* D 版固定按钮:宽 138px **写死**。灯 + 「循环讲解」(恒定四字) + 40px 时间槽。
        宽度不随状态变的三条:① width 写死;② 中间文字恒定;③ 时间槽定宽 + 等宽数字,
        没有倒计时时用 visibility:hidden 占位(不塌缩)。 */
-    '.cap{position:fixed;display:flex;align-items:center;width:200px;height:22px;',
+    '.cap{position:fixed;display:flex;align-items:center;width:224px;height:26px;',
     '  padding:0;box-sizing:border-box;',
     '  border-radius:999px;background:#fff;border:1px solid #e5e6eb;color:#4e5969;',
     '  font-size:11px;line-height:1;white-space:nowrap;cursor:pointer;',
     '  box-shadow:0 1px 2px rgba(31,35,41,.06);user-select:none;transition:background .15s,border-color .15s}',
     '.cap[hidden]{display:none}',
-    '.cap-main{display:flex;align-items:center;gap:6px;width:155px;height:20px;padding:0 9px;border:0;border-radius:999px 0 0 999px;background:transparent;color:inherit;font-size:11px;cursor:pointer}',
-    '.power{width:43px;height:20px;padding:0;border:0;border-left:1px solid #e5e6eb;background:transparent;color:inherit;font-size:11px;cursor:pointer;flex:none}',
+    '.cap-main{display:flex;align-items:center;gap:5px;width:179px;height:24px;padding:0 9px;border:0;border-radius:999px 0 0 999px;background:transparent;color:inherit;font-size:11px;cursor:pointer}',
+    '.power{width:43px;height:24px;padding:0;border:0;border-left:1px solid #e5e6eb;background:transparent;color:inherit;font-size:11px;cursor:pointer;flex:none}',
     '.cap.on .power{border-left-color:#b7ebc6}',
     '.cap.on{border-color:#b7ebc6;background:#f4fdf6;color:#0a8f28}',
     '.cap.wait{border-color:#ffd9b3;background:#fffaf3;color:#c25e00}',
@@ -1819,7 +1819,7 @@
     '.txt{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}',
     /* 槽位:计时中放时间(等宽数字),不计时就把状态词放这里 —— 不放空占位符。
        宽度写死 46px,三种状态词(未开启/待讲解/重试中)与 04:32 都能装下,宽度不变。 */
-    '.slot{width:46px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;',
+    '.slot{width:44px;text-align:right;font-variant-numeric:tabular-nums;font-weight:600;',
     '  font-size:10.5px;flex:none;letter-spacing:0}',
     '.cap.on .slot{color:#0a8f28}',
     '.cap.wait .slot{color:#c25e00}',
@@ -1831,6 +1831,8 @@
     '.cap.mini{width:70px;height:22px;padding:0;gap:0}',
     '.cap.mini .cap-main{width:25px;padding:0;justify-content:center}',
     '.cap.mini .ico,.cap.mini .txt,.cap.mini .slot{display:none}',
+    /* 2026-11-05:mini(26px 小圆点)状态下连 ∞ 也放不下,一并收起。 */ 
+    '.cap.mini .inf-mark{display:none}',
 
     /* 面板:从按钮那儿「长出来」再「收回去」。
        用 opacity + visibility + 4px 位移(display 不能过渡),120ms、无弹跳。
@@ -1843,17 +1845,33 @@
     '.panel.open{opacity:1;visibility:visible;transform:none;pointer-events:auto}',
     '.ph{display:flex;align-items:center;justify-content:space-between}',
     '.ph b{font-size:12.5px;font-weight:600;color:#1f2329}',
-    /* 无限模式开关(2026-11-05):标题行右端那枚胶囊 —— 用户截图上画红框的位置。
-       关=灰描边,开=品牌蓝实心;高度 18px,与 12.5px 标题视觉齐平,不撑高标题行。 */
-    '.inf{height:18px;padding:0 7px;border-radius:999px;border:1px solid #e5e6eb;background:#fff;',
-    '  color:#86909c;font-size:10px;line-height:16px;cursor:pointer;font-family:inherit;',
-    '  display:inline-flex;align-items:center;gap:3px;flex:none}',
-    '.inf:hover{border-color:#c9cdd4;color:#4e5969}',
+    /* 面板右上角那枚 —— **唯一可操作**的无限模式开关(2026-11-05 四次改)。
+     * 用户原话:「具体要操作的话还是要点开这个框框,在右上角这里,把这右上角的
+     *   莫比乌斯按钮做得更大一些,更显眼一些」。
+     * 旧版是 18px 高、10px 字,缩在标题行右端看不清。改成 26px 高、12.5px 字、
+     * 加粗、∞ 字形单独放大到 15px;关=白底灰框,开=品牌蓝实心,一眼分得清。 */
+    '.inf{height:26px;padding:0 12px;border-radius:999px;border:1px solid #c9cdd4;background:#fff;',
+    '  color:#4e5969;font-size:12.5px;line-height:1;cursor:pointer;font-family:inherit;font-weight:600;',
+    '  display:inline-flex;align-items:center;gap:5px;flex:none}',
+    '.inf:hover{border-color:#165dff;color:#165dff;background:#f5f8ff}',
+    '.inf .ig{font-size:15px;line-height:1;font-weight:500}',
     '.inf[aria-pressed="true"]{border-color:#165dff;background:#165dff;color:#fff}',
-    '.inf[aria-pressed="true"]:hover{border-color:#165dff;color:#fff}',
-    /* 收起态胶囊上的 ∞ 角标:面板收起来时也要看得出无限模式开着,否则用户
-       只能靠"接不上还不死"来推断开关状态。11px,不撑高胶囊。 */
-    '.inf-mark{font-size:11px;line-height:1;color:#165dff;font-weight:600;margin-left:1px;flex:none}',
+    '.inf[aria-pressed="true"]:hover{border-color:#165dff;background:#0e42d2;color:#fff}',
+    /* 收起态胶囊上的 ∞:**只是状态灯,不是按钮**(2026-11-05 四次改)。
+     * 用户原话:「它只展示实操效果,不包含点击起作用或者关闭的功能……不要做出按钮的
+     *   边框,不要做出按钮的效果。如果启用了它就是亮的,没启用莫比乌斯环就是灰色的」。
+     * ⇒ 无边框、无底色、无 hover、pointer-events:none;开启=品牌蓝,关闭=灰。
+     *
+     * 2026-11-05 五次改(用户「文字和图案不在同一条水平线」):
+     *   原来用字符 U+221E,字形在 em 框里偏下的量随字体而变,而「循环讲解」是汉字
+     *   (几乎填满 em 框),两者用 align-items:center 对齐的是**行盒中心**不是字形中心,
+     *   于是必然错位,且换个字体错位量又变。
+     *   ⇒ 改成矢量描边图形:viewBox 上下对称,盒中心 == 图形视觉中心,
+     *     与文字盒中心靠 flex 对齐即可,不再依赖任何字体度量。
+     *   尺寸 28x14(stroke 2),比原 20px 字符的视觉高度更大。 */
+    '.inf-mark{width:28px;height:14px;color:#a9aeb5;flex:none;display:block;',
+    '  pointer-events:none;user-select:none;margin-left:1px}',
+    '.inf-mark.on{color:#165dff}',
     /* 2026-10-30:秒档与分钟档各装进一个**可选的大框**,点框内任意位置就是选它。
        未启用的整框压到 45% 并把填充转灰 —— 分主次靠视觉权重,不靠隐藏,也不禁点。 */
     '.grp{border:1px solid #e8e9ec;border-radius:8px;background:#fafbfc;padding:9px 12px 10px;margin-top:9px;cursor:pointer}',
@@ -1948,7 +1966,11 @@
       '<path d="M3.7 7.3a4.3 4.3 0 0 0 8.6 0"/><path d="M8 11.6v2.2"/>' +
       '<path d="M6.4 13.8h3.2"/></svg>' +
       '<span class="txt">循环讲解</span>' +
-      '<span class="inf-mark" hidden aria-hidden="true">&#8734;</span>' +
+      '<svg class="inf-mark" viewBox="0 0 28 14" fill="none" stroke="currentColor"' +
+      ' stroke-width="2" stroke-linecap="round" aria-hidden="true">' +
+      '<path d="M7 1.6C4 1.6 1.6 4 1.6 7S4 12.4 7 12.4' +
+      'c3 0 4.7-2.4 7-5.4 2.3-3 4-5.4 7-5.4 3 0 5.4 2.4 5.4 5.4S24 12.4 21 12.4' +
+      'c-3 0-4.7-2.4-7-5.4-2.3-3-4-5.4-7-5.4Z"/></svg>' +
       '<span class="slot">未开启</span></button>' +
       '<button type="button" class="power">开启</button>';
     shadow.appendChild(cap);
@@ -1958,7 +1980,7 @@
     panel.innerHTML = [
       '<div class="ph"><b>自动循环讲解</b>' +
       '<button type="button" class="inf" aria-pressed="false" title="无限循环:接不上只守候,不停表">' +
-      '<span aria-hidden="true">&#8734;</span> 无限</button></div>',
+      '<span class="ig" aria-hidden="true">&#8734;</span> 无限</button></div>',
       '<div class="grp" data-g="sec" aria-pressed="true">',
       '<div class="gh"><span class="rd"></span><span class="gt">秒档</span></div>',
       '<div class="seg"></div></div>',
@@ -2012,6 +2034,11 @@
         setInfinite(!state.infinite, true);
       });
     }
+    /* 收起态胶囊上的 ∞ 是**状态灯,故意不绑定任何点击**(2026-11-05 四次改)。
+     * 用户原话:「它只展示实操效果,不包含点击起作用或者关闭的功能……具体要操作
+     *   的话还是要点开这个框框,在右上角这里」。CSS 上再加 pointer-events:none,
+     * 双保险:哪怕以后有人给它绑事件,点了也不会生效。 */
+
 
     /* 点框内任意位置 = 选这一组。落在档位按钮上的由按钮自己处理（它还要改值），
        所以这里往上找一层看是不是 .sg，是就交给子控件。 */
@@ -2589,7 +2616,7 @@
     /* 从藏到显 ⇒ 清掉吸附记忆,下一行立刻贴到当前实测位(否则会先停在旧坐标两拍) */
     if (cap.hidden) { cap.hidden = false; resetSettle(); }
 
-    var CW_FULL = 200, CW_MINI = 70;
+    var CW_FULL = 224, CW_MINI = 70;
     var row = anchorRow || a;
 
     // —— 让位基准:**只认一个**,优先我们自己的圆钮(它被 auto-refresh 冻结 + 吸附) ——
@@ -2770,7 +2797,12 @@
         ? '无限循环已开:接不上只守候,不停表'
         : '无限循环:接不上只守候,不停表';
     }
-    if (refs.capInf) refs.capInf.hidden = !state.infinite;
+    /* 2026-11-05 四次改:∞ 只做状态显示 —— 开=蓝、关=灰,不可点。
+     * (上一版曾让它 hidden=!infinite,用户以为功能没做;再上一版做成可点按钮,
+     *  用户说「不要做出按钮的效果」—— 现在的口径是:亮=开着,灰=关着。) */
+    if (refs.capInf) {
+      refs.capInf.classList.toggle('on', !!state.infinite);
+    }
     /* ★ 必须把 off 一起清掉:off 的样式写在 on/wait/err 之后,
      *   残留一个 off 会把已开启时的绿/黄盖回灰色 —— 这正解释了
      *   「只见过绿色以外的颜色都没见过/关掉再开还是灰」这类现象。 */
@@ -4688,6 +4720,22 @@
       dycWatchFlags(function (f) { apply(f); });
       apply(flags);
     });
+
+    /* 中控台是 pushState 微前端,切走不重载 document。不跟着收,
+     * 圆钮与「讲解」动作会跟到橱窗商品页去 —— 那一页也有商品表格,
+     * 行识别会把橱窗商品当成小黄车商品(2026-11-05 用户报)。
+     * 离开即停表并摘掉全部 UI;回到中控台重新读一次开关再起。 */
+    if (typeof dycWatchLiveScope === 'function') {
+      dycWatchLiveScope(function (inScope) {
+        if (!inScope) {
+          setupSeq += 1;
+          setupPending = false;
+          stop();
+          return;
+        }
+        dycReadFlags().then(apply);
+      });
+    }
   }
 
   /** 状态快照(自测出口与「复制诊断」共用) */

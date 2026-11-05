@@ -345,17 +345,63 @@ function getAllProductRows(fresh) {
    *   那种情况一小时内只会发生个位数次。
    */
   try {
-    const scope = (_rowsHost && _rowsHost.isConnected)
-      ? _rowsHost
-      : (getScrollContainer() || document.body);
-    const btns = findIdLikeButtons(scope);
-    for (let i = 0; i < btns.length; i++) {
-      const row = rowOfIdButton(btns[i]);
-      if (row && out.indexOf(row) === -1) out.push(row);
+    const host = (_rowsHost && _rowsHost.isConnected) ? _rowsHost : null;
+    const scope = host || getScrollContainer() || document.body;
+    const seen = new Set(out);
+
+    /* 【2026-11-05 · 反馈 #130 性能】先算「主路径没收录的行」再决定怎么补。
+     *
+     * 原实现无论缺不缺行，都对整个容器做一次
+     * querySelectorAll('span,a,button,div,i,b,em')（硬预算 600），再逐候选读
+     * clientWidth / clientHeight（布局读取）。行全部在集合里时（绝大多数时刻，
+     * 包括拖拽中的每一帧），这 600 个候选与后续量测**全是白做** —— 112 行规模
+     * 下它让单轮补扫稳定吃掉几十毫秒，而补扫每 250~300ms 就跑一次。
+     *
+     * 现在：漏行很少（真机实测 5/112）时只查这几行；漏行很多（整表重建）
+     * 才退回原来的整容器扫 —— 那种情况逐行查反而更贵。语义不变：补捞的
+     * 目的本来就是捞回被等高校验误剔的行。
+     */
+    const miss = [];
+    if (host) {
+      const kids = host.children;
+      for (let i = 0; i < kids.length; i++) {
+        if (kids[i] && !seen.has(kids[i])) miss.push(kids[i]);
+      }
+    }
+
+    if (host && miss.length === 0) {
+      /* 一行不缺：本轮无需补捞（最常见的路径，零查询） */
+    } else if (host && miss.length <= 12) {
+      for (let i = 0; i < miss.length; i++) {
+        const kid = miss[i];
+        let btns = findIdLikeButtons(kid);
+        // 行被包了一层时按钮在内层（与 rowsFromHost 的深度 2 兜底同口径）
+        if (!btns.length && kid.children && kid.children.length >= 3) {
+          for (let j = 0; j < kid.children.length && !btns.length; j++) {
+            btns = findIdLikeButtons(kid.children[j]);
+          }
+        }
+        for (let b = 0; b < btns.length; b++) {
+          const row = rowOfIdButton(btns[b]);
+          if (row && !seen.has(row)) { seen.add(row); out.push(row); }
+        }
+      }
+    } else {
+      const btns = findIdLikeButtons(scope);
+      for (let i = 0; i < btns.length; i++) {
+        const row = rowOfIdButton(btns[i]);
+        if (row && !seen.has(row)) { seen.add(row); out.push(row); }
+      }
     }
   } catch (e) { /* 补捞失败就退回主路径结果 */ }
 
-  out.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+  /* 排序：先把 top 一次性读出来再比较。原来在比较器里读 gBCR，
+   * 112 行要读 N log N 次（约 750 次），每次都是一次布局查询。 */
+  const tops = new Map();
+  for (let i = 0; i < out.length; i++) {
+    tops.set(out[i], out[i].getBoundingClientRect().top);
+  }
+  out.sort((a, b) => (tops.get(a) || 0) - (tops.get(b) || 0));
   _allRowsCache = { t: now, rows: out };
   return out;
 }
@@ -483,23 +529,34 @@ function rowsFromHost(host) {
  * —— 与 extractProductRows 同口径，保证快慢两条路径结果一致。
  */
 function collectProductRows(nodes) {
-  const out = [];
+  /* 量测合并（2026-11-05 · 反馈 #130）：等高校验与排序复用同一次
+   * getBoundingClientRect。原来高度读两遍（map 一遍、filter 里再一遍）、
+   * 排序比较器里又读 top —— 112 行合计 700+ 次布局查询，而这条路径
+   * 每 250ms 就被补涂调一次。现在每行固定读一次。 */
+  const items = [];
   for (let i = 0; i < nodes.length; i++) {
     const el = nodes[i];
-    if (isProductRow(el)) out.push(el);
+    if (!el) continue;
+    if (!isProductRow(el)) continue;
+    const r = el.getBoundingClientRect();
+    items.push({ el: el, h: r.height, top: r.top });
   }
-  if (out.length < 3) return [];
+  if (items.length < 3) return [];
 
-  const heights = out.map((el) => el.getBoundingClientRect().height);
-  const avgH = heights.reduce((a, b) => a + b, 0) / heights.length;
-  const uniform = out.filter((el) => {
-    const h = el.getBoundingClientRect().height;
-    return Math.abs(h - avgH) < avgH * 0.3;
-  });
+  let sum = 0;
+  for (let i = 0; i < items.length; i++) sum += items[i].h;
+  const avgH = sum / items.length;
+
+  const uniform = [];
+  for (let i = 0; i < items.length; i++) {
+    if (Math.abs(items[i].h - avgH) < avgH * 0.3) uniform.push(items[i]);
+  }
   if (uniform.length < 3) return [];
 
-  uniform.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
-  return uniform;
+  uniform.sort((a, b) => a.top - b.top);
+  const out = [];
+  for (let i = 0; i < uniform.length; i++) out.push(uniform[i].el);
+  return out;
 }
 
 /**

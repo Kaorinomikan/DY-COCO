@@ -248,5 +248,64 @@ const {
   await sleep(500);
   bp.api.tick();
   ok(bp.clicks.dstart === 1, '㋅⑭ 静默期过后才开始下一轮');
+
+  /* ㋅⑮ 一轮结束后的「追下一轮」节奏（2026-11-05 用户报「手动开的福袋
+   * 结束后不会续发」）。
+   * 现场：确认间隔默认 5 分钟，而只要抽屉开过一次（到点验证 / 手动刷新
+   * 都会开），下一次就被推到 5 分钟后 —— 平台渲染下一轮「待开始」行那一两秒
+   * 的空窗，代价是 5 分钟盲等；2 分钟一轮的福袋看起来就是「再也不发了」。
+   * 口径：自动发福袋开着 + 此刻没有福袋在跑 + 最近 10 分钟内见过一轮
+   * ⇒ 下一次开抽屉按 60 秒硬上限追，不按 5 分钟。
+   * 反向：关掉自动发福袋，仍是 5 分钟常规节拍（不替只读模式勤开抽屉）。
+   * 注意量的是 tick 自带的那次确认（真实链路就是它），不额外调 confirmNow ——
+   * 后者会被「一分钟硬上限」挡住，量不到东西。 */
+  async function lookGapFor(auto) {
+    const e = await bootBagPage();
+    e.api.setAutoForTest(auto);
+    e.api.setTimingForTest({ tick: 999999, lock: 0, afterDrawLag: 0, resumeQuiet: 0 });
+    e.openDrawer();
+    e.doc.querySelector('#drawer tbody').innerHTML =
+      '<tr id="r1"><td><div>10元店铺红包 ID 8899</div></td>' +
+      '<td>进行中 距结束 03:12</td></tr>';
+    e.api.tick();                                 // 记下 lastRunningAt
+    e.api.expireDrawForTest();                    // 倒计时走到 0（时间没真走）
+    e.doc.querySelector('#drawer tbody').innerHTML =
+      '<tr id="r1"><td><div>10元店铺红包 ID 8899</div></td>' +
+      '<td>已结束 共 8 人中奖</td></tr>';          // 下一轮的「待开始」还没渲染出来
+    e.api.tick();                                 // 到点验证这一拍会开一次抽屉
+    return (e.api.snapshot().check.next || 0) - Date.now();
+  }
+
+  const gapAuto = await lookGapFor(true);
+  ok(gapAuto > 0 && gapAuto <= 61000,
+    '㋅⑮ 等下一轮时下一次开抽屉按 60 秒上限追（实际 ' + Math.round(gapAuto / 1000) + ' 秒）');
+
+  const gapOff = await lookGapFor(false);
+  ok(gapOff > 120000,
+    '㋅⑮ 自动发福袋关着 → 仍按确认间隔（实际 ' + Math.round(gapOff / 1000) + ' 秒）');
+
+  /* ㋅⑯ 续发闸诊断（2026-11-05）：自动开着却不续发时，快照要能说清卡在哪一道。
+   * 这条只验「有话说、说得出机器码」，不绑具体文案 —— 文案是给人读的。 */
+  bp = await bootBagPage();
+  bp.api.setAutoForTest(true);
+  bp.api.setTimingForTest({ tick: 999999, lock: 0 });
+  bp.openDrawer();
+  bp.doc.querySelector('#drawer tbody').innerHTML =
+    '<tr id="r1"><td><div>10元店铺红包 ID 8899</div></td>' +
+    '<td>已结束 共 8 人中奖</td></tr>';           // 只有已结束行：没有可点候选
+  bp.api.tick();
+  let av = bp.api.snapshot().auto;
+  ok(!!av && av.code === 'no-cand',
+    '㋅⑯ 没有可点候选 → 诊断给出 no-cand（实际 ' + (av && av.code) + '）');
+  ok(!!av && typeof av.why === 'string' && av.why.length > 0, '㋅⑯ 诊断同时带一句人话');
+  ok(!!av && typeof av.lookIn === 'number', '㋅⑯ 诊断带「下次开抽屉还有多久」');
+
+  bp.doc.querySelector('#drawer tbody').innerHTML =
+    '<tr id="r2"><td><div>5元红包 ID 8898</div></td>' +
+    '<td>待开始 <a id="dstart">开始活动</a></td></tr>';
+  bp.api.tick();
+  ok(bp.api.snapshot().auto.code === '',
+    '㋅⑯ 真点出去的那一拍，诊断标记为已放行');
+
   summary();
 })();

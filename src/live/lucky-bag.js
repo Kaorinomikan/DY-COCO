@@ -435,6 +435,21 @@
   var CONFIRM_OPEN_WAIT = 1200;   // 点开抽屉后等它渲染
   var CONFIRM_READ_WAIT = 400;    // 面板出来后到读数之间再留一拍
   var CONFIRM_HARD_GAP = 60000;   // 硬上限：一分钟内绝不再开第二次
+  /* 「等下一轮」的追单窗口（2026-11-05 用户报「手动开的福袋结束后不会续发」）。
+   *
+   * 现场：确认间隔（滑块，默认 5 分钟）管的是**常规读数节拍**。可只要抽屉开
+   * 过一次（到点验证 / 手动刷新 / 手动发福袋都会开），`nextConfirmAt` 就被
+   * 推到「now + 5 分钟」。于是「上一轮刚结束、平台还没把下一轮的『待开始』
+   * 行渲染出来」这种一两秒的空窗，代价是 5 分钟的盲等 —— 2 分钟一轮的福袋
+   * 看上去就是「结束了再也不发」，而人手动再点一次刷新，只是把这个 5 分钟
+   * 又往后推一遍（越点越不发）。
+   *
+   * 口径：自动发福袋开着、此刻没有福袋在跑、且**最近 10 分钟内见过一轮**，
+   * 说明正处在「等下一轮」的窗口 —— 这时下一次开抽屉按硬上限 60 秒追，
+   * 不按 5 分钟确认间隔。只是「多看一眼」，点击仍走原来全部防双开校验。
+   * 超过 10 分钟没有再见到任何一轮，就退回确认间隔，不做无限骚扰。 */
+  var NEXT_LOOK_GAP = CONFIRM_HARD_GAP;
+  var NEXT_LOOK_WINDOW_MS = 10 * 60 * 1000;
   /* 抽屉读数轮询（2026-11-02 深夜真机「手动刷新还是没检测到」）：
    * 抽屉外壳是瞬间出现的，表格/活动卡片要等服务端回包才渲染 ——
    * 原来固定等 1.6 秒只读一次，读到的常常是空壳，于是把「还没渲染」
@@ -591,6 +606,7 @@
   var pendingClick = null;  // { key, at }  等待校验的那一次点击
 
   var tickTimer = 0;
+  var scopeSuspended = false;   // 已离开中控台（见 suspendByScope）
   var lockUntil = 0;
   var quietSince = 0;
   var noneStreak = 0;
@@ -698,6 +714,64 @@
    * 结果「已发出，剩 03:12（没关掉）」这种结论文案被过程态改写 ——
    * 复核成功也会让人读成「没弄成」。现在单独一个字段，快照里能看，结论不受污染。 */
   var closeNote = '';
+
+  /* 「为什么这一拍没开始下一轮」（2026-11-05 · 纯诊断，不参与任何判定）。
+   *
+   * 用户报「手动开的福袋结束后不会续发，只有让它自己开才连得上」，但拿不到
+   * 现场数据。自动开始下一轮这条链上有十几道闸，任何一道都能让它安静地不发 ——
+   * 光看「没发」永远分不清是哪一道。这里在每一拍记下**最后一次否决的原因**，
+   * 随快照与诊断报告带出去，下一次现场就能一眼看出卡在哪。
+   * 记录是最后写入者赢：本拍有更具体的否决就覆盖，成功点出去则清空。 */
+  var autoVetoCode = '';
+  var autoVetoAt = 0;
+  var AUTO_VETO_TEXT = {
+    'stopped': '已经停机（不在扫描）',
+    'hidden': '标签页在后台（后台不动作）',
+    'offline': '判据明确「未开播/已下播」',
+    'no-scene': '看不见现场（抽屉关着、也没有进行中卡片）',
+    'auto-off': '「自动发福袋」没开',
+    'gate': '开播闸没放行（未确认在播）',
+    'no-cand': '没有可点的「待开始」行（抽屉开着但读不到可点链接）',
+    'pending': '正在确认上一次点击',
+    'reverify': '正在核对刚才那次发送',
+    'probe': '正在追读倒计时',
+    'gap': '按「发福袋间隔」等待中',
+    'user-open': '你刚亲手开过抽屉，这 10 秒不抢',
+    'running': '还有活动进行中（防双开）',
+    'hold': '上一轮的倒计时还没走完',
+    'resume-quiet': '刚看不见上一轮，等结束证据',
+    'draw-lag': '开奖收尾冷却中',
+    'lock': '刚点过，防连点锁',
+    'link-down': '「开始活动」此刻不可点',
+    'halted': '停机监视中（只补发，不新开）',
+    'resume-cap': '补发次数用完了'
+  };
+
+  function setAutoVeto(code) {
+    autoVetoCode = code || '';
+    autoVetoAt = Date.now();
+  }
+
+  /* 下一次「开抽屉找下一轮」该等多久（2026-11-05）。
+   * 常规 = 确认间隔（滑块，默认 5 分钟，至少 60 秒）；
+   * 等下一轮的窗口内 = 60 秒硬上限（见 NEXT_LOOK_GAP 注释）。 */
+  function lookGapMs() {
+    var full = Math.max(CONFIRM_HARD_GAP, checkMin * 60000);
+    if (!flags.auto) return full;
+    /* 「此刻有没有在跑」不能用裸 liveRunning —— maybeConfirm 在 tick 开头跑，
+     * 那时 liveRunning 还是**上一拍**的结论：一轮刚结束的那一拍它仍是 true，
+     * 于是 lookGapMs 判成「有在跑」、把下一次推到 5 分钟后 —— 正是要修的那个
+     * 盲区。这里以到期时刻为准：读数已到期（或没有到期时刻也没有短期凭据）
+     * 就算「没有在跑」。 */
+    var runningNow = liveRunning && (
+      (drawAt && drawAt > Date.now()) ||
+      (runningFactUntil && runningFactUntil > Date.now())
+    );
+    if (runningNow) return full;               // 真有在跑的就不必勤看
+    if (!lastRunningAt) return full;           // 本场还没见过任何一轮
+    if (Date.now() - lastRunningAt > NEXT_LOOK_WINDOW_MS) return full;
+    return Math.min(full, NEXT_LOOK_GAP);
+  }
 
   /* 手动刷新（2026-11-02 凌晨 用户「福袋按钮做一个手动刷新的按钮在框框里面，
    * 点击这个按钮，重新自己抓一次进行中的活动，然后关闭抽屉」）：
@@ -1728,7 +1802,7 @@
     }
     if (panelInfo().open) {              // 你已经开着：直接用当前读数，不重开
       lastConfirmAt = now;
-      nextConfirmAt = now + checkMin * 60000;
+      nextConfirmAt = now + lookGapMs();
       if (force) {                       // 手动刷新也一样：读数就在眼前
         /* 读数就在眼前，但「眼前」也可能是刚弹出还没渲染的空壳 ——
          * 走同一套轮询，读到行才算数（keepOpen：你开的抽屉绝不替你关）。 */
@@ -1754,7 +1828,9 @@
       window.__dycBagBusyUntil = now + CONFIRM_OPEN_WAIT + CONFIRM_READ_WAIT + 900;
       window.__dycBagPanelOpen = true;
     } catch (e0) {}
-    nextConfirmAt = now + Math.max(CONFIRM_HARD_GAP, checkMin * 60000);
+    /* 下一次什么时候再来看：常规走确认间隔；处在「等下一轮」窗口内走 60 秒
+     * 硬上限（2026-11-05，见 lookGapMs / NEXT_LOOK_GAP 的注释）。 */
+    nextConfirmAt = now + lookGapMs();
     /* 用 fireClickOnly 而不是 fireClick：后者会顺带找「确定」确认框，
      * 抽屉里若有「确定」按钮（创建活动表单），会被误点。 */
     try { fireClickOnly(entry); confirmStat = '已开抽屉'; }
@@ -2198,8 +2274,8 @@
    * ========================================================== */
 
   function tick() {
-    if (phase === 'off' || phase === 'stopped') return;
-    if (document.hidden) return;          // 后台标签页不动作，恢复可见会补拍
+    if (phase === 'off' || phase === 'stopped') { setAutoVeto('stopped'); return; }
+    if (document.hidden) { setAutoVeto('hidden'); return; }   // 后台标签页不动作，恢复可见会补拍
 
     /* ---- 开播判据 + 确认节拍（2026-11-01 定，2026-11-03 改口径）----
      * 只有**明确在播**才动作（用户 2026-11-03 拍板「只认明确在播才自动开抽屉」）。
@@ -2244,6 +2320,7 @@
       noneStreak = 0;
       liveRunning = false;
       drawAt = 0;
+      setAutoVeto('offline');
       return;
     }
     /* 开播闸（2026-11-03 拍板：只认明确在播才自动动作）。
@@ -2309,6 +2386,7 @@
         liveRunning = false;   // 看不见任何现场，也不能声称「进行中」
         drawAt = 0;
       }
+      setAutoVeto('no-scene');
       return;
     }
     quietSince = 0;
@@ -2561,12 +2639,13 @@
        *     「依然遵守自动发福袋的流程，而不是倒计时结束立刻发」。 */
       if (phase !== 'halted' && autoOn && gapSec > 0 && lastRoundEndAt &&
           Date.now() < lastRoundEndAt + gapSec * 1000) {
+        setAutoVeto('gap');
         return;
       }
       /* 真人刚亲手开过抽屉（2026-11-04）：这 10 秒里不自动点。
        * 用户报的「我一开抽屉它就无脑发、尝试连发两次」就出在这里 ——
        * 他开抽屉是为了「看看到底有没有」，不是为了「让它再发一个」。 */
-      if (Date.now() - userBagOpenAt < USER_OPEN_GUARD_MS) return;
+      if (Date.now() - userBagOpenAt < USER_OPEN_GUARD_MS) { setAutoVeto('user-open'); return; }
       /* 防双开闸（用户 2026-11-01 定稿）：点之前先看本拍扫描有没有
        * 「进行中」的行/卡片 —— 有就绝不开第二个，等它结束（卡片收走、
        * anyRunningNow 清零）下一拍才轮到候选。
@@ -2575,6 +2654,7 @@
        *   · 补发分支天然安全：halted 期间一旦扫到进行中，上面已经把
        *     phase 拉回 live，走不到这里 —— 补发只会发生在真没有进行中时。 */
       if (anyRunningNow) {
+        setAutoVeto('running');
         skipRunningNote();
         return;
       }
@@ -2586,6 +2666,7 @@
        * 此时哪怕行里读不出进行中（抽屉关着、卡片被平台收走），也绝不发下一轮。
        * 期间每拍 tick 会用现场读数更正这个时刻；到期后才放行。 */
       if (holdDrawAt && Date.now() < holdDrawAt) {
+        setAutoVeto('hold');
         skipRunningNote();
         return;
       }
@@ -2594,6 +2675,7 @@
        * 再多等 RESUME_QUIET_MS —— 期间任何一拍看到进行中都会把读数立回来。 */
       if (!anyDrawn && !hasEmptyBagTextNow() && lastRunningAt &&
           Date.now() - lastRunningAt < RESUME_QUIET_MS) {
+        setAutoVeto('resume-quiet');
         skipRunningNote();
         return;
       }
@@ -2601,21 +2683,37 @@
        * 等平台把开奖收尾做完再续（2026-11-02 用户定「不然容易冲突」）。
        * lastRunningAt 为 0 = 本场从没见过进行中（含停机补发的常态），
        * 冷却对补发时效无影响 —— 补发场景 lastRunningAt 早已久远。 */
-      if (lastRunningAt && Date.now() - lastRunningAt < AFTER_DRAW_LAG_MS) return;
-      if (Date.now() < lockUntil) return;
-      if (!clickable(pendingCand.link)) return;
+      if (lastRunningAt && Date.now() - lastRunningAt < AFTER_DRAW_LAG_MS) {
+        setAutoVeto('draw-lag');
+        return;
+      }
+      if (Date.now() < lockUntil) { setAutoVeto('lock'); return; }
+      if (!clickable(pendingCand.link)) { setAutoVeto('link-down'); return; }
       if (phase === 'halted') {
         /* 补发：第一次立即补；失败后同一会话冷却；超过上限不再点 */
-        if (resumeCount >= RESUME_MAX) return;
-        if (resumeLastAt && Date.now() - resumeLastAt < RESUME_COOLDOWN_MS) return;
+        if (resumeCount >= RESUME_MAX) { setAutoVeto('resume-cap'); return; }
+        if (resumeLastAt && Date.now() - resumeLastAt < RESUME_COOLDOWN_MS) {
+          setAutoVeto('halted');
+          return;
+        }
         resumeCount += 1;
         resumeLastAt = Date.now();
         resumePending = true;
         note('尝试补发', { count: resumeCount });
       }
+      setAutoVeto('');
       clickStart(pendingCand);
       return;
     }
+
+    /* 这一拍没进上面的分支 —— 把「为什么没进」记下来（纯诊断）。
+     * 顺序与分支条件一一对应，不要在这里加任何判定。 */
+    if (!flags.auto) setAutoVeto('auto-off');
+    else if (!gateOpen) setAutoVeto('gate');
+    else if (!pendingCand) setAutoVeto('no-cand');
+    else if (pendingClick) setAutoVeto('pending');
+    else if (reverify) setAutoVeto('reverify');
+    else if (probe) setAutoVeto('probe');
 
     /* ---- 无可点判定（只在自动执行下一轮模式下停机；halted 中保持已停） ---- */
     /* 复核期不算「没有活动」（2026-11-03 晚）：抽屉被平台收起、卡片还没回包
@@ -4037,6 +4135,45 @@
     paintBadge();
   }
 
+  /* ==========================================================
+   * 六·五、作用域收放（2026-11-05）
+   *
+   * 中控台是 Garfish 微前端，pushState 换路由**不重载 document**：
+   * 从 /live/control 切到别的子应用（橱窗商品管理等）时脚本还活着。
+   * 不主动收，圆钮会带着「未开始」跟到那一页，扫描还会继续读那页的表格。
+   * ========================================================== */
+
+  /** 离开中控台：停扫描、摘圆钮与面板；内存读数保留，回来能接上 */
+  function suspendByScope() {
+    if (scopeSuspended) return;
+    scopeSuspended = true;
+    stopLoop();
+    cancelReverify();
+    cancelProbe();
+    pendingClick = null;
+    destroyPanel();
+    destroyBadge();
+    phase = 'off';
+    drawAt = 0;
+    liveRunning = false;
+    runningFactUntil = 0;
+    userBagOpenAt = 0;
+    note('离开中控台，福袋已停用');
+  }
+
+  /** 回到中控台：按当前总闸重建圆钮与扫描 */
+  function resumeByScope() {
+    if (!scopeSuspended) return;
+    scopeSuspended = false;
+    note('回到中控台，福袋恢复');
+    if (!flags.watch) return;
+    phase = 'live';
+    nextConfirmAt = Date.now() + 3000;
+    startBadge();
+    startLoop();
+    paintBadge();
+  }
+
   function applyFlags(f) {
     /* 总闸（popup「福袋功能增强」，2026-11-01 深夜起是唯一开关）：
      * 开 ⇒ 监视立即生效；自动发福袋 = gate && autoOn（面板开关的「与」）。
@@ -4047,6 +4184,20 @@
     flags.watch = gate;
     flags.auto = gate && autoOn;
     prevGate = gate;
+
+    /* 不在中控台（2026-11-05）：只记开关，不建圆钮/面板、也不弹消息。
+     * 否则用户在中控台外向来自助切页时，开关回声会把圆钮又建回来。 */
+    if (scopeSuspended) {
+      if (!gate) {
+        stopLoop();
+        phase = 'off';
+        pendingClick = null;
+        drawAt = 0;
+        destroyPanel();
+        destroyBadge();
+      }
+      return;
+    }
 
     if (gateChanged && typeof toast === 'function') {
       toast(gate ? '已开启' : '已关闭', 'info', { source: '福袋功能增强' });
@@ -4112,6 +4263,14 @@
       loadCheckMin();
       loadGapSec();
       dycWatchFlags(applyFlags);
+      /* 中控台是 pushState 微前端，切到别的子应用不重载 document。
+       * 扫描与圆钮必须跟着作用域收，否则会带着「未开始」的圆钮
+       * 跑到橱窗商品页去（2026-11-05 用户报）。 */
+      if (typeof dycWatchLiveScope === 'function') {
+        dycWatchLiveScope(function (inScope) {
+          if (inScope) resumeByScope(); else suspendByScope();
+        });
+      }
     });
   }
 
@@ -5761,6 +5920,19 @@
          * 与 live 分开报是刻意的：live 是三态原值，gate 是它的后果，
          * 排查时要能一眼看出「是判据认不出，还是判据认出了但闸没生效」。 */
         gate: liveGateOpen(),
+        /* 续发闸（2026-11-05 诊断）：最近一拍「为什么没开始下一轮」。
+         * code 为空 = 这一拍已经点出去了。why 是给诊断报告直接读的一句话，
+         * 绝不进用户可见文案（用户只看结果，不看机制）。 */
+        auto: {
+          code: autoVetoCode,
+          why: autoVetoCode
+            ? (AUTO_VETO_TEXT[autoVetoCode] || autoVetoCode)
+            : (autoVetoAt ? '已放行（这一拍点了「开始活动」）' : '还没有拍子跑过'),
+          at: autoVetoAt,
+          lookIn: nextConfirmAt ? Math.max(0, nextConfirmAt - Date.now()) : 0,
+          gapSec: gapSec,
+          lastRoundEndIn: lastRoundEndAt ? (lastRoundEndAt - Date.now()) : 0
+        },
         liveRaw: (function () {
           var g = window.dycLiveState;
           return (g && typeof g.dump === 'function') ? g.dump() : null;

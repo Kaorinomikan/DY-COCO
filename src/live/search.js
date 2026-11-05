@@ -1005,6 +1005,26 @@
     });
   }
 
+  /* 作用域（2026-11-05）：中控台是 pushState 微前端，切走不重载页面。
+   * 不跟着收，胶囊与【全能搜索】按钮会挂到橱窗商品页的搜索框上，回车接管
+   * 也照样生效 —— 用户在那一页搜商品会被莫名改成全能扫描。
+   * 离开复用「开关关掉」那条停机路径；回到中控台按当前开关重建。 */
+  if (typeof dycWatchLiveScope === 'function') {
+    var scopeSeen = null;
+    dycWatchLiveScope(function (inScope) {
+      var first = (scopeSeen === null);
+      scopeSeen = inScope;
+      if (!inScope) {
+        destroySearchUi();
+        return;
+      }
+      if (first || !enabled()) return;   // 首次进入由模块自身初始化负责
+      reviveSearchUi();
+      scanSearchInputs();
+      startOmniGuard();
+    });
+  }
+
   // ---------------- 搜索框识别与接管 ----------------
 
   /**
