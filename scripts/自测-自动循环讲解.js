@@ -447,14 +447,17 @@ ok('重试等待可打断:分片 sleep,每片比一次中止令牌',
 ok('等待期间「讲解中」自己回来了 ⇒ 不再重试搜索,直接接着讲',
   /async function waitSearchRetry[\s\S]{0,500}if \(findLiveRow\(\)\) return 'returned';/.test(src) &&
   /if \(waited === 'returned'\) \{/.test(src));
-ok('分钟档成功续讲后清滚屏额度(否则跑几轮就永久不再滚)',
+ok('分钟档成功后清滚屏额度(否则跑几轮就永久不再滚)',
   (function () {
     const i = src.indexOf('function resetScanQuota');
     if (i < 0) return false;
     const f = src.slice(i, i + 500);
-    const called = src.indexOf('resetScanQuota();', src.indexOf('async function doCycle'));
+    /* 2026-11-06:分钟档收尾抽成 finishSlowCycle(弹卡与老流程共用一份),断言跟着搬家 */
+    const iFin = src.indexOf('function finishSlowCycle');
+    const iCall = iFin < 0 ? -1 : src.indexOf('resetScanQuota();', iFin);
+    const called = iCall > 0 && iCall < src.indexOf('async function doCycle', iFin);
     return /state\.scanDone = false;/.test(f) && /state\.scanSeg = 0;/.test(f) &&
-      /state\.scanNeed = 0;/.test(f) && called > 0;
+      /state\.scanNeed = 0;/.test(f) && called;
   })());
 
 /* ---------------- 秒档搜索兜底(2026-10-31 用户追加:「重试失败多次的最终兜底」) ---------------- */
@@ -532,8 +535,12 @@ ok('状态确认类失败单独计数(SOFT_LIMIT),不烧「找不到商品」的
 ok('补点讲解最多点三次(平台会吞掉刚取消完的那一次点击)',
   /async function clickLectureAndVerify\(mark, firstBtn\)/.test(src) &&
   /clicks < 4/.test(src));
-ok('一轮成功统一走 finishFastCycle 记账(前台×2 + 盲模式×4 六条路都走同一套收尾)',
-  (src.match(/finishFastCycle\(row, name\);/g) || []).length === 6);
+ok('一轮成功统一走 finishFastCycle 记账(前台弹卡/重讲 + 盲模式各条路都走同一套收尾)',
+  /function finishFastCycle\(row, name, how\)/.test(src) &&
+  (src.match(/finishFastCycle\(/g) || []).length >= 6 &&
+  /* 秒档函数体内不许再手写轮次自增 —— 那样会绕过消息与计时重置 */
+  !/state\.round \+= 1;/.test(src.slice(src.indexOf('async function doFastCycle'),
+    src.indexOf('function checkNow'))));
 /* nap8(2026-11-01 用户:「一切换页面就再也不循环了」):
    旧盲模式用 cancelPending + TTL 复看,而隐藏标签的 DOM 冻结在「取消讲解」⇒
    lecturing 恒真 ⇒ 永远点取消、永远不补讲 ⇒ 商品空着,看着像"停了"。
@@ -545,7 +552,7 @@ ok('盲模式一轮只做一个动作:先取消、再补讲(靠账本推进,不�
 /* nap10(实机 03:35:06):界面没翻时点一下是白费 —— DOM 冻着,按钮还写「取消讲解」,
    点下去等于再取消一次,把一次真循环拖成 3 轮 48 秒。改成只在按钮真变回「讲解」时点。 */
 ok('盲模式补讲只在界面真的翻回「讲解」时才点,没翻就 3 秒后再看',
-  /if \(rb2 && rl2 === '讲解'\) \{/.test(src) &&
+  /if \(rb2 && rl2 === 'start'\) \{/.test(src) &&
   /盲模式:等界面翻\(按钮「/.test(src) &&
   /var BLIND_TICK_MS = 3000;/.test(src));
 ok('界面 6 秒没翻就主动点一次「刷新列表」催平台更新(20 秒限频)',
@@ -560,7 +567,7 @@ ok('界面多次没翻仍有兜底强制点一次,绝不死等',
    改成每秒拍子探一次按钮文案,界面一翻就补讲(实测一次循环 48 秒 → 只受 DOM 延迟限制)。 */
 ok('盲模式有「提前补讲探测」:界面一翻就补,不必等满间隔',
   /var PEEK_MIN_MS = 3000;/.test(src) && /var PEEK_MS = 1000;/.test(src) &&
-  /if \(peekBtn && txt\(peekBtn\) === '讲解'\) \{/.test(src) &&
+  /if \(peekBtn && kindOf\(peekBtn\) === 'start'\) \{/.test(src) &&
   /state\.nextAt = now;/.test(src));
 /* nap10 第二处 → nap11 修正:曾经让间隔"从点取消起算",结果补讲刚点完就抢跑下一轮,
    读到的是补讲前的界面(不在讲)⇒ 又点一次讲解,白推后一个间隔(实机 03:45:54)。
@@ -759,7 +766,7 @@ ok('失败消息:值=商品名(谁没接上)、结果数=连续 N 次没接上·
 ok('成功消息:值=商品短名(强)、结果数=第 N 轮(弱)—— 2026-10-27 用户定「中间要是被执行的名字」',
   /function shortName/.test(src) &&
   /boxNote\(BOX_CYCLE, 'success', shortName\(name\),/.test(src) &&
-  /'第 ' \+ state\.round \+ ' 轮' \+ \(recovered \? ' · 已恢复' : ''\)/.test(src));
+  /'第 ' \+ state\.round \+ ' 轮' \+ tag \+ \(recovered \? ' · 已恢复' : ''\)/.test(src));
 ok('「谁在被执行」统一走 productName()(reset 前先取,别拿空值发消息)',
   /function productName\(\) \{\s*return shortName\(state\.product\);/.test(src));
 ok('有真机探查出口 probe', /probe: function \(\)/.test(src));
@@ -806,7 +813,12 @@ ok('滚屏改为单向扫 + 绕回顶部(不再每次都在同一小段来回蹭
 ok('单档用轮询找行、观察窗 350ms(虚拟列表 300~600ms 才挂载,350 命中即回;700 太保守)',
   /async function tryAt/.test(src) && /var SCAN_OBS_MS = 350;/.test(src) &&
   /k < Math\.round\(SCAN_OBS_MS \/ 100\)/.test(src));
-ok('按钮识别放宽(文本/标题/aria,认开始讲解等写法)', /BTN_TEXTS/.test(src) && /getAttribute\('aria-label'\)/.test(src));
+/* 2026-11-06:认法从"一串写死的按钮文案"升级为"按态分类",断言跟着约束**行为**:
+   文本、title、aria-label 三条都要认;title/aria 也走同一套态判定(不许退回写死词表)。 */
+ok('按钮识别放宽(文本/标题/aria 都认,且统一按态判定)',
+  /getAttribute\('title'\) \|\| el\.getAttribute\('aria-label'\)/.test(src) &&
+  /var okLabel = !!kindOfText\(label\)/.test(src) &&
+  /var okText = !!kind \|\|/.test(src));
 ok('有行但没按钮也先滚动找回一次', /!findLectureBtn\(row\)/.test(src));
 ok('滚动容器三级兜底(行集合→面板内扫描→锚点)', /从小黄车面板容器\*\*内部\*\*/ .test(src) || /findCartPanel\(\)/.test(src) && /scrollHeight - el\.clientHeight < 100/.test(src));
 ok('滚完仍找不到 ⇒ 记失败重试,不直接停',
@@ -840,7 +852,7 @@ ok('面板从按钮那一角长出/收回（transform-origin + 过渡）', /tran
  * 「循环讲解的相关消息也应该记录在消息盒子里,成功和失败都要进去,
  *   但是条数不能太多了,能少就少」。
  * ⇒ 成功、结束、失败**全都进盒子**,但一律走 histKey 原地刷新 —— 全场最多 2 条。 */
-ok('每一轮成功都提示一条(状态栏),成功只发这一条', /reportCycle\(name0, wasFailing\)/.test(src) &&
+ok('每一轮成功都提示一条(状态栏),成功只发这一条', /reportCycle\(name0, wasFailing, how\)/.test(src) &&
   !/toast\('已恢复'/.test(src));
 ok('成功进消息盒子(不再是 exclude)', /boxNote\(BOX_CYCLE, 'success'/.test(src));
 ok('盒子里用 histKey 原地刷新,不按轮次流水增长',
@@ -886,7 +898,7 @@ ok('DOM 唤醒:列表变动 300ms 内就复查', /new MutationObserver/.test(src
 ok('观察器按容器挂载并在停用时摘除', /observerTarget/.test(src) && /observer\.disconnect\(\)/.test(src));
 ok('续讲后状态翻转轮询 200ms 一次', /Math\.ceil\(VERIFY_MS \/ 200\)/.test(src));
 ok('取消后按商品名找回那一行(不再依赖「讲解中」标记)', /function findRowByName/.test(src) && /findRowByName\(key\)/.test(src));
-ok('续讲等待改成等条件(每 150ms 看按钮是否变回「讲解」)', /await sleep\(150\)/.test(src) && /txt\(b2\) === '讲解'/.test(src));
+ok('续讲等待改成等条件(每 150ms 看按钮是否变回「讲解」)', /await sleep\(150\)/.test(src) && /kindOf\(b2\) === 'start'/.test(src));
 ok('滑块文案按数值变化才写 DOM(不每拍 innerHTML)', /lastSliderTxt/.test(src));
 ok('先落值再建 UI(面板首帧不闪默认 5 分钟)', (function () {
   const i = src.indexOf('function start()');
@@ -1018,6 +1030,79 @@ manifest.content_scripts.forEach(function (cs) {
 });
 ok('manifest 已注入到中控台', injected);
 ok('注入位置在入口脚本之前', beforeEntry);
+
+/* ---------------- B. 弹卡优先(2026-11-06 用户定的最优先路径) ----------------
+ * 平台把「讲解中」那一行的按钮换成了「弹出讲解卡」:点它不断开讲解、只重新弹卡。
+ * 循环讲解必须优先用它,失败才回退「取消→重讲」。这里锁三件事:
+ *   ① 按钮态分类认得全新文案(含平台改字后的变体);
+ *   ② 老代码里"拿任意讲解按钮当取消/开始"的等值判断必须全部消失;
+ *   ③ 弹卡调用点必须在取消路径之前 —— 顺序反了就退化成老行为。
+ * ---------------------------------------------------------------------- */
+
+(function () {
+  /* ① 按钮态:表驱动 */
+  const cases = [
+    ['讲解', 'start'], ['开始讲解', 'start'],
+    ['取消讲解', 'stop'], ['结束讲解', 'stop'], ['停止讲解', 'stop'],
+    ['弹出讲解卡', 'pop'], ['弹起讲解卡', 'pop'], ['重新弹出讲解卡', 'pop'],
+    ['弹出讲解卡片', 'pop'], ['弹 出 讲 解 卡', 'pop'],
+    ['讲解中', 'mark'], ['正在讲解', 'mark'], ['讲解中…', 'mark'],
+    ['', ''], ['预热', ''], ['取消预热', ''],
+    /* 长文本是标题/说明,不是按钮 —— 商品名里带「讲解卡」三个字不能被当成按钮 */
+    ['讲解卡片收纳盒加厚款家用', '']
+  ];
+  cases.forEach(function (c) {
+    eq('按钮态「' + c[0] + '」= ' + (c[1] || '认不出'), P.kindOfText(c[0]), c[1]);
+  });
+  ok('新文案「弹出讲解卡」绝不能被认成开始讲解',
+    P.kindOfText('弹出讲解卡') !== 'start');
+  ok('新文案也不能被认成取消讲解(它不取消)',
+    P.kindOfText('弹出讲解卡') !== 'stop');
+
+  /* ② 旧的等值判断必须清干净 —— 留着任何一处,新文案就会在那里等一个永不发生的翻转 */
+  ok('源码里不再有 txt(x) === \'讲解\' 的等值判断',
+    !/txt\([^)]*\)\s*===\s*'讲解'/.test(src));
+  ok('源码里不再有 txt(x) !== \'讲解\' 的等值判断',
+    !/txt\([^)]*\)\s*!==\s*'讲解'/.test(src));
+  ok('isLecturing 不再用 mk.contains(row) 认标记(会把别处的残留标记算到本行)',
+    !/mk\.contains\(row\)/.test(src));
+
+  /* ③ 弹卡优先的调用点必须在取消之前 */
+  ok('存在 tryPopCard(弹卡优先的唯一入口)', /async function tryPopCard\(/.test(src));
+  ok('弹卡按钮同时支持"行内"与"页面浮层"两种形态(用户说左侧滑出)',
+    /function findPopBtnPage\(/.test(src) && /findPopBtn\(row\)\s*\|\|\s*findPopBtnPage\(\)/.test(src));
+  ok('急停 / 状态未定时不动手:弹卡前必须先确认在讲解',
+    /if \(!row \|\| !isLecturing\(row\)\) return 'none';/.test(src));
+
+  const iSecPop = src.indexOf('var popped = await tryPopCard(row, mark);');
+  const iSecCancel = src.indexOf('fireClick(cancel);');
+  ok('秒档:弹卡在「点取消」之前', iSecPop > 0 && iSecCancel > 0 && iSecPop < iSecCancel,
+    'pop=' + iSecPop + ' cancel=' + iSecCancel);
+
+  const iMinPop = src.indexOf('var popped = await tryPopCard(row, mark);', iSecPop + 1);
+  const iMinCancel = src.indexOf('// 第一次点击:取消讲解');
+  ok('分钟档:弹卡在「第一次点击:取消讲解」之前', iMinPop > 0 && iMinCancel > 0 && iMinPop < iMinCancel,
+    'pop=' + iMinPop + ' cancel=' + iMinCancel);
+
+  ok('盲模式(后台)也走弹卡 —— 它不需要等界面翻回来',
+    /盲模式:点「' \+ txt\(pb\) \+ '」弹卡/.test(src));
+  ok('兜底路径按态取「取消讲解」,不再拿任意按钮顶上',
+    /findStopBtn\(row\) \|\| findLectureBtn\(row\)/.test(src));
+  ok('补讲按态取「开始讲解」', /kindOf\(b\) !== 'start'/.test(src) && /kindOf\(rb2\)/.test(src));
+  ok('守夜探针按态判定,不拿原文比较',
+    /var label\s*=\s*kindOf\(btn\);/.test(src) && /label === 'stop' \|\| label === 'pop'/.test(src));
+
+  /* ④ 一轮的结果要能区分弹卡与重讲(用户在胶囊里看这个数) */
+  ok('轮次消息带「弹卡」标签', /how === 'pop' \? ' · 弹卡'/.test(src));
+  ok('finishFastCycle 接受"这一轮怎么完成的"', /function finishFastCycle\(row, name, how\)/.test(src));
+  ok('分钟档收尾抽成一份(弹卡不会漏掉失败清零/滚屏额度重置)',
+    /function finishSlowCycle\(row, name0, how\)/.test(src));
+
+  /* ⑤ 诊断要能一眼看出新通道在不在工作 */
+  ok('诊断快照带弹卡账本(pop.tries / ok / none)',
+    /pop: \{ tries: state\.popTries \|\| 0, ok: state\.popOk \|\| 0, none: state\.popNone \|\| 0 \}/.test(src));
+  ok('probe 带按钮态与弹卡按钮原文', /btnKind:/.test(src) && /popBtn:/.test(src));
+})();
 
 /* ---------------- 汇总 ---------------- */
 

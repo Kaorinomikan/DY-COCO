@@ -143,6 +143,11 @@
    * 平台取消后常把按钮短暂置灰/重渲染,4 秒在后台只等于 4 拍,根本不够,
    * 实机 02:14:01 / 02:14:22 就是连着两次「取消讲解未确认」把循环停掉的。 */
   var FLIP_WAIT_MS = 7000;
+  /* ★ 2026-11-06 弹卡优先:点完「弹出讲解卡」后的观察窗。
+   *   与 FLIP_WAIT_MS 不同,这里**不等按钮翻转** —— 平台这个按钮点完文案不变
+   *   (它只是重新弹卡)。只用来确认一件事:讲解没被这次点击弄断。
+   *   1.4 秒 = 平台重渲染一拍的量级,再长只是白占间隔。 */
+  var POP_VERIFY_MS = 1400;
   /* ★ nap10(2026-11-01 实机 03:34~03:37 数据):后台「提前补讲探测」节奏。
    *   问题:补讲要等「隐藏标签的 DOM 翻回讲解」,实测要 16~32 秒;而检查绑在 15 秒
    *   间隔上,常常刚好卡在"还没翻"那一侧 —— 于是白点一下空操作、再等一轮,
@@ -231,6 +236,12 @@
        另记一份只增不减的 cycles 与本次开启时刻,报告里直接给出「均 X 秒/轮」——
        判断后台到底跑没跑起来,不用再拿时间戳手算。 */
     cycles: 0,              // 本次开启以来完成的动作次数(不随换品归零)
+    /* ★ 2026-11-06 弹卡优先的账本(诊断用,判断"新通道到底在不在工作"):
+     *   popTries 点了几次 / popOk 几次被确认仍在讲 / popNone 几次没有可用按钮。
+     *   popNone 持续增长 = 平台又改了文案或按钮换了位置,这时功能会自动退回老流程。 */
+    popTries: 0,
+    popOk: 0,
+    popNone: 0,
     runSince: 0,            // 本次开启时刻
     /* ★ nap7 记账制(2026-11-01):我方**欠一次补讲**的时刻,0 = 不欠。
      *   点「取消讲解」时记账,补讲确认成功才销账。用它区分两种「商品不在讲解」:
@@ -789,7 +800,10 @@
     var out = [];
     $$('button, span, div, a').forEach(function (el) {
       var t = txt(el);
-      if (t !== '讲解' && t !== '取消讲解' && t !== '结束讲解') return;
+      /* 2026-11-06:三种按钮态都算"行里有讲解控件" —— 新文案「弹出讲解卡」
+       * 如果不认,商品行在兜底扫描里就整类消失,循环会"找不到行"。 */
+      var k = kindOfText(t);
+      if (k !== 'start' && k !== 'stop' && k !== 'pop') return;
       var rc = el.getBoundingClientRect();
       if (rc.width < 18 || rc.width > 160 || rc.height < 12 || rc.height > 60) return;
       var up = el;
@@ -815,26 +829,105 @@
     return out;
   }
 
-  /** 行内那枚「讲解 / 取消讲解」按钮 */
-  var BTN_TEXTS = ['讲解', '开始讲解', '取消讲解', '结束讲解', '停止讲解'];
+  /* 行内按钮的**四种态**(2026-11-06:从「一串精确文案」升级为「态分类」)
+   * ----------------------------------------------------------
+   * 为什么必须分态:平台这天把「讲解中」那一行的按钮换成了「弹出讲解卡」——
+   * 点它**不取消讲解**,只把讲解卡重新弹起。旧代码只认 讲解/取消讲解 这几个词,
+   * 于是:① 宽松档(length≤6 且含「讲解」)照样点得中它,看着像在跑;
+   * ② 但每处「按钮原文等于『讲解』」的等值判断都等不到翻转,7 秒后报「取消未确认」,
+   *    连报 6 次进守夜、同款不再轮转(反馈 #131)。分态之后,"拿错态当这件事"在代码里就不再可能。
+   *   start —— 可以开始讲解(商品不在讲解中)
+   *   stop  —— 正在讲解,点它会取消讲解
+   *   pop   —— 正在讲解,点它只重新弹卡,讲解不断(平台新按钮)
+   *   mark  —— 状态标记,不是按钮(讲解中 / 正在讲解)
+   */
+  var START_TEXTS = ['讲解', '开始讲解'];
+  var STOP_TEXTS = ['取消讲解', '结束讲解', '停止讲解'];
+  var MARK_TEXTS = ['讲解中', '讲解中…', '讲解中...', '正在讲解'];
+  /* 「弹出讲解卡 / 弹起讲解卡 / 重新弹出讲解卡 / 弹出讲解卡片」全归 pop。
+   * 必须锚定开头:否则商品名叫「讲解卡片收纳盒」也会被当成按钮。
+   * 用正则而不是穷举:平台改一个字就得重发版,穷举必漏。 */
+  var POP_RE = /^(?:重新)?(?:弹出|弹起)[\s\S]{0,2}讲解|^讲解卡(?:片)?$/;
+
+  /** 按钮文案 → 态。纯函数,自测直接表驱动断言(不碰 DOM)。 */
+  function kindOfText(t) {
+    var s = String(t == null ? '' : t).replace(/\s+/g, '');
+    if (!s || s.length > 12) return '';        // 长文本是标题/说明,不是按钮
+    if (MARK_TEXTS.indexOf(s) >= 0) return 'mark';
+    if (POP_RE.test(s)) return 'pop';
+    if (STOP_TEXTS.indexOf(s) >= 0) return 'stop';
+    if (START_TEXTS.indexOf(s) >= 0) return 'start';
+    return '';
+  }
+
+  /** 元素 → 态(空串 = 认不出) */
+  function kindOf(el) { return el ? kindOfText(txt(el)) : ''; }
 
   function findLectureBtn(row) {
     var cands = $$('button, [role="button"], span, div, a, i', row);
-    var hit = null;
+    var hit = null, hitKind = '';
     cands.forEach(function (el) {
       var t = txt(el);
       var label = (el.getAttribute && (el.getAttribute('title') || el.getAttribute('aria-label'))) || '';
-      var okText = BTN_TEXTS.indexOf(t) >= 0 || (t.length <= 6 && t.indexOf('讲解') >= 0 && t !== '讲解中');
-      var okLabel = BTN_TEXTS.some(function (w) { return label.indexOf(w) >= 0; });
+      var kind = kindOfText(t);
+      /* 宽松档只给"认不出态"的旧文案兜底;pop 已被显式归类,不再混进来当开始/取消。 */
+      var okText = !!kind || (t.length <= 6 && t.indexOf('讲解') >= 0);
+      /* title / aria-label 上的文案同样按态认(不能退回一串写死的词 ——
+       * 2026-11-06 拆分态时这里漏改,就是一处"语法通过、运行时崩"的活口)。 */
+      var okLabel = !!kindOfText(label) || label.indexOf('讲解') >= 0;
       if (!okText && !okLabel) return;
-      if (t === '讲解中' || t === '正在讲解') return;   // 那是状态标记,不是按钮
+      if (kind === 'mark') return;             // 状态标记不是按钮
       var r = el.getBoundingClientRect();
       if (r.width < 18 || r.height < 12 || r.width > 200 || r.height > 60) return;
       if (!clickable(el)) return;
-      // 取最内层的那一枚(外层容器文本相同但尺寸更大,已被上面的尺寸闸挡掉)
-      if (!hit || el.contains(hit) === false) hit = el;
+      /* stop 信息量最大(既证明在讲、又能取消),同层命中时优先返回它;
+       * 其余情况仍取最内层那一枚(外层容器文本相同但尺寸更大,已被尺寸闸挡掉)。 */
+      var inner = !hit || el.contains(hit) === false;
+      if (!hit || (kind === 'stop' && hitKind !== 'stop') || inner) { hit = el; hitKind = kind; }
     });
     return hit;
+  }
+
+  /** 行内找指定态的按钮。2026-11-06 起所有流程都**按态取按钮**,
+   *  不再拿"随便哪一枚讲解按钮"充当取消/讲解 —— 那正是 #131 的错法。 */
+  function findBtnByKind(row, kinds) {
+    if (!row) return null;
+    var cands = $$('button, [role="button"], span, div, a, i', row);
+    var hit = null;
+    for (var i = 0; i < cands.length; i++) {
+      var el = cands[i];
+      var kind = kindOfText(txt(el));
+      if (!kind || kinds.indexOf(kind) < 0) continue;
+      var r = el.getBoundingClientRect();
+      if (r.width < 18 || r.height < 12 || r.width > 200 || r.height > 60) continue;
+      if (!clickable(el)) continue;
+      if (!hit || el.contains(hit) === false) hit = el;   // 取最内层
+    }
+    return hit;
+  }
+  function findPopBtn(row) { return findBtnByKind(row, ['pop']); }
+  function findStopBtn(row) { return findBtnByKind(row, ['stop']); }
+  function findStartBtn(row) { return findBtnByKind(row, ['start']); }
+
+  /* 平台这枚「弹出讲解卡」有两种形态:行内按钮,以及商品行左侧滑出的独立浮层按钮
+   * (用户原话「左边滑出的」)。行内找不到就全页找一次 ——
+   * 判据是文案态 + 尺寸 + 可点,取面积最小的那个(最内层),不会命中整块面板。 */
+  function findPopBtnPage() {
+    var cands = $$('button, [role="button"], a, span, div');
+    var best = null, bestArea = Infinity;
+    for (var i = 0; i < cands.length; i++) {
+      var el = cands[i];
+      try { if (insideOwnUI(el)) continue; } catch (e) { /* 忽略 */ }
+      var t = txt(el);
+      if (!t || t.length > 8) continue;
+      if (kindOfText(t) !== 'pop') continue;
+      var r = el.getBoundingClientRect();
+      if (r.width < 24 || r.height < 16 || r.width > 240 || r.height > 64) continue;
+      if (!clickable(el)) continue;
+      var area = r.width * r.height;
+      if (area < bestArea) { best = el; bestArea = area; }
+    }
+    return best;
   }
 
   /** 当前讲解中的行 */
@@ -845,7 +938,9 @@
       var t = txt(row);
       if (t.indexOf('讲解中') >= 0) return row;
       var b = findLectureBtn(row);
-      if (b && (txt(b) === '取消讲解' || txt(b) === '结束讲解')) return row;
+      /* 2026-11-06:stop(取消讲解)与 pop(弹出讲解卡)都说明"这一行正在讲"。 */
+      var k = b ? kindOf(b) : '';
+      if (k === 'stop' || k === 'pop') return row;
     }
     /* 兜底(2026-10-25 用户报「一直在同一个 tab 也识别不到」后加强):
      * 行集合(rows)本身可能抓不全 —— 那就反过来:先找页面上所有「讲解中」标记,
@@ -878,13 +973,17 @@
     if (!row) return false;
     var b = findLectureBtn(row);
     if (b) {
-      var t = txt(b);
-      if (t === '取消讲解' || t === '结束讲解' || t === '停止讲解') return true;
+      var k = kindOf(b);
+      if (k === 'stop' || k === 'pop') return true;
     }
     var marks = findAllLecturingMarks();
     for (var i = 0; i < marks.length; i++) {
       var mk = marks[i];
-      if (row === mk || row.contains(mk) || mk.contains(row)) return true;
+      /* ★ 2026-11-06 收紧:只在**本行内**认标记。
+       *   旧的「标记包含此行」写法会把包住整页的容器当成"这一行有标记",
+       *   DOM 里别处残留一枚「讲解中」就能把这行判成在讲 —— 反馈 #131 的
+       *   「商品明明没换、按钮也不是取消讲解,却一直判在讲」就是它放过去的。 */
+      if (row === mk || row.contains(mk)) return true;
     }
     return false;
   }
@@ -1779,7 +1878,8 @@
       var t = cleanName(txt(el));
       if (t.length < 4 || t.length > 60) return;
       if (/^[¥￥\d.,\s]+$/.test(t)) return;
-      if (t === '讲解' || t === '取消讲解' || t === '讲解中') return;
+      /* 2026-11-06:按钮态文案(讲解/取消讲解/弹出讲解卡…)一律不当商品名 */
+      if (kindOfText(t)) return;
       if (t === '预热' || t === '取消预热' || t === '预热中' || t === '正在预热') return;
       if (t.indexOf('库存') >= 0 || t.indexOf('月销') >= 0 || t.indexOf('券') >= 0) return;
       /* 带【店铺前缀】的那一段最像商品标题 —— 优先它,其次取最长 */
@@ -3131,7 +3231,7 @@
       if (peekRow) {
         try { peekBtn = findLectureBtn(peekRow); } catch (e) { peekBtn = null; }
       }
-      if (peekBtn && txt(peekBtn) === '讲解') {
+      if (peekBtn && kindOf(peekBtn) === 'start') {
         noteDiag('盲模式:界面已翻 ⇒ 提前补讲(取消后 ' +
           Math.round((now - state.cancelPending) / 1000) + ' 秒)');
         state.nextAt = now;       // 让本拍立刻执行补讲
@@ -3198,7 +3298,7 @@
    *  白白把下一轮推后一个间隔(实机 03:45:54 / 03:46:10 两行就是它)。
    *  现在:取消后走 BLIND_TICK_MS 密探、补讲后老实等满间隔,两个阶段各按各的节奏。 */
 
-  function finishFastCycle(row, name) {
+  function finishFastCycle(row, name, how) {
     state.round += 1;
     state.cycles += 1;
     state.skips = 0;
@@ -3210,7 +3310,54 @@
     state.lastShotAt = state.startedAt;
     state.rowAnchor = recordRowAnchor(findRowByKey() || row);
     paint();
-    reportCycle(name, false);
+    reportCycle(name, false, how);
+  }
+
+  /** ★ 2026-11-06 弹卡优先 —— 循环讲解的**最高优先级路径**
+   * ----------------------------------------------------------
+   * 用户定:「商品【讲解中】时会左边滑出『弹起讲解卡』按钮,按它可以在不断开讲解的
+   *   情况下继续弹出讲解卡。所以循环开始时在讲解状态下直接点这个按钮就行,
+   *   这就完成了多次弹起讲解卡;弹起失败再走老操作兜底。」
+   *
+   * 硬条件只有一条:商品**此刻确实在讲解**。不在讲就没有卡可弹,直接交回老流程。
+   * 返回:
+   *   'ok'      —— 点了弹卡,观察窗过后仍在讲 ⇒ 调用方记一轮
+   *   'none'    —— 没有弹卡按钮 / 不可点 / 误触到取消确认 ⇒ 交回老流程(取消→重讲)
+   *   'dropped' —— 点完讲解掉了(那枚按钮其实是取消) ⇒ 调用方立刻补讲
+   *   'abort'   —— 用户喊停
+   */
+  async function tryPopCard(row, mark) {
+    if (!row || !isLecturing(row)) return 'none';
+    var btn = findPopBtn(row);
+    var where = '行内';
+    if (!btn || !clickable(btn)) {
+      btn = findPopBtnPage();
+      where = btn ? '页面浮层' : '';
+    }
+    if (!btn || !clickable(btn)) {
+      state.popNone = (state.popNone || 0) + 1;
+      return 'none';
+    }
+    noteDiag('弹卡优先:点「' + txt(btn) + '」(' + where + ')');
+    fireClick(btn);
+    state.popTries = (state.popTries || 0) + 1;
+    var until = Date.now() + POP_VERIFY_MS;
+    while (Date.now() < until) {
+      await nap(250);
+      if (aborted(mark)) return 'abort';
+      /* 误点成"取消讲解"会弹确认框 —— 点【取消】保住讲解卡,本轮按"没弹成"处理。
+       * 平台文案会同时维护两套按钮时,这是唯一安全的退路。 */
+      if (dismissCancelConfirm()) {
+        noteDiag('弹卡优先:那枚按钮其实是取消 ⇒ 已点「取消」保住讲解,改走老流程');
+        state.popNone = (state.popNone || 0) + 1;
+        return 'none';
+      }
+      var now = findRowByKey() || row;
+      if (!now || !isLecturing(now)) return 'dropped';
+    }
+    var after = findRowByKey() || row;
+    if (!after || !isLecturing(after)) return 'dropped';
+    return 'ok';
   }
 
   /** 点「讲解」并把状态盯到翻转。返回 true = 已确认在讲解。
@@ -3228,7 +3375,9 @@
         if (!row) return false;
         if (isLecturing(row)) return true;
         var b = findLectureBtn(row);
-        if (!b || txt(b) !== '讲解' || !clickable(b)) { await nap(250); continue; }
+        /* 2026-11-06:必须按态取"开始讲解",不能拿 pop 按钮顶上 ——
+         * 点它只会再弹一次卡,永远等不到"在讲"的翻转。 */
+        if (!b || kindOf(b) !== 'start' || !clickable(b)) { await nap(250); continue; }
         btn = b;
       }
       fireClick(btn);
@@ -3376,7 +3525,8 @@
            *   没翻就**每 3 秒**再看一次(BLIND_TICK_MS),而不是等满一个间隔:
            *   实测平台翻盘时间在 5~31 秒之间浮动,15 秒一次经常错过窗口。 */
           var rb2 = findLectureBtn(row);
-          var rl2 = rb2 ? txt(rb2) : '';
+          var rl2raw = rb2 ? txt(rb2) : '';       // 诊断要原文,判定要态
+          var rl2 = rb2 ? kindOf(rb2) : '';
           /* nap14:刚开价时点取消会弹确认框 —— 点【取消】保住讲解卡,本轮跳过 */
           if (dismissCancelConfirm()) {
             noteDiag('盲模式:刚开价不让取消 ⇒ 已点【取消】保住讲解,本轮跳过');
@@ -3388,7 +3538,7 @@
             paint();
             return;
           }
-          if (rb2 && rl2 === '讲解') {
+          if (rb2 && rl2 === 'start') {
             fireClick(rb2);
             noteDiag('盲模式补讲:界面已翻 ⇒ 点「讲解」(取消后 ' +
               Math.round((Date.now() - state.cancelPending) / 1000) + ' 秒)');
@@ -3414,7 +3564,7 @@
                 noteDiag('盲模式:想催刷新但找不到「刷新列表」按钮');
               }
             }
-            noteDiag('盲模式:等界面翻(按钮「' + (rl2 || '无') + '」)· 3 秒后再看');
+            noteDiag('盲模式:等界面翻(按钮「' + (rl2raw || '无') + '」)· 3 秒后再看');
             state.nextAt = Date.now() + BLIND_TICK_MS;
             paint();
             return;
@@ -3428,7 +3578,23 @@
           return;
         }
         if (lecturing) {
-          var cb = findLectureBtn(row);
+          /* ★ 2026-11-06:后台也优先弹卡。DOM 冻着照样能派发点击,而弹卡**不需要**
+           *   等"界面翻回来"——正好绕开隐藏标签 16~31 秒的翻盘等待。
+           *   下一拍密探(3 秒)读一次:还在讲就继续,真掉线了就走下面的补讲。 */
+          var pb = findPopBtn(row) || findPopBtnPage();
+          if (pb && clickable(pb)) {
+            fireClick(pb);
+            state.popOk = (state.popOk || 0) + 1;
+            noteDiag('盲模式:点「' + txt(pb) + '」弹卡(不断讲解)');
+            state.cancelPending = 0;           // 没取消,不欠补讲
+            state.owedResume = 0;
+            state.blindWaits = 0;
+            state.blindSettled = Date.now();
+            finishFastCycle(row, name, 'pop');
+            state.nextAt = Date.now() + BLIND_TICK_MS;
+            return;
+          }
+          var cb = findStopBtn(row) || findLectureBtn(row);
           if (cb) fireClick(cb);
           noteDiag('盲模式:看见在讲 ⇒ 点「' + (cb ? txt(cb) : '无按钮') + '」开新一轮');
           state.cancelPending = Date.now();
@@ -3452,7 +3618,8 @@
           paint();
           return;
         }
-        var rb = findLectureBtn(row);
+        /* 补讲只认 start 态:pop 按钮点一百次也开不了讲解 */
+        var rb = findStartBtn(row) || findLectureBtn(row);
         if (rb) fireClick(rb);
         noteDiag('盲模式补讲:看不见讲解 ⇒ 点「' + (rb ? txt(rb) : '无按钮') + '」');
         state.owedResume = 0;
@@ -3471,11 +3638,35 @@
         noteDiag('秒档:商品不在讲解 ⇒ 补点讲解');
         if (!(await clickLectureAndVerify(mark))) { softSkipFast('补讲未确认'); return; }
         state.owedResume = 0;                // 补讲确认成功 ⇒ 销账
-        finishFastCycle(row, name);
+        finishFastCycle(row, name, 're');
         return;
       }
 
-      var cancel = findLectureBtn(row);
+      /* ★ 2026-11-06 弹卡优先(用户定的最优先路径):
+       *   商品在讲解中 ⇒ 直接点「弹出讲解卡」把卡重新弹起,**不取消讲解**。
+       *   只有这条路不成立(没有这枚按钮 / 点了讲解掉线 / 误触取消)才往下走老流程。
+       *   放在预算闸之前:弹卡只要一次点击 + 1.4 秒观察,比「取消→等翻转→再点讲解」省一半时间。 */
+      var popped = await tryPopCard(row, mark);
+      if (popped === 'abort') return;
+      if (popped === 'ok') {
+        state.popOk = (state.popOk || 0) + 1;
+        state.owedResume = 0;            // 全程没取消,不欠补讲
+        state.cancelPending = 0;
+        finishFastCycle(row, name, 'pop');
+        return;
+      }
+      if (popped === 'dropped') {
+        /* 那枚"弹卡"按钮其实是取消 ⇒ 商品已经空着,立刻补讲,不留空窗 */
+        noteDiag('秒档:弹卡后讲解掉了 ⇒ 立刻补讲(走兜底)');
+        if (!(await clickLectureAndVerify(mark))) { softSkipFast('弹卡失败且补讲未确认'); return; }
+        state.owedResume = 0;
+        finishFastCycle(row, name, 're');
+        return;
+      }
+
+      /* 兜底路径只认 stop 态按钮:新 UI 下行内可能同时挂着 pop,
+       * 拿错了就是"点了个不会取消的按钮再等 7 秒"(= 反馈 #131)。 */
+      var cancel = findStopBtn(row) || findLectureBtn(row);
       if (!cancel || !clickable(cancel)) { skipFast('未找到讲解按钮'); return; }
 
       /* 预算闸:还没开始点就已经超预算了 ⇒ 放弃这一轮,别把间隔吃掉。
@@ -3517,7 +3708,7 @@
          * 平台取消后常把按钮短暂置灰(防连点)或正在重渲染,原来的联合判定
          * 一直不接受 ⇒ 超预算 ⇒ 报「取消讲解未确认」并烧掉熔断额度。
          * 能不能点交给 clickLectureAndVerify 去等。 */
-        if (button && txt(button) === '讲解') { resume = button; break; }
+        if (button && kindOf(button) === 'start') { resume = button; break; }
         if (Date.now() > flipUntil) { break; }
         await nap(150);
         if (aborted(mark)) return;
@@ -3533,7 +3724,7 @@
         var afterCancel = findRowByKey();
         if (afterCancel && !isLecturing(afterCancel)) {
           var manual = findLectureBtn(afterCancel);
-          if (manual && txt(manual) === '讲解') {
+          if (manual && kindOf(manual) === 'start') {
             resume = manual;
             noteDiag('秒档:按钮翻转超预算,但取消已生效 ⇒ 直接续讲');
           }
@@ -3811,6 +4002,34 @@
   }
 
   /** 取消讲解 → 等 1.2 秒 → 再点讲解 */
+  /** 分钟档一轮成功的收尾(2026-11-06 从内联块抽出:弹卡与老流程必须共用一份,
+   *  否则"弹卡那条路"会漏掉失败清零 / 滚屏额度重置 / 定位记忆重记)。 */
+  function finishSlowCycle(row, name0, how) {
+    var wasFailing = state.fails >= FAIL_LIMIT;      // 之前是不是处于慢速重试
+    state.fails = 0;
+    state.retryAt = 0;
+    /* 2026-10-31:这一轮找品成功了,滚屏额度必须一起清零 ——
+     * 否则跑过几轮之后 scanSeg 会累到上限 / scanDone 一直为真,
+     * 从某一轮开始**永久不再滚屏**(用户看到的就是「动不动就放弃」)。 */
+    resetScanQuota();
+    state.round += 1;
+    state.cycles += 1;
+    state.phase = 'run';
+    state.startedAt = Date.now();
+    state.nextAt = state.startedAt + state.minutes * 60000;
+    state.lastShotAt = state.startedAt;
+    state.rowAnchor = recordRowAnchor(findRowByName(rowName(row) || name0) || row);
+    paint();
+
+    /* 2026-10-27 用户报「第一眼没找到就弹失败,后来接上了又说已恢复」:
+     *   ⇒ 成功只发**一条**轮数消息;之前单独弹的「已恢复」并进这条的值里,
+     *     不再出现「先报失败、再报恢复」这种自相矛盾的两条消息。 */
+    reportCycle(name0, wasFailing, how);
+    if (wasFailing && typeof debugLog === 'function') {
+      debugLog('已从连续失败中恢复续讲:' + (name0 || ''));
+    }
+  }
+
   async function doCycle(isSlowRetry) {
     if (state.busy) return;
     /* 2026-10-26(#117):用户在滚/点 ⇒ 让路,顺延 1.2 秒,不发消息、不累计失败 */
@@ -3981,7 +4200,28 @@
         return;
       }
 
-      var btn = findLectureBtn(row);
+      /* ★ 2026-11-06 弹卡优先(与秒档同一口径,用户定的最优先路径):
+       *   商品在讲解中 ⇒ 点「弹出讲解卡」重新弹卡,不取消讲解。
+       *   老流程(取消→等翻转→再点讲解)只在弹卡不成立时兜底。 */
+      var popped = await tryPopCard(row, mark);
+      if (popped === 'abort') return;
+      if (popped === 'ok') {
+        state.popOk = (state.popOk || 0) + 1;
+        state.owedResume = 0;
+        finishSlowCycle(row, name0, 'pop');
+        return;
+      }
+      if (popped === 'dropped') {
+        noteDiag('分钟档:弹卡后讲解掉了 ⇒ 立刻补讲(走兜底)');
+        if (!(await clickLectureAndVerify(mark))) { failCycle('弹卡失败且补讲未确认'); return; }
+        state.owedResume = 0;
+        finishSlowCycle(row, name0, 're');
+        return;
+      }
+
+      /* 兜底路径只认 stop 态:新 UI 行内可能同时挂着 pop,拿错了就是
+       * "点了个不会取消的按钮,再等 7 秒"(= 反馈 #131 的错法)。 */
+      var btn = findStopBtn(row) || findLectureBtn(row);
       if (!btn) {
         if (typeof debugLog === 'function') {
           var texts = $$('button, [role="button"], span, div, a', row)
@@ -4026,7 +4266,7 @@
         if (aborted(mark)) return;
         var r2 = findRowByName(key);
         var b2 = r2 ? findLectureBtn(r2) : null;
-        if (b2 && txt(b2) === '讲解') { btn2 = b2; break; }
+        if (b2 && kindOf(b2) === 'start') { btn2 = b2; break; }
       }
       if (!btn2) {
         var r3 = findRowByName(key);
@@ -4049,29 +4289,7 @@
 
       if (!ok) { failCycle('续讲后没检测到讲解中'); return; }
 
-      var wasFailing = state.fails >= FAIL_LIMIT;      // 之前是不是处于慢速重试
-      state.fails = 0;
-      state.retryAt = 0;
-      /* 2026-10-31:这一轮找品成功了,滚屏额度必须一起清零 ——
-       * 否则跑过几轮之后 scanSeg 会累到上限 / scanDone 一直为真,
-       * 从某一轮开始**永久不再滚屏**(用户看到的就是「动不动就放弃」)。 */
-      resetScanQuota();
-      state.round += 1;
-      state.cycles += 1;
-      state.phase = 'run';
-      state.startedAt = Date.now();
-      state.nextAt = state.startedAt + state.minutes * 60000;
-      state.lastShotAt = state.startedAt;
-      state.rowAnchor = recordRowAnchor(findRowByName(key) || row);
-      paint();
-
-      /* 2026-10-27 用户报「第一眼没找到就弹失败,后来接上了又说已恢复」:
-       *   ⇒ 成功只发**一条**轮数消息;之前单独弹的「已恢复」并进这条的值里,
-       *     不再出现「先报失败、再报恢复」这种自相矛盾的两条消息。 */
-      reportCycle(name0, wasFailing);
-      if (wasFailing && typeof debugLog === 'function') {
-        debugLog('已从连续失败中恢复续讲:' + (name0 || ''));
-      }
+      finishSlowCycle(row, name0, 're');
     } catch (e) {
       if (!aborted(mark)) failCycle('动作异常:' + (e && e.message ? e.message : e));
     } finally {
@@ -4238,14 +4456,14 @@
     }
     if (btn) {
       state.lastBtnSeen = now;
-      var label = txt(btn);
+      var label = kindOf(btn);
       /* ① 还在讲:行只是被虚拟滚动回收了。不点、不搜,回到原来的倒计时。 */
-      if (label === '取消讲解' || isLecturing(row)) {
+      if (label === 'stop' || label === 'pop' || isLecturing(row)) {
         resumeToWait(now, '商品仍在讲解');
         return;
       }
       /* ② 真断了:当拍补讲,不等一个间隔 —— 这正是「接不上就断」的反面。 */
-      if (label === '讲解') {
+      if (label === 'start') {
         if (now < state.resumeAt) {
           noteDiag('守夜:补讲冷却中(' +
             Math.round((state.resumeAt - now) / 1000) + ' 秒),下一拍再试');
@@ -4334,9 +4552,9 @@
       if (r === 'abort') return;
       if (r && r.row) {
         var b = findLectureBtn(r.row);
-        var label = b ? txt(b) : '';
-        if (label === '讲解') resumeBtn = b;
-        else if (label === '取消讲解' || isLecturing(r.row)) stillLive = true;
+        var label = b ? kindOf(b) : '';
+        if (label === 'start') resumeBtn = b;
+        else if (label === 'stop' || label === 'pop' || isLecturing(r.row)) stillLive = true;
       } else {
         noteDiag('守夜重定位没搜到目标');
       }
@@ -4470,9 +4688,12 @@
    *   之前在成功后又单独弹「已恢复」的做法取消 —— 两条消息自相矛盾(先失败后恢复),
    *   现在把「恢复」并进右端状态里。
    */
-  function reportCycle(name, recovered) {
+  /* 2026-11-06:一轮的结果要能区分「弹卡」与「重讲」——
+   * 用户会在胶囊里盯这个数字,分不清哪种动作会让"看起来没换卡"。 */
+  function reportCycle(name, recovered, how) {
+    var tag = how === 'pop' ? ' · 弹卡' : (how === 're' ? ' · 重讲' : '');
     boxNote(BOX_CYCLE, 'success', shortName(name),
-      '第 ' + state.round + ' 轮' + (recovered ? ' · 已恢复' : ''));
+      '第 ' + state.round + ' 轮' + tag + (recovered ? ' · 已恢复' : ''));
   }
 
   /* ==========================================================
@@ -4750,6 +4971,9 @@
          后台到底跑没跑起来,看这一个数就够,不用再拿时间戳手算。 */
       runSec: state.runSince ? Math.round((Date.now() - state.runSince) / 1000) : 0,
       cycles: state.cycles,
+      /* 2026-11-06 弹卡优先通道是否真的在跑:点了多少次 / 确认仍在讲多少次 /
+       * 多少次没有可用按钮(后者持续增长 ⇒ 平台又改版了,已自动退回老流程)。 */
+      pop: { tries: state.popTries || 0, ok: state.popOk || 0, none: state.popNone || 0 },
       secondsLeft: state.nextAt ? Math.round((state.nextAt - Date.now()) / 1000) : null,
       /* 2026-11-01 统一闹钟活体证据:n = 收过几拍,last = 距今几秒(null = 一拍没收到)。
          切到后台之后循环还动不动,看这两个数就知道,不用再靠猜。 */
@@ -4780,7 +5004,9 @@
       /* 2026-10-27 商品 ID 采集(唯一锚点;货号不算) */
       looksLikeId: looksLikeId, pickIdFromRow: pickIdFromRow,
       /* 2026-10-27 原生搜索定位:键 → 商品 ID(自测直接断言) */
-      idOfKey: idOfKey
+      idOfKey: idOfKey,
+      /* 2026-11-06 按钮态分类(讲解 / 取消讲解 / 弹出讲解卡 / 状态标记)—— 纯判断,表驱动自测 */
+      kindOfText: kindOfText
     },
     snapshot: snapshot,
     probe: function () {
@@ -4809,6 +5035,13 @@
         rows: list.length,
         liveRow: live ? rowName(live).slice(0, 30) : null,
         btn: live ? txt(findLectureBtn(live)) : null,
+        /* 2026-11-06:按钮"原文"不够用了 —— 平台把文案换掉时,
+         * 报告里得同时看到它被认成哪一态,以及弹卡按钮在不在。 */
+        btnKind: live ? kindOf(findLectureBtn(live)) : null,
+        popBtn: live ? (function () {
+          var pb = findPopBtn(live) || findPopBtnPage();
+          return pb ? txt(pb) : null;
+        })() : null,
         marks: findAllLecturingMarks().length,
         key: state.key,
         product: state.product ? shortName(state.product) : null,
@@ -4866,7 +5099,14 @@
       };
     },
     _start: start, _stop: stop,
-    _locateBySearch: locateBySearch       // 自测:降级行为(没有搜索框 / 没有 ID)必须安静返回
+    _locateBySearch: locateBySearch,      // 自测:降级行为(没有搜索框 / 没有 ID)必须安静返回
+    /* 自测出口:按态取按钮。需要真实 DOM(尺寸 + 可点判定),jsdom 里用 getBoundingClientRect 补丁验。
+     * 2026-11-06 起这是"点错按钮"的唯一防线(#131:把弹卡当取消/开始),必须能被单测直接打到。 */
+    _findPopBtn: findPopBtn,
+    _findStopBtn: findStopBtn,
+    _findStartBtn: findStartBtn,
+    _findPopBtnPage: findPopBtnPage,
+    _kindOf: kindOf
   };
 
   boot();

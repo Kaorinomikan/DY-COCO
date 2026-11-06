@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "可可助手",
-  "version": "26.11.06.1",
+  "version": "26.11.07.1",
   "description": "抖音抖店、微信小店、中控台小助手",
   "permissions": [
     "storage",
@@ -124,6 +124,26 @@
     },
     {
       "matches": [
+        "https://buyin.jinritemai.com/dashboard/shopwindow/*"
+      ],
+      "js": [
+        "src/content/flags.js",
+        "src/content/diag.js",
+        "src/content/anchor.js",
+        "src/content/dialog.js",
+        "src/content/stock-net-probe.js",
+        "src/content/debug-panel.js",
+        "src/content/shop-paste.js",
+        "src/live/hide-elements.js"
+      ],
+      "css": [
+        "src/content/style.css",
+        "src/content/msgbox.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
         "https://*.jinritemai.com/*"
       ],
       "js": [
@@ -145,7 +165,8 @@
         "https://compass.jinritemai.com/screen/live/*",
         "https://compass.jinritemai.com/shop/commodity/product-list*",
         "https://compass.jinritemai.com/shop/merchandise-traffic*",
-        "https://*.jinritemai.com/ffa/merchant/*"
+        "https://*.jinritemai.com/ffa/merchant/*",
+        "https://*.jinritemai.com/dashboard/shopwindow/*"
       ],
       "js": [
         "src/content/flags.js",
@@ -291,7 +312,9 @@
       "all_frames": false
     },
     {
-      "matches": ["https://fxg.jinritemai.com/*"],
+      "matches": [
+        "https://fxg.jinritemai.com/*"
+      ],
       "js": [
         "src/content/flags.js",
         "src/content/shop-header-name.js"

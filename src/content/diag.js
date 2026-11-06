@@ -861,6 +861,7 @@
   var KIND_CN = {
     list: '商品列表页',
     liveCtrl: '直播中控台',
+    shopWindow: '橱窗商品管理页',
     shopAll: '抖店其他页',
     compassLive: '罗盘直播明细页',
     compassTable: '罗盘商品表页',

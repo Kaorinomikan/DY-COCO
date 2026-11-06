@@ -11,11 +11,21 @@
 # 改过 src/** 或 manifest.json 的任务，--go 合并时必须带当次真机冒烟确认：
 #   DYC_SMOKE_OK=1 bash scripts/回收.sh <名字>
 #
+# 若本任务「真回退」了 main 上的内容（删掉 main 的代码，而不是落后于 main），
+# --go 合并时必须显式声明这是有意删除：
+#   DYC_REVERT_OK=1 bash scripts/回收.sh <名字>
+#
 # 它与 publish.sh 的分工:
 #   · 本脚本只把任务分支**合并进本地 main**;
 #   · **绝不推送、绝不打标签、绝不改版本号** —— 那些是 publish.sh 的活,
 #     由用户决定什么时候发。合并只是「归总」,不是「发布」。
 # ============================================================
+
+# 本脚本所在目录 —— 必须在任何 cd 之前固定成绝对路径。
+# 理由：流程中段会 cd 到主仓库，之后 $0 仍是相对的 'scripts/wt-merge.sh'，
+# 再由它推目录就会指到主仓库的 scripts/（那里可能还没有本次新增的脚本）。
+# 2026-11-07 实测踩到：真回退体检因此找不到 check-revert.sh 而静默跳过。
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # git 路径自动探测(2026-10-14 修,原因见 中文工具.sh)
 GIT="$(ls -d C:/Users/79412/.workbuddy/binaries/PortableGit/versions/*/cmd/git.exe 2>/dev/null | sort -V | tail -1)"
@@ -321,6 +331,42 @@ fi
 
 echo ""
 
+# 5.6) 真回退体检（2026-11-07）
+#
+# 为什么需要：任务落后 main 之后，`git diff main..branch` 会把「main 有、分支
+# 没跟上」显示成一大片删除，看起来像有人把主干改动退回去了。2026-11-07 我就
+# 据此误判过一次（实际零冲突）。真回退与「只是落后」的区别只有一处，判据落在
+# scripts/check-revert.sh：删了行、且该文件在共同祖先之后 main 侧**没动过**，
+# 才是真删；main 动过的，分支只是没跟上，正常合并会自动补回来。
+#
+# 与 5.5 冒烟同属「脚本判断不了意图、但判错就要命」的闸门 —— 只要求显式声明，
+# 不替人做决定。
+REVERT_SH="$SCRIPT_DIR/check-revert.sh"
+if [ -f "$REVERT_SH" ]; then
+  REVERT_LIST=$( cd "$REPO" && DYC_GIT="$GIT" bash "$REVERT_SH" "$BRANCH" main 2>/dev/null )
+  REVERT_RC=$?
+  if [ "$REVERT_RC" = "1" ] && [ -n "$REVERT_LIST" ]; then
+    if [ "${DYC_REVERT_OK:-0}" = "1" ]; then
+      echo "[✓] 有真回退，已声明本次为有意删除："
+      printf '%s\n' "$REVERT_LIST" | while IFS=$'\t' read -r n f; do echo "      $f  净删 $n 行"; done
+    elif [ -n "$GO" ]; then
+      echo "[✗] 本任务删掉了 main 上的内容（不是落后，是真删）："
+      printf '%s\n' "$REVERT_LIST" | while IFS=$'\t' read -r n f; do echo "      $f  净删 $n 行"; done
+      echo "     确认这些删除是有意的之后，执行："
+      echo "       DYC_REVERT_OK=1 DYC_SMOKE_OK=1 bash scripts/回收.sh $NAME"
+      exit 1
+    else
+      echo "[!] 发现真回退（预检不拦；--go 合并时必须带 DYC_REVERT_OK=1）："
+      printf '%s\n' "$REVERT_LIST" | while IFS=$'\t' read -r n f; do echo "      $f  净删 $n 行"; done
+    fi
+  else
+    echo "[✓] 没有真回退（相对 main 无删除，或删除的都只是落后于 main）"
+  fi
+else
+  echo "[!] 找不到 scripts/check-revert.sh，跳过真回退体检"
+fi
+
+
 # 6) 代码自检(2026-10-11 用户定:自检必须在合并**之前**)——
 #    快速入口与中间态共用 scripts/check-syntax.py，避免两套实现漂移。
 if [ -d "$WT_PATH" ] && [ -f "$WT_PATH/scripts/check-syntax.py" ]; then
@@ -415,8 +461,13 @@ echo "===== 预检通过 ====="
 
 if [ -z "$GO" ]; then
   echo ""
-  echo "确认无误后执行合并(仍然不会推送):"
-  echo "   bash scripts/wt-merge.sh $NAME --go"
+  # 2026-11-06 修口径:这行原来写「确认无误后执行合并」,被并行会话读成
+  #   「需要用户点头才能合」,于是收工后跑来问用户「要不要合并」。
+  #   铁律是自动合并 —— 预检只是自己看状态,不是请示。
+  echo "（预检模式：只是看能不能合，不代表要请示用户）"
+  echo "正常收工请直接跑:bash scripts/回收.sh $NAME   # 默认就是合并，不需口令"
+  echo "下面这条等价于手动深合并(仍然不推送):"
+  echo "   bash scripts/wt-merge.sh $NAME --go --cleanup"
   exit 0
 fi
 

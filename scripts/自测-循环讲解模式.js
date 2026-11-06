@@ -8,7 +8,7 @@ const source = fs.readFileSync(path.resolve(__dirname, '../src/live/auto-loop-le
 let passed = 0;
 function check(value, label) { assert.ok(value, label); passed++; }
 async function flush() { for (let n=0;n<35;n++) await Promise.resolve(); }
-function setup(store = {}) {
+function setup(store = {}, extraHook = '') {
   const dom = new JSDOM('<body></body>', {url:'https://example.com/not-live',runScripts:'outside-only'});
   const w = dom.window, timers = new Map();
   let now = 1000000, timerId=0, mounted=true, clicks=0;
@@ -32,6 +32,7 @@ function setup(store = {}) {
     sleep:ms=>{now+=ms;if(w.__sleepHook)w.__sleepHook();return Promise.resolve();}
   };
   const hook=`
+  window.__orig={findLectureBtn:findLectureBtn,findBtnByKind:findBtnByKind};
   findLiveRow = function(){var r=window.__fixture.row();return r&&r.dataset.live==='1'?r:null;};
   findRowByKey = function(){var r=window.__fixture.row();return r&&r.dataset.key===state.key?r:null;};
   rowKey = function(r){return r.dataset.key;}; rowName=function(r){return r.dataset.name;};
@@ -46,7 +47,7 @@ function setup(store = {}) {
     paintReadout:paintReadout,setDragValue:function(fn){valueAt=fn;}};
 `;
   assert.ok(source.includes('  boot();'));
-  w.eval(source.replace('  boot();',hook));
+  w.eval(source.replace('  boot();', hook + extraHook));
   return {dom,w,api:w.__test,store,notes,row,button,timers,
     mount:value=>{mounted=value;},clicks:()=>clicks,now:()=>now,advance:ms=>{now+=ms;},
     ui:selector=>w.document.getElementById('dyc-auto-loop-host').shadowRoot.querySelector(selector)};
@@ -215,6 +216,68 @@ function setup(store = {}) {
   check(/^calc\(/.test(fillW) && fillW.indexOf('(100% - '+(insetPx * 2)+'px)') > 0,
     '填充条按内缩区间算宽(实测 '+fillW+')');
 
-  for(const fixture of [f,restart,resume,race,defaults,dragFix]) fixture.dom.window.close();
+  /* ★ 2026-11-06 按态取按钮(真 DOM,不覆盖实现):
+     平台新 UI 下一行里可能同时挂着「取消讲解」与「弹出讲解卡」。
+     取错一枚就会"点了不会取消的按钮、再等 7 秒"(反馈 #131 的错法)。 */
+  const btnFix = setup({dybAutoLoopSeconds:15,dybAutoLoopGroup:'sec',dybAutoLoopEnabled:false}, `
+    findLectureBtn = window.__orig.findLectureBtn;
+    findBtnByKind = window.__orig.findBtnByKind;
+  `);
+  const doc2 = btnFix.w.document;
+  const mrow = doc2.createElement('div');
+  const bStop = doc2.createElement('button'); bStop.textContent = '取消讲解';
+  const bPop  = doc2.createElement('button'); bPop.textContent = '弹出讲解卡';
+  mrow.appendChild(bStop); mrow.appendChild(bPop); doc2.body.appendChild(mrow);
+  const fakeRect = (el, wd, ht) => {
+    el.getBoundingClientRect = () => ({ width: wd, height: ht, left: 0, top: 0, right: wd, bottom: ht });
+  };
+  fakeRect(bStop, 64, 28); fakeRect(bPop, 88, 28);
+  check(btnFix.w.__DYC_AUTO_LOOP__._findStopBtn(mrow) === bStop,
+    '一行里同时有「取消讲解」和「弹出讲解卡」时,取取消按钮只认取消那枚');
+  check(btnFix.w.__DYC_AUTO_LOOP__._findPopBtn(mrow) === bPop,
+    '弹卡按钮单独取得到(不退化成"任意讲解按钮")');
+  check(btnFix.w.__DYC_AUTO_LOOP__._findStartBtn(mrow) === null,
+    '在讲时没有「开始讲解」,按态取就要返回空(而不是拿弹卡顶上)');
+  check(btnFix.w.__DYC_AUTO_LOOP__._kindOf(bPop) === 'pop' && btnFix.w.__DYC_AUTO_LOOP__._kindOf(bStop) === 'stop',
+    '元素态判定与文案一致');
+  doc2.body.removeChild(mrow); doc2.body.appendChild(bPop);   // 左侧浮层形态:按钮在行外
+  check(btnFix.w.__DYC_AUTO_LOOP__._findPopBtnPage() === bPop,
+    '行内找不到时,能在页面上找到浮层形态的弹卡按钮');
+  btnFix.dom.window.close();
+
+  /* ★ 2026-11-06 弹卡优先(用户定:商品在讲解中时,平台左侧会滑出「弹起讲解卡」,
+     按它可以在不断开讲解的情况下重新弹卡;所以循环优先点它,弹不起来才走取消+重讲)。
+     这条用行为验证,不是源码字符串匹配:在讲 + 有弹卡按钮 ⇒ 一轮只能点它一次、不能点取消。 */
+  const popFix = setup({dybAutoLoopSeconds:15,dybAutoLoopGroup:'sec',dybAutoLoopEnabled:false}, `
+    window.__popClicks=0;
+    var popBtn=document.createElement('button'); popBtn.textContent='弹出讲解卡';
+    findPopBtn=function(){return popBtn;};
+    findPopBtnPage=function(){return popBtn;};
+    findStopBtn=function(){return null;};
+    clickable=function(b){return !!b;};
+    fireClick=function(){window.__popClicks++;};   // 弹卡不改变"讲解中"状态
+  `);
+  popFix.api.apply({autoLoopLecture:true});await flush();
+  popFix.api.setOn(true,true);await flush();
+  await popFix.api.doFastCycle();await flush();
+  check(popFix.w.__popClicks===1 && popFix.clicks()===0,
+    '在讲 + 有弹卡按钮 ⇒ 只点弹卡一次,绝不取消讲解(clicks='+popFix.clicks()+')');
+  check(popFix.api.state.round===1 && popFix.api.state.on,
+    '弹卡确认后照常记一轮、继续跑');
+  check(popFix.api.state.popOk===1 && popFix.api.state.popTries===1,
+    '弹卡账本正确(诊断 pop.ok/pop.tries 能看出新通道在跑)');
+
+  /* 反向:没有弹卡按钮时必须退回老操作(取消 → 等翻转 → 再点讲解),
+     否则平台哪天撤掉这枚按钮,循环就整体失效了。 */
+  const oldFix = setup({dybAutoLoopSeconds:15,dybAutoLoopGroup:'sec',dybAutoLoopEnabled:false});
+  oldFix.api.apply({autoLoopLecture:true});await flush();
+  oldFix.api.setOn(true,true);await flush();
+  const beforeOld = oldFix.clicks();
+  await oldFix.api.doFastCycle();await flush();
+  check(oldFix.clicks()-beforeOld===2 && oldFix.api.state.on && oldFix.api.state.round===1,
+    '没有弹卡按钮 ⇒ 照旧「取消+续讲」各一次,循环不停(clicks='+(oldFix.clicks()-beforeOld)+')');
+  oldFix.dom.window.close();
+
+  for(const fixture of [f,restart,resume,race,defaults,dragFix,popFix]) fixture.dom.window.close();
   console.log('循环讲解模式行为自测：'+passed+'/'+passed+' 通过');
 })().catch(e=>{console.error(e);process.exit(1);});

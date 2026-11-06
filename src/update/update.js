@@ -789,6 +789,13 @@ async function startPrefetch() {
     pre.loadedBytes = 0;
     setProgress(0.01, '开始下载 ' + tree.length + ' 个文件（约 ' + fmtSize(pre.totalBytes) + '）…');
 
+    // --- 3.0 备用源 CDN 预热（2026-11-06）---
+    // 不 await：主源正常时整批下载根本走不到 CDN，预热白跑也不拖慢任何一秒；
+    // 一旦主源在本批中途失败，预热早已选好可用主机，备用源直接命中，
+    // 不必让每个文件各自把三台 CDN 试一遍（那是「慢到不动」的主因）。
+    // 失败无副作用：预热只写健康记忆，取不到就交给逐文件降级。
+    DYC_GITEE.warmUpCdn(targetTag).catch(() => { /* 预热失败不影响下载 */ });
+
     let cursor = 0;
     const worker = async () => {
       for (;;) {

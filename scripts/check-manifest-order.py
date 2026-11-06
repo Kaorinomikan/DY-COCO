@@ -111,6 +111,10 @@ SELF_BOOTING = {
     # 消息,不需要 flags.js,也不需要入口脚本 —— 整条就它一个。原因见
     # src/live/live-agent.js 文件头(SPA 切进中控台时 content_scripts 不会重注入)。
     'src/live/live-agent.js',
+    # 橱窗「粘贴加橱窗」(2026-11-06):橱窗商品管理页没有工具栏入口
+    # (main.js / toolbar.js 都只管别的页),按钮由脚本自己读开关、自己订阅、
+    # 自己挂到平台「添加商品」左边,故整条以自启动脚本收尾。
+    'src/content/shop-paste.js',
 }
 
 FLAGS = 'src/content/flags.js'

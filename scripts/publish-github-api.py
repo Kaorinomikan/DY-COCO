@@ -113,7 +113,7 @@ class GitHub:
         self.calls += 1
         req = urllib.request.Request(url, data=data, headers=headers, method=method)
         last = None
-        for attempt in range(5):
+        for attempt in range(8):
             try:
                 with urllib.request.urlopen(req, timeout=90) as resp:
                     content = resp.read()
@@ -127,10 +127,22 @@ class GitHub:
                     log("      [退避 %ds] 触发限流，重试中" % wait)
                     time.sleep(wait)
                     continue
+                if e.code >= 500:
+                    # 2026-11-06 实测：POST /git/blobs 存在**间歇性空 500**
+                    # （同一请求连发 6 次：5 次 201、1 次 500，约 20% 失败率）。
+                    # 不是内容问题（utf-8 / base64 / 小文本 / 二进制都能中招），
+                    # 也不是权限问题（同 token 建 tree 稳定 201）。
+                    # 一次单提交要写 199 个 blob，不重试必然中途炸。
+                    # ⇒ 5xx 一律短退避重试，退避次数用满才判失败。
+                    wait = 2 * (attempt + 1)
+                    log("      [退避 %ds] 服务端 %d，重试中（第 %d 次）"
+                        % (wait, e.code, attempt + 1))
+                    time.sleep(wait)
+                    continue
                 raise RuntimeError("GitHub API %s 返回 %s" % (method, last))
             except urllib.error.URLError as e:
                 last = str(e.reason)
-                if attempt < 4:
+                if attempt < 7:
                     time.sleep(5)
                     continue
                 raise RuntimeError("访问 GitHub API 失败：%s" % last)

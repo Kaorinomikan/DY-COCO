@@ -57,7 +57,7 @@ SCRIPT_TARGETS = {
     'scripts/check-sensitive-words.py': '自测-敏感词邻近匹配.py',
     'scripts/sensitive-words-allowlist.txt': '自测-敏感词邻近匹配.py',
     'scripts/check-syntax.py': '自测-语法闸门.py',
-    'scripts/wt-merge.sh': '自测-发布回收.py',
+    'scripts/wt-merge.sh': ('自测-发布回收.py', '自测-回收预检.py'),
     'scripts/回收.sh': '自测-发布回收.py',
     'scripts/publish.sh': '自测-发布回收.py',
     'scripts/publish-github-api.py': '自测-发布回收.py',
@@ -67,7 +67,16 @@ SCRIPT_TARGETS = {
     # 都要跑对应自测 —— 词表失效是静默漏检，不能只靠人工记得跑。
     'scripts/check-product-copy.js': '自测-更新日志口径.js',
     'scripts/changelog-entities.json': '自测-更新日志口径.js',
+    # 回收预检（2026-11-07）：判据脚本或看板改了一处，都得跑它的自测 ——
+    # 这几处的失效都是**静默**的（照样报「可干净回收」，只是判错了）。
+    'scripts/check-revert.sh': '自测-回收预检.py',
+    'scripts/wt-list.sh': '自测-回收预检.py',
 }
+
+# 一个源文件可能同时被多个自测覆盖（wt-merge.sh 既是发布闸门也是回收预检）。
+# 值写成元组即可；写字符串按单个处理，保持向后兼容。
+def _targets_of(entry):
+    return (entry,) if isinstance(entry, str) else tuple(entry)
 
 
 def git(*args):
@@ -172,7 +181,8 @@ def select_changed(scripts, index, changes):
         if c.startswith('scripts/自测-'):
             hit = [s for s in scripts if s.name == Path(c).name]
         elif c in SCRIPT_TARGETS:
-            hit = [s for s in scripts if s.name == SCRIPT_TARGETS[c]]
+            want = _targets_of(SCRIPT_TARGETS[c])
+            hit = [s for s in scripts if s.name in want]
         else:
             hit = [s for s in scripts if c in index.get(s, ())]
         if not hit and not c.startswith('scripts/'):

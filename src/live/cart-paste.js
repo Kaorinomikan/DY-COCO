@@ -26,6 +26,9 @@
  *     直接提示「车满了,先删几个」且**不发**绑定请求;平台若仍以「上限/已满」类原因
  *     驳回(我们没数准的情况),同样换成这条口径,不退回笼统失败。
  *
+ * 【只在中控台出现】2026-11-06 用户定:中控台切到橱窗商品管理页(/dashboard/
+ *   shopwindow/goods-list)后,这个按钮必须消失。见文件末「开关 + 作用域」。
+ *
  * 【请求通道】优先经 stock-net-probe 的 sendRequest(页面世界 XHR,自动带平台平台校验头),
  *   探针不在场时退回隔离世界 fetch。平台校验/网络失败都按平台原文报出来,不静默。
  */
@@ -110,6 +113,13 @@
 
   function ensureButton() {
     if (!on) return;
+    /* 作用域兜底（2026-11-06）：非中控台一律不挂按钮。
+       订阅那一路已经负责「切走即收」，这里是第二道 —— 心跳、平台重渲染、
+       任何路径都不会把按钮再带到别的页面（用户报：橱窗商品管理页上还留着它）。 */
+    if (typeof dycIsLiveControl === 'function' && !dycIsLiveControl()) {
+      removeButton();
+      return;
+    }
     if (btn && btn.isConnected) return;
 
     const native = findNativeAddButton();
@@ -758,6 +768,10 @@
    * ========================================================== */
 
   function start() {
+    /* 作用域兜底（2026-11-06）：不在中控台，start 也不许「保持在场」。
+       只判 ensureButton 不够 —— 按钮已经在场时 start() 会被下面的幂等
+       guard 直接返回，谁都不会去摘它（自测用例④抓到的就是这个缺口）。 */
+    if (typeof dycIsLiveControl === 'function' && !dycIsLiveControl()) { stop(); return; }
     if (on) return;
     on = true;
     ensureButton();
@@ -774,13 +788,17 @@
     removeButton();
   }
 
-  /* 开关。
+  /* 开关 + 作用域。
    *
-   * ★ 本模块**刻意不接**中控台作用域守卫（用户 2026-11-05 明确：「这个页面
-   *   （橱窗商品管理）允许粘贴加车」）。别把它当成「跟着中控台收」的那一类：
-   *   中控台 pushState 切到橱窗商品页不重载 document，本按钮继续找该页的
-   *   「添加商品」并把按钮挂上去，这是预期行为，不是残留。
-   *   跟着收的只有循环讲解 / 自动刷新 / 福袋 / 全能搜索四类。
+   * ★ 2026-11-06 用户改口径（覆盖 2026-11-05 的「橱窗商品管理页允许粘贴加车」）：
+   *   「是要去掉这个按钮，在这个分页面」—— 粘贴加车**只在中控台出现**。
+   *   中控台是 Garfish 微前端，pushState 切到橱窗商品管理页不重载 document，
+   *   所以必须主动收，不能指望页面重载把它带走。
+   *
+   *   两道保险，缺一不可：
+   *     ① 作用域订阅 —— 路由翻转即 stop()（真移除按钮并让心跳空转）；
+   *     ② ensureButton 顶部的作用域判定 —— 任何路径都不在别页挂按钮。
+   *   跟着收的模块因此变成：循环讲解 / 自动刷新 / 福袋 / 全能搜索 / 粘贴加车。
    */
   dycReadFlags().then((flags) => {
     if (flags.cartPaste !== false) start();
@@ -789,4 +807,13 @@
     const want = flags.cartPaste !== false;
     if (want) start(); else stop();
   });
+  if (typeof dycWatchLiveScope === 'function') {
+    dycWatchLiveScope((inScope) => {
+      if (!inScope) { stop(); return; }
+      /* 回到中控台：开关关着就不许复活（否则等于绕过了用户的开关） */
+      dycReadFlags().then((flags) => {
+        if (flags.cartPaste !== false) start();
+      });
+    });
+  }
 })();

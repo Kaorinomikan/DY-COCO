@@ -60,6 +60,15 @@ printf '%s\n' "$TASKS" | while IFS=$'\t' read -r WTPATH BRANCHREF; do
   BEHIND=$("$GIT" rev-list --count "$BRANCH..main" 2>/dev/null || echo '?')
   LAST=$("$GIT" log -1 --format='%h %ad %s' --date=format:'%m-%d %H:%M' "$BRANCH" 2>/dev/null)
 
+  # ★ 2026-11-07：落后超过 3 个提交就提示先同步。
+  #   落后越久，`git diff main..branch` 越会把「main 有、分支没跟上」显示成
+  #   一大片删除，看起来像「把主干改动退回去了」；真冲突面也随文件数放大。
+  BEHIND_MARK=""
+  case "$BEHIND" in
+    ''|'?'|*[!0-9]*) ;;
+    *) [ "$BEHIND" -gt 3 ] && BEHIND_MARK="  ⚠️ 落后偏多，先 merge main 再往下做" ;;
+  esac
+
   DIRTY=""
   if [ -d "$WTPATH" ]; then
     N=$("$GIT" -C "$WTPATH" status --porcelain 2>/dev/null | wc -l | tr -d ' ')
@@ -69,17 +78,23 @@ printf '%s\n' "$TASKS" | while IFS=$'\t' read -r WTPATH BRANCHREF; do
   fi
 
   # 回收预检:能不能快进 / 会冲突吗
+  #
+  # ★ 2026-11-07 修假阳性。原判据是
+  #     git merge-tree <base> main <branch> | grep -q '^<<<<<<<\|changed in both'
+  #   而 `changed in both` 只表示「双方都改过这个文件」，**不是冲突** ——
+  #   两边改的是不同区域时 git 会静默合并。实测某任务只往 flags.js 里加了个开关、
+  #   main 也加了个开关，看板就报「⚠️ 会冲突」，把合并方向都带偏了。
+  #   现改用与 wt-merge 一致的判据：`merge-tree --write-tree` 的退出码（真冲突才非零）。
   FILES=$("$GIT" diff --name-only "main..$BRANCH" 2>/dev/null)
-  CONFLICT="?"
-  if "$GIT" merge-tree "$("$GIT" merge-base main "$BRANCH")" main "$BRANCH" 2>/dev/null | grep -q '^<<<<<<<\|changed in both'; then
-    CONFLICT="⚠️ 会冲突"
-  else
+  if "$GIT" merge-tree --write-tree main "$BRANCH" >/dev/null 2>&1; then
     CONFLICT="✅ 可干净回收"
+  else
+    CONFLICT="⚠️ 会冲突"
   fi
 
   echo "── $NAME ──────────────────────────────────────"
   echo "   分支    : $BRANCH"
-  echo "   领先 main: $AHEAD 个提交   落后: $BEHIND 个"
+  echo "   领先 main: $AHEAD 个提交   落后: $BEHIND 个$BEHIND_MARK"
   echo "   最后提交: $LAST"
   echo "   目录    : $WTPATH $DIRTY"
   echo "   回收预检: $CONFLICT"

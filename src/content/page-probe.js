@@ -282,13 +282,43 @@
 
   /* ---------- 三、行结构样本 ---------- */
 
+  /**
+   * 取「真实行」当样本 —— 不能直接用 children[0]。
+   *
+   * 【2026-11-07 真机教训】auxo-table 的 tbody 第一个子元素是
+   * `tr.auxo-table-measure-row`(高 0、只放 10 个空 td 量列宽)。直接取首元素,
+   * 采到的永远是测量行 —— 报告里"行结构"全是 0×0 的 td,真实商品行一次都没采到。
+   * 后果是照这份结构改代码必然打不中,还自以为有结构依据。
+   * 判据:优先 tagName === 'TR' 且实测高度 > 8 的元素;退而求其次取第一个
+   * 有尺寸的子元素。measure-row 的类名/size 任一命中都跳过。
+   */
+  function pickRealRow(container) {
+    var kids = container.children || [];
+    var limit = Math.min(kids.length, 40);
+    var firstSized = null;
+    for (var i = 0; i < limit; i++) {
+      var el = kids[i];
+      if (!el || !el.tagName) continue;
+      if (el.classList && el.classList.contains('auxo-table-measure-row')) continue;
+      var r = rectOf(el);
+      var h = r ? r[3] : 0;
+      if (h > 8) {
+        if (el.tagName === 'TR') return el;
+        if (!firstSized) firstSized = el;
+      }
+    }
+    return firstSized || kids[0] || null;
+  }
+
   function collectRowSample(container) {
-    var first = container.children[0];
+    var first = pickRealRow(container);
     if (!first) return [];
 
+    // 展开 4 层:真实商品行是 tr>td>div>div>div(名称在第 5 层),
+    // 只展开 2 层的话连名称元素都看不到 —— 2026-11-07 起放宽。
     var out = [];
     (function walk(el, d) {
-      if (d > 1 || out.length >= 30) return;
+      if (d > 3 || out.length >= 60) return;
       var r = rectOf(el);
       out.push({
         d: d,
@@ -633,7 +663,7 @@
     L.push('');
 
     /* ---- 三、行结构样本 ---- */
-    L.push('## 三、行结构样本(各候选容器的首行,展开 2 层)');
+    L.push('## 三、行结构样本(各候选容器的首个真实行,展开 4 层)');
     if (!candidates.length) {
       L.push('(无候选容器)');
     } else {
@@ -641,7 +671,7 @@
         L.push('### 容器 ' + (idx + 1) + ':`' + tag(c.el) + '`');
         var rows = collectRowSample(c.el);
         if (!rows.length) {
-          L.push('(取不到首行)');
+          L.push('(取不到真实行 —— 容器里没有带高度的子元素)');
         } else {
           rows.forEach(function (r) {
             L.push('  '.repeat(r.d) + '- `' + r.t + '` · ' + r.w + '×' + r.h

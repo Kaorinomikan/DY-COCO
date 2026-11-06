@@ -106,22 +106,40 @@
     elStatus.textContent = '正在读取版本列表…';
     elList.innerHTML = '';
     var port = clPort = chrome.runtime.connect({ name: 'dyc-changelog' });
-    var settled = false;
+    var started = false;
     port.onMessage.addListener(function (m) {
-      if (settled) return;
-      if (m && m.type === 'progress') {
-        elStatus.textContent = '正在读取各版日志…（' + m.done + '/' + m.total + '）';
+      if (!m) return;
+      // 2026-11-06 起是四段式：done（首屏，含读取中占位）→ progress/patch
+      // （边拉边补）→ complete（收尾）。done 之后不能断开，否则补全的历史版
+      // 永远进不来（与 panel.js 保持同一口径）。
+      if (m.type === 'progress') {
+        elStatus.textContent = '正在补全历史版本日志…（' + m.done + '/' + m.total + '）';
         return;
       }
-      settled = true;
-      if (m && m.type === 'done') renderChangelog(elStatus, elList, m.data || {});
-      else clFail(elStatus, elList, (m && m.message) || '后台响应异常');
-      clCleanup(port);
+      if (m.type === 'done') {
+        started = true;
+        renderChangelog(elStatus, elList, m.data || {});
+        return;
+      }
+      if (m.type === 'patch') {
+        if (started) patchChangelog(elStatus, elList, m);
+        return;
+      }
+      if (m.type === 'complete') {
+        started = true;
+        refreshClStatus(elStatus, elList);
+        clCleanup(port);
+        return;
+      }
+      if (m.type === 'error') {
+        started = true;
+        clFail(elStatus, elList, m.message || '后台响应异常');
+        clCleanup(port);
+      }
     });
     port.onDisconnect.addListener(function () {
       if (clPort === port) clPort = null;
-      if (!settled) {
-        settled = true;
+      if (!started) {
         clFail(elStatus, elList, '后台连接中断（扩展可能刚更新过）');
       }
     });
@@ -143,44 +161,72 @@
     elList.appendChild(box);
   }
 
+  /** 单个版本卡片的正文 HTML。render 与 patch 共用。 */
+  function clBodyHtml(r) {
+    if (r.notes) {
+      var h = '';
+      if (r.notes.summary) h += '<div class="cl-sum">' + esc(r.notes.summary) + '</div>';
+      if (r.notes.items && r.notes.items.length) {
+        h += '<ul class="cl-list">';
+        for (var k = 0; k < r.notes.items.length; k++) {
+          h += '<li>' + esc(r.notes.items[k]) + '</li>';
+        }
+        h += '</ul>';
+      }
+      return h;
+    }
+    if (r.loading) return '<div class="cl-miss">读取中…</div>';
+    if (r.error) return '<div class="cl-miss">日志拉取失败：' + esc(r.error) + '</div>';
+    return '<div class="cl-miss">该版本未附日志说明</div>';
+  }
+
+  function clStateOf(r) {
+    if (r.notes) return 'ok';
+    if (r.loading) return 'loading';
+    if (r.error) return 'error';
+    return 'missing';
+  }
+
+  function refreshClStatus(elStatus, elList) {
+    var cards = elList.querySelectorAll('.cl-card');
+    var ok = 0, loading = 0, missing = 0, err = 0;
+    for (var i = 0; i < cards.length; i++) {
+      var s = cards[i].getAttribute('data-cl-state');
+      if (s === 'ok') ok++;
+      else if (s === 'loading') loading++;
+      else if (s === 'error') err++;
+      else missing++;
+    }
+    var parts = [];
+    if (ok) parts.push(ok + ' 个附日志');
+    if (loading) parts.push(loading + ' 个读取中');
+    if (missing) parts.push(missing + ' 个未附日志');
+    if (err) parts.push(err + ' 个拉取失败');
+    elStatus.className = 'cl-status';
+    elStatus.textContent = cards.length
+      ? ('共 ' + cards.length + ' 个版本 · ' + parts.join(' · '))
+      : '没能读到任何版本的日志说明';
+  }
+
   function renderChangelog(elStatus, elList, data) {
     var items = data.items || [];
     var cur = 'v' + (data.localVersion || extVersion);
-    var ok = 0;
-    var miss = 0;
     elList.innerHTML = '';
     for (var i = 0; i < items.length; i++) {
       var r = items[i];
-      if (r.notes) ok++;
-      else if (r.error) miss++;
       var card = document.createElement('section');
       card.className = 'cl-card';
-      var html = '<div class="cl-head">'
+      card.setAttribute('data-cl-tag', r.tag);
+      card.setAttribute('data-cl-state', clStateOf(r));
+      card.innerHTML = '<div class="cl-head">'
         + '<span class="cl-no">' + esc(r.tag) + '</span>'
         + (r.date ? '<span class="cl-date">' + esc(clFmtDate(r.date)) + '</span>' : '')
         + (r.tag === cur ? '<span class="cl-now">当前版本</span>' : '')
-        + '</div>';
-      if (r.notes) {
-        if (r.notes.summary) html += '<div class="cl-sum">' + esc(r.notes.summary) + '</div>';
-        if (r.notes.items && r.notes.items.length) {
-          html += '<ul class="cl-list">';
-          for (var k = 0; k < r.notes.items.length; k++) {
-            html += '<li>' + esc(r.notes.items[k]) + '</li>';
-          }
-          html += '</ul>';
-        }
-      } else if (r.error) {
-        html += '<div class="cl-miss">日志拉取失败：' + esc(r.error) + '</div>';
-      } else {
-        html += '<div class="cl-miss">该版本未附日志说明</div>';
-      }
-      card.innerHTML = html;
+        + '</div>'
+        + '<div class="cl-body">' + clBodyHtml(r) + '</div>';
       elList.appendChild(card);
     }
-    var msg = ok ? ('共 ' + ok + ' 个版本附日志') : '没能读到任何版本的日志说明';
-    if (miss) msg += '，' + miss + ' 个版本暂时拉不到';
-    elStatus.className = 'cl-status';
-    elStatus.textContent = msg;
+    refreshClStatus(elStatus, elList);
     var foot = document.createElement('div');
     foot.className = 'cl-foot';
     foot.innerHTML = '以上说明取自各版本标签随仓库提交的 RELEASE_NOTES，'
@@ -191,6 +237,29 @@
       }
     });
     elList.appendChild(foot);
+  }
+
+  /** 单版结果到达 → 就地替换那张卡（与 panel.js 同一口径）。 */
+  function patchChangelog(elStatus, elList, m) {
+    var tag = String(m.tag || '');
+    if (!tag) return;
+    var cards = elList.querySelectorAll('.cl-card');
+    var card = null;
+    for (var i = 0; i < cards.length; i++) {
+      if (cards[i].getAttribute('data-cl-tag') === tag) { card = cards[i]; break; }
+    }
+    if (!card) return;
+    var r = {
+      tag: tag,
+      notes: m.notes || null,
+      loading: false,
+      error: m.error || '',
+      missing: !!m.missing
+    };
+    card.setAttribute('data-cl-state', clStateOf(r));
+    var body = card.querySelector('.cl-body');
+    if (body) body.innerHTML = clBodyHtml(r);
+    refreshClStatus(elStatus, elList);
   }
 
   // 初始落位:URL 带 tab=changelog 时直接落在日志页(SW 兜底开窗时传入)。

@@ -1085,6 +1085,10 @@
    * 开关重新打开、总闸重新打开、以及兜底自愈都走这一条路径。
    */
   function scanSearchInputs() {
+    /* 作用域兜底（2026-11-06）：非中控台一律不接管、不插按钮。
+       首次初始化、开关重开、兜底自愈都走这一条路径 —— 在这里拦一道，
+       比只在销毁侧补救可靠（用户报：切到橱窗商品管理页后按钮还在）。 */
+    if (typeof dycIsLiveControl === 'function' && !dycIsLiveControl()) return;
     try {
       const inputs = document.querySelectorAll('input');
       for (const el of inputs) {
@@ -3035,6 +3039,9 @@
   }
 
   function addOmnisearchButton(el) {
+    /* 唯一创建点，作用域判定放这里最彻底（2026-11-06）：兜底自愈表、开关回声、
+       任何调用方都不可能在这条路径之外把按钮插到别页上。 */
+    if (typeof dycIsLiveControl === 'function' && !dycIsLiveControl()) return;
     if (omniBtnHealthy(el)) return;
     /* 不健康：先把残骸摘干净再重插，否则同页会留下第二枚
      * （只摘我们自己创建的节点，绝不碰平台元素）。 */
@@ -3287,6 +3294,26 @@
           try { el.__dycOmniBtn.remove(); } catch (e) { /* 尽力而为 */ }
           el.__dycOmniBtn = null;
         }
+      }
+    } catch (e) { /* 尽力而为 */ }
+    removeAllOmniShells();
+  }
+
+  /**
+   * 按固定 id / 属性全量摘掉【全能搜索】按钮的壳(2026-11-06)。
+   *
+   * 为什么不能只靠上面那圈遍历:它遍历的是 `input[data-dyc-search]`,
+   * 而平台重建搜索区时会把被打过标记的输入框整个换掉 —— 旧节点一脱离 DOM,
+   * 挂在它旁边的壳就再也遍历不到,按钮永久留在页面上(用户报:从中控台切到
+   * 橱窗商品管理页后,该页仍留着【全能搜索】按钮)。
+   * 壳与按钮本身都有固定 id / 属性,按它们全量清,不依赖输入框还在不在。
+   * 只摘我们自己建的节点(id 是 dyc- 前缀),绝不碰平台元素。
+   */
+  function removeAllOmniShells() {
+    try {
+      const nodes = document.querySelectorAll('#dyc-omni-shell, [data-dyc-omni-btn]');
+      for (const n of nodes) {
+        try { n.remove(); } catch (e) { /* 尽力而为 */ }
       }
     } catch (e) { /* 尽力而为 */ }
   }
@@ -4047,6 +4074,9 @@
    * （胶囊不用建：用户点圆钮时 expandPill 会自己 buildPill，与首次加载同一条路径。）
    */
   function reviveSearchUi() {
+    /* 作用域兜底（2026-11-06）：不在中控台就不重建任何 UI（胶囊 / 圆钮 / 按钮）。
+       这条函数是「叫醒」路径，多一处调用就多一次在别页复活的机会。 */
+    if (typeof dycIsLiveControl === 'function' && !dycIsLiveControl()) return;
     uiState = 'hidden';
     lastVisible = null;    // 与初始化一致：让首次显隐判定从头算，不带旧去抖状态
     bindDocScroll();

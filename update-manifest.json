@@ -1,5 +1,5 @@
 {
-  "version": "26.11.06.1",
+  "version": "26.11.07.1",
   "algorithm": "sha256",
   "files": [
     {
@@ -19,13 +19,13 @@
     },
     {
       "path": "manifest.json",
-      "size": 8714,
-      "sha256": "bcd25cb33fe108818c672f05c6f1c425aaf6afd55290e762b325d754a19ee6e9"
+      "size": 9319,
+      "sha256": "c109f21f96a19506be7d849094e74b68df05cc37400d15c2dcec1571955f30d1"
     },
     {
       "path": "src/background/service-worker.js",
-      "size": 79517,
-      "sha256": "4dcd49053288dfa1d2994e01b4623177c105bd00016ad923cc6e344be1faecd8"
+      "size": 81935,
+      "sha256": "995c49ae98fd3d5c9e0b61be7502ec0db385afeaf793802b727ce060c54ae674"
     },
     {
       "path": "src/content/anchor.js",
@@ -64,8 +64,8 @@
     },
     {
       "path": "src/content/diag.js",
-      "size": 60364,
-      "sha256": "59c5fadbab555c17d0c0006bac929945d1165e4218b0ff8a0c62621234d7c8dd"
+      "size": 60405,
+      "sha256": "fa04363da695a77be8c36b932551963534bacecf0566c0a7282aaeac4df6748d"
     },
     {
       "path": "src/content/dialog.js",
@@ -79,8 +79,13 @@
     },
     {
       "path": "src/content/flags.js",
-      "size": 81526,
-      "sha256": "28b104f9bee2bb13c37491eefbdba5acfca8f8c7d91fd31daa057236daf0a9b1"
+      "size": 85507,
+      "sha256": "495b5c4c11ab341b2c2fe398ffff05959349263149831767e753bfc9ea85d96e"
+    },
+    {
+      "path": "src/content/goods-batch-copy.js",
+      "size": 61144,
+      "sha256": "d1fe9bdc94f7948b63b2e3a9768dcde151c05886d59e345d2a9e185b8aa3dd7e"
     },
     {
       "path": "src/content/inject-button.js",
@@ -109,8 +114,8 @@
     },
     {
       "path": "src/content/page-probe.js",
-      "size": 29718,
-      "sha256": "49dcd1425b5fc2820463cc9fb40c2701082c4c8d69f7e70a5dae17411aa6d1b1"
+      "size": 31129,
+      "sha256": "4ac27678cc427f03d284e9277e116112b9c74b7550ea37ac64854adbd96ddee1"
     },
     {
       "path": "src/content/row-scan.js",
@@ -126,6 +131,11 @@
       "path": "src/content/shop-list-name.js",
       "size": 38099,
       "sha256": "9c22cfd7bdfbf521d6896565d70dee6b6a0cfbe73b81f95bbce737fc3965acb2"
+    },
+    {
+      "path": "src/content/shop-paste.js",
+      "size": 23101,
+      "sha256": "f1cbfdd38b4e55c889fe46ec8ce06dffa56f769e83886313e97b5682f40e6555"
     },
     {
       "path": "src/content/stock-direct.js",
@@ -144,8 +154,8 @@
     },
     {
       "path": "src/content/style.css",
-      "size": 7378,
-      "sha256": "3ed765c4508e9829712c4db3ca61d3e3c44a9202fe2110dbf23d319c08bae3d5"
+      "size": 8539,
+      "sha256": "5bc699a9e312c7dca52b3133b391b5e3eeac5b1ad340402120cf85f44b87ccd1"
     },
     {
       "path": "src/content/wx-goods-title.js",
@@ -169,18 +179,18 @@
     },
     {
       "path": "src/feedback/feedback.js",
-      "size": 32406,
-      "sha256": "60f43b486c2b9c52897d3370ada69c1272557ba04ccf7c31793fa86a3a97d5b6"
+      "size": 34718,
+      "sha256": "bf6cf066226db12e2bfa8a6a9488e9f6f2e89649cdcbe02644cdd8843bb84e4b"
     },
     {
       "path": "src/feedback/panel.js",
-      "size": 53365,
-      "sha256": "b23ce5c95e2913af4f550f4a871be71e165af50f98ef511feafdcf70a64e107d"
+      "size": 56045,
+      "sha256": "192a4406737eb6800c09ac2afb06230558bb01f55e433a0785b88001ff6620d9"
     },
     {
       "path": "src/live/auto-loop-lecture.js",
-      "size": 246652,
-      "sha256": "067b5ff694d303bfbd812dc548985f8f93ee5ae110e92a8c21653154f628e096"
+      "size": 260267,
+      "sha256": "a0d10b9beb94cd70c078f677735ac9d22fb6cdb6f75529764768c8d5eb654500"
     },
     {
       "path": "src/live/auto-refresh.js",
@@ -199,8 +209,8 @@
     },
     {
       "path": "src/live/cart-paste.js",
-      "size": 35819,
-      "sha256": "d43a5d9aade652fd51c9b9b0a2212d5ba8f010f5cd0b88025b9ff104e4ced78d"
+      "size": 37422,
+      "sha256": "731f570d19132e3e38a4cf3d8ea6db3837d7f827f86bba38e47c4afb0d99b459"
     },
     {
       "path": "src/live/compass-table.js",
@@ -274,8 +284,8 @@
     },
     {
       "path": "src/live/search.js",
-      "size": 212181,
-      "sha256": "1ef6ee47ade79f8ec0805038c5f8816d941ac7bdbe1c360db47fd7abfb88b3b4"
+      "size": 214082,
+      "sha256": "1e5df3f1c26b977f71842053c6d9c27d90376eea6e495ea5c167345ed7a76ac9"
     },
     {
       "path": "src/live/tool-slots.js",
@@ -369,8 +379,8 @@
     },
     {
       "path": "src/shared/gitee.js",
-      "size": 49766,
-      "sha256": "d320bdb1daa9b6f5c45241ffdb0ff1339e911cbd507e93557030feb8ee73904e"
+      "size": 62994,
+      "sha256": "9ee93bda809aeba735ea7e80a50c2c3cd9cd27ae7285e07b984ab6e598dd84e8"
     },
     {
       "path": "src/shared/live-control-assets.js",
@@ -389,8 +399,8 @@
     },
     {
       "path": "src/update/update.js",
-      "size": 63548,
-      "sha256": "6f20fe599706cfa30fa920bcbf221e2d995e876a56d1084d70b503e3846477f2"
+      "size": 64092,
+      "sha256": "4c74ba69fdf46fb71304e16b4fd13bff57477f756ddaed807e70d084a071d484"
     }
   ]
 }

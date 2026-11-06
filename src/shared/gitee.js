@@ -131,12 +131,116 @@
    *
    * 轮换链（fastly→gcore→cdn→API）的设计假设「失败是快速的」；任一主机
    * TCP 黑洞（连接挂起不返回）时裸 fetch 永不 settle ⇒ Promise.all 卡死，
-   * 检测/下载永久停在半路。所以所有更新源请求一律走这里：
-   *   检测/清单类 15 秒；文件下载 120 秒（最大文件约 67KB，120 秒对应
-   *   ≥0.6KB/s 的极慢链路仍能完成，只拦「永远不响应」的死连接）。
+   * 检测/下载永久停在半路。所以所有更新源请求一律走这里。
+   *
+   * ★ 2026-11-06 下调下载超时 120s → 30s
+   *   本工程最大文件约 67 KB，120 秒对应 0.6KB/s 都算「正常」，等于把
+   *   「慢」和「死」混为一谈 —— 一个挂死的请求能把一个 worker 占住两分钟，
+   *   叠 3 次重试单文件要 6 分钟。30 秒对应 ≥2.2KB/s，仍是极宽松的门槛，
+   *   但能把死连接快速判出去、立刻换备用源。
+   *   若将来有超过 100KB 的文件，按 size 动态放宽（见 fetchRawFile）。
    */
-  var FETCH_TIMEOUT_DETECT = 15000;
-  var FETCH_TIMEOUT_DOWNLOAD = 120000;
+  var FETCH_TIMEOUT_DETECT = 10000;
+  var FETCH_TIMEOUT_DOWNLOAD = 30000;
+
+  /** 按文件大小给下载超时：小文件 30 秒，大文件按 ≥50KB/s 放宽。 */
+  function downloadTimeoutFor(size) {
+    var n = Number(size);
+    if (!isFinite(n) || n <= 0) return FETCH_TIMEOUT_DOWNLOAD;
+    return Math.max(FETCH_TIMEOUT_DOWNLOAD, Math.round(n / 50) * 1000);
+  }
+
+  /* ==================== 更新源健康状态（2026-11-06） ====================
+   *
+   * 两段独立的健康记忆，解决「一次坏链路拖垮整批下载」：
+   *
+   *   ① 主源熔断：连续失败达到阈值 ⇒ 本批后续文件不再先试主源，直接走
+   *      备用源；冷却期后自动恢复重试主源。
+   *      修的是「78 个文件各自白等一次主源超时」——主源整体不可用时，
+   *      原实现会做 78 次无效等待。
+   *
+   *   ② CDN 主机记忆：可用主机序号写进 chrome.storage.local，下次更新
+   *      （包括浏览器重启后）直接从它开始，不再从不可达的主机撞起。
+   *      原实现的记录只在内存，重启即归零。
+   *
+   * 为什么可以持久化：商家网络环境是稳定的，「上次哪台 CDN 能用」对下次
+   * 仍然成立；即便判断错了，最坏也只是多失败一次、自动换下一台。
+   *
+   * 无扩展环境（自测脚本 node）没有 chrome.storage ⇒ 自动退回内存语义。
+   */
+  var HEALTH_KEY = 'dycUpdateHealth';
+  var MAIN_TRIP_AFTER = 2;                 // 连续失败几次判死主源
+  var MAIN_COOLDOWN_MS = 30 * 60 * 1000;   // 熔断冷却 30 分钟后自动重试主源
+  var mainFailStreak = 0;
+  var mainDownUntil = 0;
+  var cdnHealthyIdx = 0;
+  var cdnProbe = null;                     // 进行中的预热，避免并发重复探
+  var healthLoaded = false;
+
+  function healthStore() {
+    try {
+      if (typeof chrome !== 'undefined' && chrome.storage && chrome.storage.local) {
+        return chrome.storage.local;
+      }
+    } catch (e) { /* 走内存 */ }
+    return null;
+  }
+
+  /** 读持久化的健康状态。只在首次真正读存储，之后同步返回。 */
+  function loadHealth() {
+    if (healthLoaded) return Promise.resolve();
+    healthLoaded = true;
+    var st = healthStore();
+    if (!st) return Promise.resolve();
+    return Promise.resolve(st.get(HEALTH_KEY)).then(function (got) {
+      var v = got && got[HEALTH_KEY];
+      if (!v || typeof v !== 'object') return;
+      if (typeof v.cdnIdx === 'number' && v.cdnIdx >= 0 && v.cdnIdx <= 2) {
+        cdnHealthyIdx = v.cdnIdx;
+      }
+      if (typeof v.mainDownUntil === 'number' && v.mainDownUntil > Date.now()) {
+        mainDownUntil = v.mainDownUntil;
+      }
+    }, function () { /* 读不到就当没有 */ });
+  }
+
+  function saveHealth() {
+    var st = healthStore();
+    if (!st) return;
+    var rec = { cdnIdx: cdnHealthyIdx, mainDownUntil: mainDownUntil };
+    var payload = {};
+    payload[HEALTH_KEY] = rec;
+    try {
+      Promise.resolve(st.set(payload)).catch(function () { /* 配额异常忽略 */ });
+    } catch (e) { /* 写失败只影响下次要不要多试一台，不影响本次 */ }
+  }
+
+  /** 主源当前是否可用（熔断期内为 false）。 */
+  function mainSourceUsable() {
+    return Date.now() >= mainDownUntil;
+  }
+
+  /**
+   * 记录一次主源结果。
+   * ok=true 立即清零并解除熔断；ok=false 累计，达阈值进入冷却。
+   * ⚠️ 调用方不要拿「该版本在主源不存在（404）」来记失败 —— 那是内容缺失，
+   *    不是主源不可用，记进去会误伤正常的主源。
+   */
+  function noteMainSource(ok) {
+    if (ok) {
+      if (mainFailStreak !== 0 || mainDownUntil !== 0) {
+        mainFailStreak = 0;
+        mainDownUntil = 0;
+        saveHealth();
+      }
+      return;
+    }
+    mainFailStreak++;
+    if (mainFailStreak >= MAIN_TRIP_AFTER && !mainDownUntil) {
+      mainDownUntil = Date.now() + MAIN_COOLDOWN_MS;
+      saveHealth();
+    }
+  }
 
   function fetchT(url, opts, ms) {
     var o = opts || {};
@@ -349,10 +453,84 @@
 
   /* ==================== 备用源：GitHub ==================== */
 
-  /* jsDelivr CDN 健康主机序号（0=fastly 1=gcore 2=cdn）。
-   * 探测出可用的主机后记住它，同一次更新里后续文件直接从它开始，
-   * 不必每个文件都把域名试一遍。进程生命周期内有效。 */
-  var cdnHealthyIdx = 0;
+  /* 注：CDN 健康主机序号 cdnHealthyIdx 已上移到文件开头的「更新源健康状态」块，
+   * 因为主源熔断与它同属一份持久化记录（2026-11-06）。 */
+
+  /**
+   * jsDelivr 的三台 CDN 主机（按首选顺序）。
+   * 抽成函数是为了让「读文件」与「下载前预热」用完全相同的顺序，
+   * 两处各写一份必然漂移。
+   */
+  function cdnHosts(c) {
+    return [
+      c.jsdelivrCdn,
+      'https://gcore.jsdelivr.net/gh/' + c.owner + '/' + c.repo,
+      'https://cdn.jsdelivr.net/gh/' + c.owner + '/' + c.repo
+    ];
+  }
+
+  /**
+   * 【下载前预热】并行探三台 CDN，选出可用的一台并持久记住。
+   *
+   * 为什么需要：原实现「每个文件各自从首选主机开始试」。三台里有任何一台
+   * 是 TCP 黑洞时，一批 78 个文件要付出 78 次主机超时；并发 6 也只能把
+   * 前 6 个分摊掉。预热把这份代价压成整批一次（最多 4 秒）。
+   *
+   * 语义：并发探测、谁先成功用谁；全部不可用返回 -1，交给 contents API。
+   * 失败不缓存 —— 下次下载会重新探。
+   *
+   * @returns {Promise<number>} 0/1/2 = 可用主机序号；-1 = 全部不可用
+   */
+  function warmUpCdn(tag, owner, repo) {
+    if (cdnProbe) return cdnProbe;
+    var c = ghCoord(owner, repo);
+    var t = encodeURIComponent(String(tag == null ? '' : tag).trim());
+    if (!t) return Promise.resolve(cdnHealthyIdx);
+
+    var hosts = cdnHosts(c);
+    var PROBE_MS = 4000;
+    cdnProbe = loadHealth().then(function () {
+      return new Promise(function (resolve) {
+        var pending = hosts.length;
+        var winner = -1;
+        var settled = false;
+        hosts.forEach(function (base, k) {
+          fetchT(base + '@' + t + '/' + MANIFEST_FILE, {
+            redirect: 'follow',
+            cache: 'no-store'
+          }, PROBE_MS)
+            .then(function (res) {
+              if (!res.ok) throw new Error('预热探测 HTTP ' + res.status);
+              // 读完响应体，确保是真能取到内容（不是只通了 TCP）
+              return res.arrayBuffer();
+            })
+            .then(function (buf) {
+              if (settled && winner >= 0) return;
+              if (!buf || !buf.byteLength) return;
+              winner = k;
+              cdnHealthyIdx = k;
+              saveHealth();
+              // ★ 首个成功即返回：三台的可达性会随网络/时刻变化（实测同一台
+              //   机器上 fastly 与 gcore 会轮流不通），谁先答应用谁，不浪费
+              //   等待其它主机的 4 秒超时。
+              if (!settled) { settled = true; resolve(k); }
+            })
+            .catch(function () { /* 该主机不可用，交给其它主机 */ })
+            .then(function () {
+              pending--;
+              if (pending === 0 && !settled) { settled = true; resolve(-1); }
+            });
+        });
+      });
+    }).then(function (k) {
+      cdnProbe = null;
+      return k;
+    }, function () {
+      cdnProbe = null;
+      return -1;
+    });
+    return cdnProbe;
+  }
 
   /**
    * 备用源的仓库坐标解析。
@@ -487,6 +665,13 @@
    * @returns {Promise<ArrayBuffer>}
    */
   function fetchGitHubFile(tag, path, owner, repo, expectSize) {
+    // 健康状态（上次哪台 CDN 能用）是持久化的，首次调用要先读回来。
+    return loadHealth().then(function () {
+      return fetchGitHubFileInner(tag, path, owner, repo, expectSize);
+    });
+  }
+
+  function fetchGitHubFileInner(tag, path, owner, repo, expectSize) {
     var c = ghCoord(owner, repo);
     var t = encodeURIComponent(String(tag == null ? '' : tag).trim());
     var p = String(path == null ? '' : path)
@@ -504,7 +689,7 @@
 
     var viaApi = function () {
       var url = c.api + '/contents/' + p + '?ref=' + t;
-      return fetchT(url, { cache: 'no-store' }, FETCH_TIMEOUT_DOWNLOAD).then(function (res) {
+      return fetchT(url, { cache: 'no-store' }, downloadTimeoutFor(expectSize)).then(function (res) {
         if (res.status === 403) {
           // 匿名配额耗尽。这是 GitHub 侧最常见的失败，别只报状态码。
           throw new Error('GitHub 备用源访问额度用完了（403），请稍后再试');
@@ -533,21 +718,25 @@
     //   jsDelivr 的不同子域在大陆的可达性**真实存在差异且会随网络变化** ——
     //   同一时刻同一台机器上 fastly/gcore 通、cdn.jsdelivr.net 直连不通。
     //   写死一个域名 = 某天那个域名在某个商家网络里被堵，更新就断。
-    //   顺序：fastly（主）→ gcore → cdn；成功的主机记进 cdnHealthyIdx，
-    //   后续文件直接从它开始（健康探测只花一次）。
-    var hosts = [
-      c.jsdelivrCdn,
-      'https://gcore.jsdelivr.net/gh/' + c.owner + '/' + c.repo,
-      'https://cdn.jsdelivr.net/gh/' + c.owner + '/' + c.repo
-    ];
+    //   顺序：fastly（主）→ gcore → cdn；成功的主机写进持久化的 cdnHealthyIdx，
+    //   后续文件与后续更新都直接从它开始。
+    // ★ 2026-11-06：优先用上一次探明可用的主机；若下载前已调 warmUpCdn，
+    //   cdnHealthyIdx 就是这次实测可用的那台，不会再从黑洞主机撞起。
+    var hosts = cdnHosts(c);
     var startIdx = Math.min(Math.max(cdnHealthyIdx, 0), hosts.length - 1);
 
     function tryCdn(k) {
       if (k >= hosts.length) {
         return Promise.reject(new Error('jsDelivr 各域名均不可达：' + path));
       }
-      var url = hosts[k] + '@' + t + '/' + p + '?t=' + Date.now();
-      return fetchT(url, { redirect: 'follow', cache: 'no-store' }, FETCH_TIMEOUT_DOWNLOAD)
+      // ★ 2026-11-06：去掉 `?t=` 防缓存参数。
+      //   tag 指向的内容是不可变的（git 对象寻址，且本项目纪律是「标签一经
+      //   推送不重建」），加时间戳等于让 jsDelivr 每次都回源 —— 实测每个
+      //   文件多花 2~3 秒。去掉后第二次起就命中边缘缓存。
+      //   旧缓存风险已有两道闸：① 下面的 expectSize 长度比对；
+      //   ② update.js 的 sha256 逐文件校验。
+      var url = hosts[k] + '@' + t + '/' + p;
+      return fetchT(url, { redirect: 'follow', cache: 'no-store' }, downloadTimeoutFor(expectSize))
         .then(function (res) {
           if (!res.ok) {
             throw new Error('jsDelivr 无此内容（HTTP ' + res.status + '）：' + path);
@@ -562,7 +751,10 @@
           if (typeof expectSize === 'number' && buf.byteLength !== expectSize) {
             throw new Error('CDN 内容长度与清单不符（疑似旧缓存）：' + path);
           }
-          cdnHealthyIdx = k;
+          if (cdnHealthyIdx !== k) {
+            cdnHealthyIdx = k;
+            saveHealth();
+          }
           return buf;
         })
         .catch(function () {
@@ -669,7 +861,90 @@
    * @returns {Promise<Array<{tag:string, date:string}>>} 按版本降序
    */
   function fetchTagList(owner, repo) {
-    var giteeChain = fetchT(WEB + '/tags.atom?t=' + Date.now(), {
+    // ★ 2026-11-06：主源标签列表改走 API 全量接口，atom 降为兜底。
+    //
+    //   为什么：`/tags.atom` 实测**恒返回最近 10 条**（page/per_page 参数均无效），
+    //   而仓库实际有 64 个标签 —— 版本日志永远只能看到 10 个版本。
+    //   `/api/v5/tags?per_page=100` 一次就能拿全，代价是 1 次匿名配额
+    //   （60 次/小时），对「打开面板」这个低频动作完全可接受。
+    //   配额耗尽（403）时自动退回 atom，功能不因此中断。
+    var giteeChain = fetchTagListFromGiteeApi(owner, repo)
+      .catch(function () { return fetchTagListFromGiteeAtom(); });
+    var githubChain = fetchTagListFromGitHub(owner, repo);
+
+    return Promise.all([settle(giteeChain), settle(githubChain)])
+      .then(function (res) {
+        var merged = {};
+        var any = false;
+        // Gitee 的条目带日期，优先保留它的（GitHub 侧没有日期字段）
+        if (res[1].ok) {
+          res[1].value.forEach(function (e) { merged[e.tag] = e; any = true; });
+        }
+        if (res[0].ok) {
+          res[0].value.forEach(function (e) {
+            // 两边都有的标签保留带日期的那份
+            if (!merged[e.tag] || !merged[e.tag].date) merged[e.tag] = e;
+            any = true;
+          });
+        }
+        if (!any) {
+          throw new Error(
+            '读取版本列表失败（Gitee：' + (res[0].reason && res[0].reason.message || '未知') +
+            '；GitHub：' + (res[1].reason && res[1].reason.message || '未知') + '）'
+          );
+        }
+        var out = [];
+        for (var k in merged) {
+          if (Object.prototype.hasOwnProperty.call(merged, k)) out.push(merged[k]);
+        }
+        out.sort(function (a, b) {
+          return -compareVersion(a.tag, b.tag);
+        });
+        return out;
+      });
+  }
+
+  /**
+   * 【主源·标签列表·首选】Gitee API v5 全量标签（实测 64/64）。
+   * 代价 1 次匿名配额；限流时抛错，由调用方退回 atom。
+   */
+  function fetchTagListFromGiteeApi(owner, repo) {
+    var o = String(owner || OWNER).trim();
+    var r = String(repo || REPO).trim();
+    var url = 'https://gitee.com/api/v5/repos/' + o + '/' + r + '/tags?per_page=100&t=' + Date.now();
+    return fetchT(url, {
+      headers: { Accept: 'application/json' },
+      cache: 'no-store'
+    }, FETCH_TIMEOUT_DETECT).then(function (res) {
+      if (res.status === 403) {
+        throw new Error('Gitee 接口限流（403），改用网页通道');
+      }
+      if (!res.ok) throw new Error('读取版本列表失败（HTTP ' + res.status + '）');
+      return res.json();
+    }).then(function (arr) {
+      if (!Array.isArray(arr) || !arr.length) throw new Error('版本列表里没有可用条目');
+      var out = [];
+      for (var i = 0; i < arr.length; i++) {
+        var name = String(arr[i] && arr[i].name || '').trim();
+        if (!isVersionTag(name)) continue;
+        // 日期口径：优先打标签的时间（tagger.date），没有就用提交时间。
+        var date = (arr[i].tagger && arr[i].tagger.date)
+          || (arr[i].commit && arr[i].commit.date) || '';
+        out.push({ tag: name, date: date });
+      }
+      if (!out.length) throw new Error('版本列表里没有符合 YY.MM.DD.N 的标签');
+      out.sort(function (a, b) { return -compareVersion(a.tag, b.tag); });
+      return out;
+    });
+  }
+
+  /**
+   * 【主源·标签列表·兜底】tags.atom（网页通道）。
+   * ⚠️ 实测只返回最近 10 条且不支持分页 —— 仅作限流时的降级，
+   *    不能当全量来源用。
+   */
+  function fetchTagListFromGiteeAtom() {
+    return fetchT(WEB + '/tags.atom?t=' + Date.now(), {
       redirect: 'follow',
       cache: 'no-store'
     }, FETCH_TIMEOUT_DETECT).then(function (res) {
@@ -689,34 +964,6 @@
       if (!out.length) throw new Error('版本列表里没有可用条目');
       return out;
     });
-    var githubChain = fetchTagListFromGitHub(owner, repo);
-
-    return Promise.all([settle(giteeChain), settle(githubChain)])
-      .then(function (res) {
-        var merged = {};
-        var any = false;
-        // Gitee 的条目带日期，优先保留它的（GitHub 侧没有日期字段）
-        if (res[1].ok) {
-          res[1].value.forEach(function (e) { merged[e.tag] = e; any = true; });
-        }
-        if (res[0].ok) {
-          res[0].value.forEach(function (e) { merged[e.tag] = e; any = true; });
-        }
-        if (!any) {
-          throw new Error(
-            '读取版本列表失败（Gitee：' + (res[0].reason && res[0].reason.message || '未知') +
-            '；GitHub：' + (res[1].reason && res[1].reason.message || '未知') + '）'
-          );
-        }
-        var out = [];
-        for (var k in merged) {
-          if (Object.prototype.hasOwnProperty.call(merged, k)) out.push(merged[k]);
-        }
-        out.sort(function (a, b) {
-          return -compareVersion(a.tag, b.tag);
-        });
-        return out;
-      });
   }
 
   /**
@@ -848,7 +1095,33 @@
    *   两边都 404 才判定为「这个版本确实没带清单」（那时才标 noRetry）。
    */
   function fetchUpdateManifest(tag, owner, repo) {
+    return loadHealth().then(function () {
+      return fetchUpdateManifestInner(tag, owner, repo);
+    });
+  }
+
+  function fetchUpdateManifestInner(tag, owner, repo) {
     var url = rawUrl(tag, MANIFEST_FILE);
+
+    function fromBackup(mainErr) {
+      // 主源读不到清单时（例如 Gitee 被封 / raw 通道 403 / 该版本尚未同步），
+      // 自动改走 GitHub 备用源。主源一恢复就自动走回主源。
+      return fetchGitHubFile(tag, MANIFEST_FILE, owner, repo).then(function (buf) {
+        var txt = new TextDecoder('utf-8').decode(new Uint8Array(buf));
+        return parseAndValidateManifest(txt);
+      }).catch(function (e2) {
+        // 备用源也没有 → 两边都缺清单，这才是确定性错误（重试无意义）。
+        if (mainErr && mainErr.mainSource404 && e2 && e2.noRetry) {
+          e2.noRetry = true;
+          throw e2;
+        }
+        throw e2;
+      });
+    }
+
+    // 主源熔断期内直接走备用源（2026-11-06）。
+    if (!mainSourceUsable()) return fromBackup(null);
+
     return fetchT(url, { redirect: 'follow', cache: 'no-store' }, FETCH_TIMEOUT_DETECT).then(function (res) {
       if (res.status === 404) {
         var e404 = new Error(
@@ -864,20 +1137,14 @@
         throw new Error('读取更新清单失败（HTTP ' + res.status + '）');
       }
       return res.text();
-    }).then(parseAndValidateManifest).catch(function (e) {
-      // 主源读不到清单时（例如 Gitee 被封 / raw 通道 403 / 该版本尚未同步），
-      // 自动改走 GitHub 备用源。主源一恢复就自动走回主源。
-      return fetchGitHubFile(tag, MANIFEST_FILE, owner, repo).then(function (buf) {
-        var txt = new TextDecoder('utf-8').decode(new Uint8Array(buf));
-        return parseAndValidateManifest(txt);
-      }).catch(function (e2) {
-        // 备用源也没有 → 两边都缺清单，这才是确定性错误（重试无意义）。
-        if (e && e.mainSource404 && e2 && e2.noRetry) {
-          e2.noRetry = true;
-          throw e2;
-        }
-        throw e2;
-      });
+    }).then(parseAndValidateManifest).then(function (data) {
+      noteMainSource(true);
+      return data;
+    }).catch(function (e) {
+      // 超时/5xx/网络错误计入熔断；主源 404（该版本尚未同步）不计。
+      // 清单格式损坏也不计 —— 主源是活的，只是内容不对。
+      if (!e || !e.mainSource404) noteMainSource(false);
+      return fromBackup(e);
     });
   }
 
@@ -914,11 +1181,60 @@
         '文件过大（' + expectSize + ' 字节），超出内置更新能力：' + path
       ));
     }
-    return fetchT(rawUrl(tag, path), { redirect: 'follow', cache: 'no-store' }, FETCH_TIMEOUT_DOWNLOAD)
+    // 熔断状态是持久化的，首次调用要先读回来。
+    return loadHealth().then(function () {
+      return fetchRawFileInner(tag, path, expectSize, onChunk, owner, repo);
+    });
+  }
+
+  function fetchRawFileInner(tag, path, expectSize, onChunk, owner, repo) {
+    var timeoutMs = downloadTimeoutFor(expectSize);
+
+    /** 备用源分支：主源故障或主源明确没有该版本时走这里。 */
+    function fromBackup(mainErr) {
+      // ★ 主源 404 也要降级（见上方注释）：那可能只是「该版本尚未同步到主源」。
+      //   只有**两边都 404** 才判定为确定性失败（标记 noRetry，让调用方别再重试）。
+      //   expectSize 传进去：CDN 旧缓存防御需要它（长度不符→自动降级 API）。
+      return fetchGitHubFile(tag, path, owner, repo, expectSize).then(function (buf) {
+        var bytes = new Uint8Array(buf);
+        if (typeof expectSize === 'number' && bytes.length !== expectSize) {
+          throw new Error(
+            '文件长度不符（期望 ' + expectSize + '，实得 ' + bytes.length + '）：' + path
+          );
+        }
+        // 备用源是一次性拿全量，按字节数补一次进度回调，
+        // 让更新页的进度条能走完（主源那种分块回调在备用源不存在）。
+        if (typeof onChunk === 'function') {
+          try { onChunk(bytes.length); } catch (e2) { /* 进度回调出错不拖累下载 */ }
+        }
+        return bytes;
+      }).catch(function (e2) {
+        // 备用源也失败：说明「两边都不通」比「主源不通」更接近真相。
+        // 此时立刻解除熔断，让上层重试（update.js 有 3 次重试）能重新试主源 ——
+        // 否则一次误判会把商家锁在备用源上整整 30 分钟。
+        if (!mainSourceUsable()) {
+          mainDownUntil = 0;
+          mainFailStreak = 0;
+          saveHealth();
+        }
+        // 备用源也失败：两边都 404 才算「这个版本真的没这个文件」。
+        if (mainErr && mainErr.mainSource404 && e2 && e2.noRetry) {
+          e2.noRetry = true;
+          throw e2;
+        }
+        throw e2;
+      });
+    }
+
+    // ★ 2026-11-06 主源熔断：连续失败达阈值后，本批文件跳过主源直接走备用源。
+    //   修的是「主源整体挂掉时，78 个文件各自白等一次超时」。
+    if (!mainSourceUsable()) return fromBackup(null);
+
+    return fetchT(rawUrl(tag, path), { redirect: 'follow', cache: 'no-store' }, timeoutMs)
       .then(function (res) {
         if (!res.ok) {
           var err = new Error('下载失败（HTTP ' + res.status + '）：' + path);
-          // 404 不再标记 noRetry —— 主源 404 只说明"这个源没有"，
+          // 404 不再标记 noRetry —— 主源 404 只说明「这个源没有」，
           // 备用源可能有（该版本尚未同步到主源）。降级后再定夺。
           err.mainSource404 = (res.status === 404);
           throw err;
@@ -962,34 +1278,15 @@
             '文件长度不符（期望 ' + expectSize + '，实得 ' + bytes.length + '）：' + path
           );
         }
+        noteMainSource(true);
         return bytes;
       })
       .catch(function (e) {
-        // 主源 raw 挂了（403/404/网络不通）→ 走 GitHub 备用源。
-        // ★ 主源 404 也要降级（见上方注释）：那可能只是"该版本尚未同步到主源"。
-        //   只有**两边都 404** 才判定为确定性失败（标记 noRetry，让调用方别再重试）。
-        //   expectSize 传进去：CDN 旧缓存防御需要它（长度不符→自动降级 API）。
-        return fetchGitHubFile(tag, path, owner, repo, expectSize).then(function (buf) {
-          var bytes = new Uint8Array(buf);
-          if (typeof expectSize === 'number' && bytes.length !== expectSize) {
-            throw new Error(
-              '文件长度不符（期望 ' + expectSize + '，实得 ' + bytes.length + '）：' + path
-            );
-          }
-          // 备用源是一次性拿全量，按字节数补一次进度回调，
-          // 让更新页的进度条能走完（主源那种分块回调在备用源不存在）。
-          if (typeof onChunk === 'function') {
-            try { onChunk(bytes.length); } catch (e2) { /* 进度回调出错不拖累下载 */ }
-          }
-          return bytes;
-        }).catch(function (e2) {
-          // 备用源也失败：两边都 404 才算"这个版本真的没这个文件"。
-          if (e && e.mainSource404 && e2 && e2.noRetry) {
-            e2.noRetry = true;
-            throw e2;
-          }
-          throw e2;
-        });
+        // 主源 raw 挂了（超时/403/5xx）→ 计入熔断，再走 GitHub 备用源。
+        // ⚠️ 主源 404 不算主源不可用（那是内容缺失），只降级、不计数。
+        //    长度不符同样不计数 —— 主源是活的，只是内容不对。
+        if (!e || !e.mainSource404) noteMainSource(false);
+        return fromBackup(e);
       });
   }
 
@@ -1061,6 +1358,21 @@
     // 标签列表（版本日志面板用，主源失败自动切备用源）
     fetchTagList: fetchTagList,
     fetchTagListFromGitHub: fetchTagListFromGitHub,
+    fetchTagListFromGiteeApi: fetchTagListFromGiteeApi,
+    fetchTagListFromGiteeAtom: fetchTagListFromGiteeAtom,
+    // 下载前预热 + 健康状态（2026-11-06）
+    warmUpCdn: warmUpCdn,
+    mainSourceUsable: mainSourceUsable,
+    noteMainSource: noteMainSource,
+    loadHealth: loadHealth,
+    healthSnapshot: function () {
+      return {
+        cdnIdx: cdnHealthyIdx,
+        mainDownUntil: mainDownUntil,
+        mainFailStreak: mainFailStreak,
+        mainUsable: mainSourceUsable()
+      };
+    },
     // 备用源坐标解析（自测与镜像仓库切换用）
     ghCoord: ghCoord,
     // 下载

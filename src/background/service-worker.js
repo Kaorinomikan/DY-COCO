@@ -48,7 +48,7 @@
 // │ 发布会被直接中止。不需要靠人记。                                 │
 // └──────────────────────────────────────────────────────────────────┘
 // 全面整改：后台统一设置写入、私有历史与反馈来源截图，更新导入的开关定义。
-var DYC_BUILD = '26.11.06.1+sw29';
+var DYC_BUILD = '26.11.07.1+sw30';
 
 // classic worker，可以 importScripts（manifest 里没有设 type: module）
 importScripts('../shared/gitee.js', '../content/flags.js', '../shared/live-control-assets.js');
@@ -1158,29 +1158,36 @@ async function nudgeFeedbackPanelMode(tabId, mode) {
 var CL_CACHE_TTL = 5 * 60 * 1000;
 var clCache = { at: 0, data: null };
 
-// 面板展示的版本张数（2026-11-03 #129：用户要求恢复成 10 个）。
-var CL_LIST_SIZE = 10;
-
-// 单版要点条数上限:与更新页「要点一眼看完」的口径一致,防异常长清单刷屏。
+/* ★ 2026-11-06：取消「只展示 10 个」的硬截断。
+ *
+ * 原先是 CL_LIST_SIZE = 10，因为 Gitee tags.atom 只给 10 条、且每多一版
+ * 就多烧一次 GitHub 配额。现在两件事都变了：
+ *   ① 标签源换成 /api/v5/tags?per_page=100，一次就能拿全（实测 68 个）；
+ *   ② 各版解析结果按 tag 持久缓存，老版本不再重复消耗配额。
+ * 所以窗口直接放开成全量：首屏先把缓存里的卡片画出来，剩下的边拉边补。
+ */
 var CL_MAX_ITEMS = 10;
 
-/* ★ 各版日志的持久缓存（2026-11-03）
+/* ★ 各版日志的持久缓存（2026-11-03，2026-11-06 扩容）
  *
  * 为什么必须有：RELEASE_NOTES.md 是 .md，按 gitee.js 的混合读法不走 jsDelivr
  * CDN（.md 会被 301 到 raw，部分网络不可达）⇒ 每个标签固定消耗 1 次
- * api.github.com 匿名配额（60 次/小时）。展示 10 个版本意味着每次冷启动
- * 要烧 10 次，约为小时额度的 1/6，会与更新下载（7 次）互相挤兑。
+ * api.github.com 匿名配额（60 次/小时）。
  *
  * 为什么可以永久缓存：标签一经推送，其内容就视为不可变（AGENTS.md 的
  * 「同名标签不重建、要改就发新版本号」纪律）。所以「某个 tag 的解析结果」
  * 是稳定值，只有**新出现的标签**才值得花那一次配额。
  *
- * schema 版本：解析规则（clParseNotes）或缓存结构变了就 +1，旧缓存自动作废，
- * 避免把旧口径解析出来的结果继续当真理展示。
+ * schema 版本：解析规则（clParseNotes）或缓存结构变了就 +1，旧缓存自动作废。
+ *   2026-11-06 v2：条目新增 m（该版本确实没有日志文件）标记，避免
+ *   「两源都 404」的版本每次打开面板都重新请求一遍。
  */
 var CL_NOTES_STORE = 'dycChangelogNotes';
-var CL_NOTES_SCHEMA = 1;
-var CL_NOTES_KEEP = 30;   // 只保留最新 30 个标签的解析结果，防键值无限膨胀
+var CL_NOTES_SCHEMA = 2;
+var CL_NOTES_KEEP = 120;  // 标签总数约 70，留足余量；防键值无限膨胀
+
+// 后台补拉的并发：4 是「够快」与「不打爆 Gitee raw」之间的折中。
+var CL_FILL_CONCURRENCY = 4;
 
 /** 缓存结构是否可用（结构不对/版本不符一律当没有）。 */
 function clNotesCacheValid(v) {
@@ -1296,8 +1303,10 @@ function clFetchTags() {
 /**
  * 限并发跑任务:results 与 tasks 同序;单个失败落 {error} 不拖累整体。
  * onTick(done, total) 用来给面板刷「正在读取 x/y」的进度。
+ * onItem(index, result) 每完成一个就回调一次 —— 全量日志靠它边拉边补，
+ *   让面板不必等 68 个版本全读完才显示内容（2026-11-06）。
  */
-function clPool(tasks, runN, worker, onTick) {
+function clPool(tasks, runN, worker, onTick, onItem) {
   return new Promise(function (resolve) {
     var results = new Array(tasks.length);
     var next = 0;
@@ -1312,6 +1321,9 @@ function clPool(tasks, runN, worker, onTick) {
       }).then(function () {
         done++;
         try { onTick(done, tasks.length); } catch (e2) { /* 进度回调出错不拖累 */ }
+        if (typeof onItem === 'function') {
+          try { onItem(i, results[i]); } catch (e3) { /* 增量回调出错不拖累 */ }
+        }
         if (done >= tasks.length) resolve(results);
         else launch();
       });
@@ -1334,11 +1346,10 @@ async function buildChangelog(fresh, emit) {
     return;
   }
 
-  // 版本窗口：仓库标签里最新的 CL_LIST_SIZE 个（标签本身已按版本降序）。
-  // ★ 2026-11-03 #129：不再按「≥ 本地版」过滤 —— 在线版已是最新时那种过滤
-  //   只剩当前这 1 个标签，正是用户看到「只能看到一个版本」的直接原因。
-  //   旧的配额顾虑改由「按 tag 持久缓存」解决：老标签不再重复消耗配额。
-  var list = tags.slice(0, CL_LIST_SIZE);
+  // ★ 2026-11-06：全量展示，不再按条数截断。
+  //   标签源已换成能拿全的 API（实测 68 个），配额顾虑由「按 tag 持久缓存」解决。
+  //   标签本身已按版本降序，直接整份用。
+  var list = tags;
 
   var cached = await clReadNotesCache();
   var items = new Array(list.length);
@@ -1346,49 +1357,102 @@ async function buildChangelog(fresh, emit) {
   for (var i = 0; i < list.length; i++) {
     var tag = list[i].tag;
     if (Object.prototype.hasOwnProperty.call(cached, tag)) {
-      var c = cached[tag] || {};
-      var cNotes = (c.s || (c.i && c.i.length)) ? { summary: c.s || '', items: c.i || [] } : null;
-      items[i] = { tag: tag, date: list[i].date, notes: cNotes, fromCache: true };
+      items[i] = clItemFromCache(tag, list[i].date, cached[tag]);
     } else {
+      // 未缓存：先占位，稍后由 patch 事件补上（面板显示「读取中」）
+      items[i] = { tag: tag, date: list[i].date, notes: null, loading: true };
       todo.push(i);
     }
-  }
-
-  if (todo.length) {
-    var got = await clPool(todo.map(function (idx) { return list[idx]; }), 3, function (t) {
-      return DYC_GITEE.fetchRawFile(t.tag, 'RELEASE_NOTES.md').then(function (buf) {
-        return { notes: clParseNotes(clDecodeUtf8(buf)) };
-      });
-    }, function (done, total) {
-      emit({ type: 'progress', done: done, total: total });
-    });
-
-    var dirty = false;
-    for (var k = 0; k < todo.length; k++) {
-      var idx = todo[k];
-      var row = got[k] || {};
-      if (row.error) {
-        // 单版失败只坏这一张卡（面板走 cl-miss 占位显示原因），不整块失败；
-        // 失败不进缓存，下次打开会再试。
-        items[idx] = { tag: list[idx].tag, date: list[idx].date, error: row.error };
-        continue;
-      }
-      var nn = row.notes || null;
-      items[idx] = { tag: list[idx].tag, date: list[idx].date, notes: nn };
-      cached[list[idx].tag] = { s: (nn && nn.summary) || '', i: (nn && nn.items) || [] };
-      dirty = true;
-    }
-    // 只写成功的条目；写失败不影响本次展示，只是下次还要再花配额。
-    if (dirty) await clWriteNotesCache(clTrimNotesCache(cached, tags));
   }
 
   var data = {
     items: items,
     localVersion: chrome.runtime.getManifest().version,
-    webUrl: DYC_GITEE.TAGS_PAGE
+    webUrl: DYC_GITEE.TAGS_PAGE,
+    total: list.length,
+    pending: todo.length
   };
+  // 首屏立刻出：缓存命中的版本马上可看，未命中的显示「读取中」。
+  // 68 个版本全读完约十几秒，不能让面板一直白屏。
+  // ★ 这里发的是 items 的**快照**：后续 patch 会替换数组元素，若直接发活引用，
+  //   拿到 done 的一方回头看会看到已被填满的数据，「首屏在读」这个状态就没了。
+  emit({
+    type: 'done',
+    data: {
+      items: items.slice(),
+      localVersion: data.localVersion,
+      webUrl: data.webUrl,
+      total: data.total,
+      pending: data.pending
+    }
+  });
+
+  if (!todo.length) {
+    clCache = { at: Date.now(), data: data };
+    emit({ type: 'complete' });
+    return;
+  }
+
+  var dirty = false;
+  await clPool(todo.map(function (idx) { return list[idx]; }), CL_FILL_CONCURRENCY, function (t) {
+    return DYC_GITEE.fetchRawFile(t.tag, 'RELEASE_NOTES.md').then(function (buf) {
+      return { notes: clParseNotes(clDecodeUtf8(buf)) };
+    }, function (e) {
+      // ★ 区分两种失败（2026-11-06）：
+      //   noRetry = 两个源都确认没有这个文件 ⇒ 该版本确实没附日志，可缓存；
+      //   其它（超时/5xx/限流）= 临时故障 ⇒ 只标错、不缓存，下次打开再试。
+      return { error: (e && e.message) || String(e), missing: !!(e && e.noRetry) };
+    });
+  }, function (done, total) {
+    emit({ type: 'progress', done: done, total: total });
+  }, function (k, row) {
+    var idx = todo[k];
+    if (idx === undefined) return;
+    var tag = list[idx].tag;
+    var patch = { type: 'patch', tag: tag };
+
+    if (row && row.missing) {
+      // 两源都没有 → 确定性缺失，写进缓存，免得每次打开都白问一遍
+      items[idx] = { tag: tag, date: list[idx].date, notes: null, missing: true };
+      cached[tag] = { s: '', i: [], m: 1 };
+      dirty = true;
+      patch.missing = true;
+    } else if (row && row.error) {
+      // 临时故障：只坏这一张卡，不进缓存，下次打开会再试
+      items[idx] = { tag: tag, date: list[idx].date, error: row.error };
+      patch.error = row.error;
+    } else {
+      var nn = (row && row.notes) || null;
+      items[idx] = { tag: tag, date: list[idx].date, notes: nn };
+      cached[tag] = { s: (nn && nn.summary) || '', i: (nn && nn.items) || [], m: nn ? 0 : 1 };
+      dirty = true;
+      patch.notes = nn;
+    }
+    emit(patch);
+  });
+
+  data.pending = 0;
+  // 写失败不影响本次展示，只是下次还要再花配额。
+  if (dirty) await clWriteNotesCache(clTrimNotesCache(cached, tags));
+
   clCache = { at: Date.now(), data: data };
-  emit({ type: 'done', data: data });
+  emit({ type: 'complete' });
+}
+
+/**
+ * 缓存条目 → 面板用的 item。
+ * m=1 表示「两个源都确认这个版本没有日志文件」，显示成缺失而不是读取中。
+ */
+function clItemFromCache(tag, date, c) {
+  var v = c || {};
+  if (v.m) return { tag: tag, date: date, notes: null, missing: true };
+  var has = v.s || (v.i && v.i.length);
+  return {
+    tag: tag,
+    date: date,
+    notes: has ? { summary: v.s || '', items: v.i || [] } : null,
+    fromCache: true
+  };
 }
 
 chrome.runtime.onConnect.addListener(function (port) {

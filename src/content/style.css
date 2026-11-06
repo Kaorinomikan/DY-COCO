@@ -270,3 +270,39 @@
 @media (prefers-reduced-motion: reduce) {
   .dyc-cartpaste-result, .dyc-cartpaste-result path { animation: none; }
 }
+
+/* 橱窗「粘贴加橱窗」(2026-11-06):与「粘贴加车」同款样式,
+   只把宽度放到 84px 容纳「粘贴加橱窗」五个字(60px 字 + 16px 内边距)。
+   结果态整块换成图标(与粘贴加车一致),所以 84px 不会被结果文案撑破。 */
+.dyc-shopwinpaste-btn {
+  box-sizing: border-box;
+  width: 84px;
+  min-width: 84px;
+  max-width: 84px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  margin-right: 8px;
+  height: 28px;
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 26px;
+  color: #165dff;
+  background: #ffffff;
+  border: 1px solid #165dff;
+  border-radius: 4px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dyc-shopwinpaste-btn:hover { background: #f2f7ff; }
+.dyc-shopwinpaste-btn:disabled { cursor: default; opacity: .75; }
+.dyc-shopwinpaste-result { display: block; animation: dyc-cartpaste-pop 240ms ease-out; }
+.dyc-shopwinpaste-result path {
+  stroke-dasharray: 36;
+  stroke-dashoffset: 0;
+  animation: dyc-cartpaste-draw 380ms ease-out;
+}
+@media (prefers-reduced-motion: reduce) {
+  .dyc-shopwinpaste-result, .dyc-shopwinpaste-result path { animation: none; }
+}

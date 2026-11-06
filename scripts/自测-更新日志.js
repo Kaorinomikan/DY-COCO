@@ -103,19 +103,30 @@ function notesText(summary) {
   return '**本版一句话**：' + summary + '\n\n## 改动\n- 要点一\n- 要点二\n';
 }
 
+/**
+ * 从源码里原样取出 `var XXX = ...;` 这一行。
+ * 为什么不在自测里重写一遍常量：写死数值的话，改源码常量就红一次、
+ * 改自测又红一次，等于用自测反向锁死了实现细节。这里只保证「用同一份」。
+ */
+function extractVar(source, name) {
+  const re = new RegExp('var\\s+' + name + '\\s*=\\s*[^;]+;');
+  const m = re.exec(source);
+  if (!m) throw new Error('找不到变量：' + name);
+  return m[0];
+}
+
 const CL_VARS = [
-  'var CL_CACHE_TTL = 5 * 60 * 1000;',
-  'var clCache = { at: 0, data: null };',
-  'var CL_LIST_SIZE = 10;',
-  'var CL_MAX_ITEMS = 10;',
-  'var CL_NOTES_STORE = "dycChangelogNotes";',
-  'var CL_NOTES_SCHEMA = 1;',
-  'var CL_NOTES_KEEP = 30;'
-].join('\n');
+  'CL_CACHE_TTL', 'clCache', 'CL_MAX_ITEMS',
+  'CL_NOTES_STORE', 'CL_NOTES_SCHEMA', 'CL_NOTES_KEEP', 'CL_FILL_CONCURRENCY'
+].map((name) => extractVar(swSource, name)).join('\n');
+
+// 自测里要按实际配置判断，而不是猜一个数字
+const CL_SCHEMA = Number(/=\s*(\d+)/.exec(extractVar(swSource, 'CL_NOTES_SCHEMA'))[1]);
+const CL_KEEP = Number(/=\s*(\d+)/.exec(extractVar(swSource, 'CL_NOTES_KEEP'))[1]);
 
 const CL_FUNCS = [
   'clNotesCacheValid', 'clReadNotesCache', 'clWriteNotesCache', 'clTrimNotesCache',
-  'clDecodeUtf8', 'clPool', 'clFetchTags', 'buildChangelog'
+  'clItemFromCache', 'clDecodeUtf8', 'clPool', 'clFetchTags', 'buildChangelog'
 ].map((name) => extractFunction(swSource, name)).join('\n')
   + '\n' + extractByMarkers(
     swSource, 'function clParseNotes(text)', '\nfunction clDecodeUtf8('
@@ -160,6 +171,27 @@ function runBuild(ctx, events, fresh = true) {
     const error = events.filter((e) => e.type === 'error');
     return { done: done[0] && done[0].data, error: error[0] && error[0].message, events };
   });
+}
+
+/**
+ * 把 done 快照 + 全部 patch 归约成「最终落定」的列表。
+ * done 是首屏快照（未缓存的还是 loading），所以断言最终内容必须走这里 ——
+ * 直接断言 done.items 会得到「读取中」，那是首屏状态而不是结果。
+ */
+function finalItems(events) {
+  const done = events.find((e) => e.type === 'done');
+  if (!done) return [];
+  const map = new Map(done.data.items.map((it) => [it.tag, Object.assign({}, it)]));
+  events.filter((e) => e.type === 'patch').forEach((p) => {
+    const prev = map.get(p.tag) || { tag: p.tag };
+    map.set(p.tag, Object.assign({}, prev, {
+      notes: p.notes || null,
+      loading: false,
+      error: p.error || '',
+      missing: !!p.missing
+    }));
+  });
+  return Array.from(map.values());
 }
 
 let passed = 0;
@@ -246,103 +278,145 @@ async function testOpenPanel() {
 /* ---------------- ② 版本数与缓存 ---------------- */
 
 async function testChangelogList() {
-  await test('恢复展示最新 10 个版本（不再按本地版过滤）', async () => {
+  await test('全量展示所有历史版本（不再按条数截断）', async () => {
     const { ctx, events, tags } = makeChangelogContext();
     const r = await runBuild(ctx, events);
     assert.ok(r.done, '应有 done 事件：' + r.error);
-    assert.equal(r.done.items.length, 10);
-    assert.deepEqual(r.done.items.map((it) => it.tag), tags.slice(0, 10).map((t) => t.tag));
-    assert.equal(r.done.items[0].tag, 'v26.11.03.24');
-    assert.equal(r.done.items[0].notes.items.length, 2);
+    assert.equal(r.done.items.length, tags.length, '标签有多少就该展示多少');
+    assert.equal(r.done.items[0].tag, tags[0].tag);
+    assert.equal(r.done.items[r.done.items.length - 1].tag, tags[tags.length - 1].tag);
   });
 
-  await test('标签不足 10 个时全部展示', async () => {
-    const { ctx, events } = makeChangelogContext({ tags: makeTags(4) });
+  await test('标签很少时全部展示', async () => {
+    const { ctx, events, tags } = makeChangelogContext({ tags: makeTags(4) });
     const r = await runBuild(ctx, events);
-    assert.equal(r.done.items.length, 4);
+    assert.equal(r.done.items.length, tags.length);
   });
 
-  await test('持久缓存命中时不消耗任何拉取配额', async () => {
+  await test('done 事件先出：未缓存的版本带 loading 占位', async () => {
+    const { ctx, events } = makeChangelogContext();
+    await runBuild(ctx, events);
+    const doneAt = events.findIndex((e) => e.type === 'done');
+    const firstPatch = events.findIndex((e) => e.type === 'patch');
+    assert.ok(doneAt >= 0, '应有 done');
+    assert.ok(firstPatch > doneAt, 'done 必须先于任何 patch（首屏不能等全量读完）');
+    const loading = events[doneAt].data.items.filter((it) => it.loading);
+    assert.ok(loading.length > 0, '首屏应有读取中的占位');
+  });
+
+  await test('逐版补发 patch，最后以 complete 收尾', async () => {
+    const { ctx, events, tags } = makeChangelogContext();
+    await runBuild(ctx, events);
+    const patches = events.filter((e) => e.type === 'patch');
+    assert.equal(patches.length, tags.length, '每个版本都应有一次结果回执');
+    assert.deepEqual(
+      patches.map((p) => p.tag).sort(),
+      tags.map((t) => t.tag).sort(),
+      'patch 覆盖的标签应等于全部标签'
+    );
+    assert.equal(events[events.length - 1].type, 'complete', 'complete 必须是最后一个事件');
+  });
+
+  await test('缓存命中时不消耗任何拉取配额', async () => {
     const tags = makeTags(24);
-    const cache = { schema: 1, tags: {} };
-    tags.slice(0, 10).forEach((t) => { cache.tags[t.tag] = { s: '缓存摘要-' + t.tag, i: ['缓存要点'] }; });
+    const cache = { schema: CL_SCHEMA, tags: {} };
+    tags.forEach((t) => { cache.tags[t.tag] = { s: '缓存摘要-' + t.tag, i: ['缓存要点'] }; });
     const storage = makeStorage({ dycChangelogNotes: cache });
     const { ctx, events, fetchCalls } = makeChangelogContext({ storage, tags });
     const r = await runBuild(ctx, events);
     assert.equal(fetchCalls.length, 0, '全部命中缓存不应再请求');
-    assert.equal(r.done.items.length, 10);
-    assert.equal(r.done.items[0].notes.summary, '缓存摘要-v26.11.03.24');
+    assert.equal(r.done.items.length, tags.length);
+    assert.equal(r.done.items[0].notes.summary, '缓存摘要-' + tags[0].tag);
     assert.equal(r.done.items[0].fromCache, true);
   });
 
-  await test('只拉新增标签，老标签走缓存', async () => {
+  await test('只拉未缓存的标签', async () => {
     const tags = makeTags(24);
-    const cache = { schema: 1, tags: {} };
-    tags.slice(1, 10).forEach((t) => { cache.tags[t.tag] = { s: '旧-' + t.tag, i: ['旧要点'] }; });
+    const cache = { schema: CL_SCHEMA, tags: {} };
+    tags.slice(1).forEach((t) => { cache.tags[t.tag] = { s: '旧-' + t.tag, i: ['旧要点'] }; });
     const storage = makeStorage({ dycChangelogNotes: cache });
     const { ctx, events, fetchCalls } = makeChangelogContext({ storage, tags });
-    const r = await runBuild(ctx, events);
-    assert.equal(fetchCalls.length, 1, '只应拉取未缓存的那 1 个');
-    assert.deepEqual(fetchCalls, ['v26.11.03.24']);
-    assert.equal(r.done.items[0].notes.summary, '说明-v26.11.03.24');
-    assert.equal(r.done.items[1].notes.summary, '旧-v26.11.03.23');
+    await runBuild(ctx, events);
+    assert.deepEqual(fetchCalls, [tags[0].tag], '只应拉取未缓存的那 1 个');
   });
 
   await test('新拉到的解析结果写回持久缓存', async () => {
-    const { ctx, events, storage } = makeChangelogContext();
+    const { ctx, events, storage, tags } = makeChangelogContext();
     await runBuild(ctx, events);
     const saved = storage.data.dycChangelogNotes;
-    assert.ok(saved && saved.schema === 1, '应写入 schema 标记');
-    assert.equal(Object.keys(saved.tags).length, 10);
-    assert.equal(saved.tags['v26.11.03.24'].s, '说明-v26.11.03.24');
+    assert.ok(saved && saved.schema === CL_SCHEMA, '应写入 schema 标记');
+    assert.equal(Object.keys(saved.tags).length, tags.length);
+    assert.equal(saved.tags[tags[0].tag].s, '说明-' + tags[0].tag);
   });
 
   await test('单版拉取失败只坏那一张卡，其余照常', async () => {
+    const tags = makeTags(24);
+    const bad = tags[1].tag;
     const { ctx, events, storage } = makeChangelogContext({
-      notes: { 'v26.11.03.22': new Error('GitHub 备用源访问额度用完了（403），请稍后再试') }
+      notes: { [bad]: new Error('GitHub 备用源访问额度用完了（403），请稍后再试') }
     });
     const r = await runBuild(ctx, events);
     assert.ok(r.done, '不应整块失败');
-    const bad = r.done.items.find((it) => it.tag === 'v26.11.03.22');
-    assert.ok(bad.error, '失败的那版应带 error 说明');
-    assert.match(bad.error, /403/);
-    assert.equal(r.done.items.filter((it) => it.notes).length, 9);
+    const rows = finalItems(events);
+    const row = rows.find((it) => it.tag === bad);
+    assert.ok(row.error, '失败的那版应带 error 说明');
+    assert.match(row.error, /403/);
+    assert.equal(rows.filter((it) => it.notes).length, tags.length - 1);
     const saved = storage.data.dycChangelogNotes || { tags: {} };
-    assert.equal(Object.hasOwn(saved.tags, 'v26.11.03.22'), false, '失败结果不写缓存');
+    assert.equal(Object.hasOwn(saved.tags, bad), false, '临时失败不写缓存，下次要重试');
+  });
+
+  await test('两个源都确认没有日志时标为缺失，且写入缓存不再重问', async () => {
+    const tags = makeTags(6);
+    const gone = tags[2].tag;
+    const err = new Error('GitHub 备用源里没有这个文件（RELEASE_NOTES.md）');
+    err.noRetry = true;
+    const { ctx, events, storage, fetchCalls } = makeChangelogContext({ tags, notes: { [gone]: err } });
+    const r = await runBuild(ctx, events);
+    const row = finalItems(events).find((it) => it.tag === gone);
+    assert.equal(row.missing, true, '确定性缺失应标 missing');
+    assert.ok(!row.error, 'missing 不应混成拉取失败');
+    const saved = storage.data.dycChangelogNotes.tags[gone];
+    assert.ok(saved && saved.m === 1, '缺失也要写缓存');
+
+    const before = fetchCalls.length;
+    await runBuild(ctx, events, true);
+    assert.equal(fetchCalls.length, before, '已知缺失的版本不应再次请求');
   });
 
   await test('缓存写入失败不影响本次展示', async () => {
     const storage = makeStorage();
     storage.failNextSet();
-    const { ctx, events } = makeChangelogContext({ storage });
+    const { ctx, events, tags } = makeChangelogContext({ storage });
     const r = await runBuild(ctx, events);
     assert.ok(r.done, '写缓存失败不该拖垮展示');
-    assert.equal(r.done.items.length, 10);
+    assert.equal(r.done.items.length, tags.length);
   });
 
   await test('缓存结构版本不符时整份作废并重新拉取', async () => {
-    const tags = makeTags(24);
-    const cache = { schema: 0, tags: { 'v26.11.03.24': { s: '旧口径', i: ['旧'] } } };
+    const tags = makeTags(12);
+    const cache = { schema: 0, tags: { [tags[0].tag]: { s: '旧口径', i: ['旧'] } } };
     const storage = makeStorage({ dycChangelogNotes: cache });
     const { ctx, events, fetchCalls } = makeChangelogContext({ storage, tags });
     const r = await runBuild(ctx, events);
-    assert.equal(fetchCalls.length, 10);
-    assert.equal(r.done.items[0].notes.summary, '说明-v26.11.03.24');
+    assert.equal(fetchCalls.length, tags.length);
+    assert.equal(finalItems(events)[0].notes.summary, '说明-' + tags[0].tag);
   });
 
-  await test('缓存只保留最新 30 个标签', async () => {
-    const tags = makeTags(40);
-    const cache = { schema: 1, tags: {} };
+  await test('缓存按上限裁剪，保留最新的那些', async () => {
+    const total = CL_KEEP + 5;
+    const tags = makeTags(total);
+    const cache = { schema: CL_SCHEMA, tags: {} };
     tags.forEach((t) => { cache.tags[t.tag] = { s: '旧-' + t.tag, i: ['旧'] }; });
-    delete cache.tags['v26.11.03.40'];   // 留 1 个缺口，触发一次写回
+    delete cache.tags[tags[0].tag];   // 留 1 个缺口，触发一次写回
     const storage = makeStorage({ dycChangelogNotes: cache });
     const { ctx, events } = makeChangelogContext({ storage, tags });
-    const r = await runBuild(ctx, events);
-    assert.equal(r.done.items.length, 10);
+    await runBuild(ctx, events);
     const after = storage.data.dycChangelogNotes.tags;
-    assert.equal(Object.keys(after).length, 30, '应裁剪到 30 个，实得 ' + Object.keys(after).length);
-    assert.equal(Object.hasOwn(after, 'v26.11.03.11'), true, '最新 30 个应保留');
-    assert.equal(Object.hasOwn(after, 'v26.11.03.10'), false, '更老的标签应被裁掉');
+    assert.equal(Object.keys(after).length, CL_KEEP,
+      '应裁剪到 ' + CL_KEEP + ' 个，实得 ' + Object.keys(after).length);
+    assert.equal(Object.hasOwn(after, tags[0].tag), true, '最新的应保留');
+    assert.equal(Object.hasOwn(after, tags[total - 1].tag), false, '更老的应被裁掉');
   });
 
   await test('版本列表整体读取失败时给出错误事件', async () => {
