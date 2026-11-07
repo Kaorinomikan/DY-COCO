@@ -8,7 +8,9 @@
 #   bash scripts/wt-merge.sh <名字> --go --cleanup  # 合并后删掉工作树与分支
 #   ... --no-selftest                              # 仅明确知道理由时跳过相关自测
 #
-# 改过 src/** 或 manifest.json 的任务，--go 合并时必须带当次真机冒烟确认：
+# 改过 src/** 或 manifest.json 的任务：真机冒烟**不拦合并**（2026-11-08 口径，
+# 见 AGENTS 铁律 1）。合并后代码随 COCO TEST 同步到桌面测试档，真机验证在那里做，
+# 验过才允许推送。已验过可加声明：
 #   DYC_SMOKE_OK=1 bash scripts/回收.sh <名字>
 #
 # 若本任务「真回退」了 main 上的内容（删掉 main 的代码，而不是落后于 main），
@@ -310,20 +312,22 @@ fi
 
 echo ""
 
-# 5.5) 真机冒烟确认（只要求改过扩展运行内容的任务）
-# 脚本无法自动证明平台真实行为；这里机械要求当次明确声明，避免“合并后才发现”。
+# 5.5) 真机冒烟声明（软信号，**不拦合并**）
+#
+# 2026-11-08 改口径：冒烟从「合并硬前提」降为「推送硬前提」。
+# 原因：未合并的分支进不了桌面测试档，而 DYC_SMOKE_OK 又只能由真机签 ——
+# 两条规则叠起来就是「合并不了 → 验不了 → 更合并不了」，每个任务都卡在等人说「合并」。
+# 现在的分工：脚本闸门全过即自动合并（含 src 改动），合并脚本会把代码同步进
+# COCO TEST，真机验证在那里做；**没验过不许推送**（AGENTS 铁律 1）。
 NEEDS_SMOKE=0
 printf '%s\n' "$TASK_FILES" | grep -Eq '^(src/|manifest\.json$)' && NEEDS_SMOKE=1
 if [ "$NEEDS_SMOKE" = "1" ]; then
   if [ "${DYC_SMOKE_OK:-0}" = "1" ]; then
     echo "[✓] 已声明本次完成真机冒烟"
-  elif [ -n "$GO" ]; then
-    echo "[✗] 本任务改过扩展运行内容，但缺少当次真机冒烟确认。"
-    echo "     在任务工作树完成主路径 + 一个异常路径 + 控制台检查后，执行："
-    echo "       DYC_SMOKE_OK=1 bash scripts/回收.sh $NAME"
-    exit 1
   else
-    echo "[!] 本任务改过扩展运行内容；预检不拦，但 --go 合并时必须带 DYC_SMOKE_OK=1。"
+    echo "[!] 本任务改过扩展运行内容，未带真机冒烟声明（按 2026-11-08 口径不拦合并）。"
+    echo "     合并后代码会随 COCO TEST 同步到桌面测试档；真机验证在测试档做，"
+    echo "     验过才允许推送。已验过的话下次可加 DYC_SMOKE_OK=1 记为已验。"
   fi
 else
   echo "[✓] 纯脚本/文档任务，无需真机冒烟声明"
@@ -353,7 +357,7 @@ if [ -f "$REVERT_SH" ]; then
       echo "[✗] 本任务删掉了 main 上的内容（不是落后，是真删）："
       printf '%s\n' "$REVERT_LIST" | while IFS=$'\t' read -r n f; do echo "      $f  净删 $n 行"; done
       echo "     确认这些删除是有意的之后，执行："
-      echo "       DYC_REVERT_OK=1 DYC_SMOKE_OK=1 bash scripts/回收.sh $NAME"
+      echo "       DYC_REVERT_OK=1 bash scripts/回收.sh $NAME"
       exit 1
     else
       echo "[!] 发现真回退（预检不拦；--go 合并时必须带 DYC_REVERT_OK=1）："

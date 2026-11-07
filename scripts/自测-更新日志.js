@@ -116,16 +116,18 @@ function extractVar(source, name) {
 }
 
 const CL_VARS = [
-  'CL_CACHE_TTL', 'clCache', 'CL_MAX_ITEMS',
+  'CL_CACHE_TTL', 'clCache', 'CL_MAX_ITEMS', 'CL_PAGE_SIZE',
   'CL_NOTES_STORE', 'CL_NOTES_SCHEMA', 'CL_NOTES_KEEP', 'CL_FILL_CONCURRENCY'
 ].map((name) => extractVar(swSource, name)).join('\n');
 
 // 自测里要按实际配置判断，而不是猜一个数字
 const CL_SCHEMA = Number(/=\s*(\d+)/.exec(extractVar(swSource, 'CL_NOTES_SCHEMA'))[1]);
 const CL_KEEP = Number(/=\s*(\d+)/.exec(extractVar(swSource, 'CL_NOTES_KEEP'))[1]);
+const CL_PAGE = Number(/=\s*(\d+)/.exec(extractVar(swSource, 'CL_PAGE_SIZE'))[1]);
 
 const CL_FUNCS = [
   'clNotesCacheValid', 'clReadNotesCache', 'clWriteNotesCache', 'clTrimNotesCache',
+  'clMakeJob', 'clFetchInto',
   'clItemFromCache', 'clDecodeUtf8', 'clPool', 'clFetchTags', 'buildChangelog'
 ].map((name) => extractFunction(swSource, name)).join('\n')
   + '\n' + extractByMarkers(
@@ -166,10 +168,10 @@ function makeChangelogContext(options = {}) {
 }
 
 function runBuild(ctx, events, fresh = true) {
-  return ctx.buildChangelog(!!fresh, (ev) => events.push(ev)).then(() => {
+  return ctx.buildChangelog(!!fresh, (ev) => events.push(ev)).then((job) => {
     const done = events.filter((e) => e.type === 'done');
     const error = events.filter((e) => e.type === 'error');
-    return { done: done[0] && done[0].data, error: error[0] && error[0].message, events };
+    return { job, done: done[0] && done[0].data, error: error[0] && error[0].message, events };
   });
 }
 
@@ -304,17 +306,35 @@ async function testChangelogList() {
     assert.ok(loading.length > 0, '首屏应有读取中的占位');
   });
 
-  await test('逐版补发 patch，最后以 complete 收尾', async () => {
+  await test('首屏只按批补发 patch（#132:一次只展开 5 个）', async () => {
     const { ctx, events, tags } = makeChangelogContext();
     await runBuild(ctx, events);
     const patches = events.filter((e) => e.type === 'patch');
-    assert.equal(patches.length, tags.length, '每个版本都应有一次结果回执');
-    assert.deepEqual(
-      patches.map((p) => p.tag).sort(),
-      tags.map((t) => t.tag).sort(),
-      'patch 覆盖的标签应等于全部标签'
-    );
+    assert.equal(patches.length, Math.min(CL_PAGE, tags.length),
+      '首屏只应补发第一批(' + CL_PAGE + '个)的结果回执,其余等滑到底再要');
     assert.equal(events[events.length - 1].type, 'complete', 'complete 必须是最后一个事件');
+    assert.equal(events.find((e) => e.type === 'done').data.pageSize, CL_PAGE,
+      'done 应带分页步长,前端按它展开');
+  });
+
+  await test('滑到底后的 more 请求按需拉取(clFetchInto 响应 cmd:more)', async () => {
+    const { ctx, events, fetchCalls, tags } = makeChangelogContext();
+    const { job } = await runBuild(ctx, events);
+    const firstCalls = fetchCalls.length;
+    const next = tags.slice(CL_PAGE, CL_PAGE + 2).map((t) => t.tag);
+    await ctx.clFetchInto(job, next);
+    assert.deepEqual(fetchCalls.slice(firstCalls), next, '第二批按请求顺序拉取');
+    const patches = events.filter((e) => e.type === 'patch').map((p) => p.tag);
+    assert.deepEqual(patches.slice(CL_PAGE), next, '新批次结果以 patch 回执');
+  });
+
+  await test('重复请求已拉过的批次不再烧配额', async () => {
+    const { ctx, events, fetchCalls, tags } = makeChangelogContext();
+    const { job } = await runBuild(ctx, events);
+    const firstCalls = fetchCalls.length;
+    await ctx.clFetchInto(job, tags.slice(0, CL_PAGE).map((t) => t.tag));
+    await ctx.clFetchInto(job, tags.slice(0, CL_PAGE).map((t) => t.tag));
+    assert.equal(fetchCalls.length, firstCalls, '首屏批已有结果,不应重复请求');
   });
 
   await test('缓存命中时不消耗任何拉取配额', async () => {
@@ -345,13 +365,14 @@ async function testChangelogList() {
     await runBuild(ctx, events);
     const saved = storage.data.dycChangelogNotes;
     assert.ok(saved && saved.schema === CL_SCHEMA, '应写入 schema 标记');
-    assert.equal(Object.keys(saved.tags).length, tags.length);
+    assert.equal(Object.keys(saved.tags).length, Math.min(CL_PAGE, tags.length),
+      '只写首屏拉到的那批(#132)');
     assert.equal(saved.tags[tags[0].tag].s, '说明-' + tags[0].tag);
   });
 
   await test('单版拉取失败只坏那一张卡，其余照常', async () => {
     const tags = makeTags(24);
-    const bad = tags[1].tag;
+    const bad = tags[1].tag;                        // 首屏第一批内
     const { ctx, events, storage } = makeChangelogContext({
       notes: { [bad]: new Error('GitHub 备用源访问额度用完了（403），请稍后再试') }
     });
@@ -361,7 +382,8 @@ async function testChangelogList() {
     const row = rows.find((it) => it.tag === bad);
     assert.ok(row.error, '失败的那版应带 error 说明');
     assert.match(row.error, /403/);
-    assert.equal(rows.filter((it) => it.notes).length, tags.length - 1);
+    assert.equal(rows.filter((it) => it.notes).length, Math.min(CL_PAGE, tags.length) - 1,
+      '首屏批里除失败的都应拿到日志');
     const saved = storage.data.dycChangelogNotes || { tags: {} };
     assert.equal(Object.hasOwn(saved.tags, bad), false, '临时失败不写缓存，下次要重试');
   });
@@ -399,7 +421,8 @@ async function testChangelogList() {
     const storage = makeStorage({ dycChangelogNotes: cache });
     const { ctx, events, fetchCalls } = makeChangelogContext({ storage, tags });
     const r = await runBuild(ctx, events);
-    assert.equal(fetchCalls.length, tags.length);
+    assert.equal(fetchCalls.length, Math.min(CL_PAGE, tags.length),
+      '作废后按新口径只重拉首屏那批(整份作废,旧缓存不认)');
     assert.equal(finalItems(events)[0].notes.summary, '说明-' + tags[0].tag);
   });
 

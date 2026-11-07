@@ -149,7 +149,7 @@ const {
   /* 复核间隔一并压到 200ms（2026-11-04 自测提速）：这条验的是「失败后进复核、
    * 复核完给出手动刷新出路」，结论与轮次都不变，只是不再等产品级 3s+3.5s。
    * 不压这一项时它单条要等 11.6 秒，是本组最大的固定开销。 */
-  bp.api.setTimingForTest({ tick: 120, verify: 300, scanMs: 300, reverify: 200, reverifyRetry: 200 });
+  bp.api.setTimingForTest({ tick: 120, verify: 300, scanMs: 300, precheck: 300, reverify: 200, reverifyRetry: 200 });
   ok(bp.api.snapshot().timers.tick === true, '㊹ 铺垫：扫描在跑');
   bp.api.manualStart();
   await waitBag(function () {
@@ -187,5 +187,66 @@ const {
   bp.api.manualStart();
   await waitBag(function () { return confirmClicks >= 1; }, 12000);
   ok(confirmClicks === 1, '㊹ ② 确认框晚 900ms 出现也能被点到（重试机制，实际 ' + confirmClicks + ' 次）');
+
+  /* ---------- ㊺ 手动发福袋：核对多看一眼 + 失败必收抽屉（2026-11-08）----------
+   * 用户原话：「手动发福袋后应该做不止一次的确认有没有成功发，而且如果确认
+   * 信息失败了，也不能把抽屉开着就结束了。有时候平台延迟就会卡住且抽屉开着，
+   * 实际我已经成功发了福袋」。
+   * 三个可量化的验点（不绑死文案）：
+   *   ① 手动路径核对轮次明显多于自动路径（4 轮 vs 2 轮）；
+   *   ② 核对失败必须给出结论，且**抽屉必须收起**（不论谁开的）；
+   *   ③ 收尾后状态回到 live、不再挂「核对中」，按钮可再用。 */
+  bp = await bootBagPage(null, {
+    drawerRowHtml: '<span id="ds5">● 活动待开始</span><a id="dstart">开始活动</a>'
+  });
+  /* 核对间隔压到 200ms（只验轮次与收尾，不验真实等待时长）；
+   * 轮次不压 —— 这条用例验的就是「手动比自动多看几眼」。 */
+  bp.api.setTimingForTest({ tick: 120, verify: 300, scanMs: 300, precheck: 300, reverify: 200, reverifyRetry: 200 });
+  bp.api.manualStart();
+  let maxRound = 0;
+  await waitBag(function () {
+    const st = bp.api.reverifyState();
+    if (st) maxRound = Math.max(maxRound, st.n);
+    return bp.messages.some(function (m) { return /发福袋失败/.test(m.text); });
+  }, 15000);
+  ok(maxRound >= 3,
+    '㊺ ① 手动核对至少跑了 3 轮（不止一次确认）：实际观测到第 ' + maxRound + ' 轮');
+  ok(bp.messages.filter(function (m) { return /发福袋失败/.test(m.text); }).length === 1,
+    '㊺ ② 核对失败只报一条结论');
+  ok(!bp.doc.getElementById('drawer'), '㊺ ② 核对失败后抽屉已收起（不能敞着就结束）');
+  ok(!bp.api.reverifyState(), '㊺ ③ 收尾清掉核对态（不卡在「核对中」）');
+  ok(bp.api.snapshot().phase === 'live', '㊺ ③ 收尾回到 live（人的动作不停机）');
+
+  /* ㊺④ 抽屉是用户自己开的，核对失败也要替他收起（用户 2026-11-08 口径：
+   * 「不能把抽屉开着就结束了」—— 失败收尾不再区分谁开的） */
+  bp = await bootBagPage(null, {
+    preOpen: true,
+    rowStatus: '<span id="ds6">● 活动待开始</span><a id="dstart">开始活动</a>'
+  });
+  bp.api.setTimingForTest({ tick: 120, verify: 300, scanMs: 300, precheck: 300, reverify: 200, reverifyRetry: 200 });
+  bp.api.manualStart();
+  await waitBag(function () {
+    return bp.messages.some(function (m) { return /发福袋失败/.test(m.text); });
+  }, 15000);
+  ok(bp.clicks.dstart === 1, '㊺ ④ 铺垫：抽屉已开 → 就地点了「开始活动」');
+  ok(!bp.doc.getElementById('drawer'), '㊺ ④ 用户自己开的抽屉，核对失败也收起');
+
+  /* ㊺⑤ 平台卡住（读数迟迟不回来）→ 看门狗到点收尾，不永远「核对中」。
+   * 把首轮核对推得很远（60 秒）模拟回调不回来，看门狗 600ms 兜底。 */
+  bp = await bootBagPage(null, {
+    preOpen: true,
+    rowStatus: '<span id="ds7">● 活动待开始</span><a id="dstart">开始活动</a>'
+  });
+  bp.api.setTimingForTest({
+    tick: 200, verify: 200, scanMs: 300, precheck: 300,
+    reverify: 60000, reverifyRetry: 60000, reverifyWatchdog: 600
+  });
+  bp.api.manualStart();
+  ok(await waitBag(function () {
+    return !bp.api.reverifyState() &&
+      bp.messages.some(function (m) { return /发福袋失败/.test(m.text); });
+  }, 9000), '㊺ ⑤ 核对卡住 → 看门狗到点给结论（不再无限「核对中」）');
+  ok(!bp.doc.getElementById('drawer'), '㊺ ⑤ 卡住收尾后抽屉同样收起');
+  ok(bp.api.snapshot().phase === 'live', '㊺ ⑤ 卡住收尾后状态回到 live');
   summary();
 })();

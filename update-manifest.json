@@ -1,5 +1,5 @@
 {
-  "version": "26.11.07.1",
+  "version": "26.11.08.1",
   "algorithm": "sha256",
   "files": [
     {
@@ -19,13 +19,13 @@
     },
     {
       "path": "manifest.json",
-      "size": 9319,
-      "sha256": "c109f21f96a19506be7d849094e74b68df05cc37400d15c2dcec1571955f30d1"
+      "size": 9362,
+      "sha256": "b34b7735b0ba358b7bcc79a317199c14fa6a705a39d74637116562fde8e788f1"
     },
     {
       "path": "src/background/service-worker.js",
-      "size": 81935,
-      "sha256": "995c49ae98fd3d5c9e0b61be7502ec0db385afeaf793802b727ce060c54ae674"
+      "size": 88738,
+      "sha256": "5d2a8c67042dd12a3435f487e5c28129f538daaff44fb24437b5bdacd9110a52"
     },
     {
       "path": "src/content/anchor.js",
@@ -64,8 +64,8 @@
     },
     {
       "path": "src/content/diag.js",
-      "size": 60405,
-      "sha256": "fa04363da695a77be8c36b932551963534bacecf0566c0a7282aaeac4df6748d"
+      "size": 60663,
+      "sha256": "85e34033b3bf32767657a14b6e1494b603478da7a4d43e6381bae6b4c1c8eb2d"
     },
     {
       "path": "src/content/dialog.js",
@@ -79,8 +79,8 @@
     },
     {
       "path": "src/content/flags.js",
-      "size": 85507,
-      "sha256": "495b5c4c11ab341b2c2fe398ffff05959349263149831767e753bfc9ea85d96e"
+      "size": 85755,
+      "sha256": "57838eeaf562e18e7daa744b14642d9e48007a9c097bc52aff287586e3acc523"
     },
     {
       "path": "src/content/goods-batch-copy.js",
@@ -174,23 +174,23 @@
     },
     {
       "path": "src/feedback/feedback.html",
-      "size": 12840,
-      "sha256": "b45e99250ce9f82785d5252978d90038b6c6817b50172b4761ae74fb4b844dad"
+      "size": 12951,
+      "sha256": "a369e2032cd72b6f25fb772f26f997cd0583a536ebed0a96fbcf1b3198a85614"
     },
     {
       "path": "src/feedback/feedback.js",
-      "size": 34718,
-      "sha256": "bf6cf066226db12e2bfa8a6a9488e9f6f2e89649cdcbe02644cdd8843bb84e4b"
+      "size": 37840,
+      "sha256": "9568fd176e88569ffceb35f3fa53dfa6abb3b6fccd4bae32ce577cf0dad92093"
     },
     {
       "path": "src/feedback/panel.js",
-      "size": 56045,
-      "sha256": "192a4406737eb6800c09ac2afb06230558bb01f55e433a0785b88001ff6620d9"
+      "size": 60059,
+      "sha256": "b2c8cf8f5c12b7d4fb3df652dfa051a2ec4686eed9f10d46c5de50a037b00785"
     },
     {
       "path": "src/live/auto-loop-lecture.js",
-      "size": 260267,
-      "sha256": "a0d10b9beb94cd70c078f677735ac9d22fb6cdb6f75529764768c8d5eb654500"
+      "size": 270398,
+      "sha256": "31589706907c2bacefc1f8ad01538794fa244cb02fcb63dd74d7548cafe1fb9b"
     },
     {
       "path": "src/live/auto-refresh.js",
@@ -229,8 +229,8 @@
     },
     {
       "path": "src/live/live-agent.js",
-      "size": 4208,
-      "sha256": "9b09a56532cadb19c2d3041feaa334ae51bcb6be27e88393489894045b689051"
+      "size": 6585,
+      "sha256": "bb5720a7ccbb0b0bc1f5fd3b1bd517192b95c6cbaba4929bd74ab4fe2e779d49"
     },
     {
       "path": "src/live/live-control-flag.js",
@@ -264,8 +264,8 @@
     },
     {
       "path": "src/live/lucky-bag.js",
-      "size": 315536,
-      "sha256": "ee813e816daba218501d8342ea0baf31f8f644269dad51ddd448b06c49fc7dc3"
+      "size": 346206,
+      "sha256": "f21ab82be7039d82fb577a8b6428a887c97c5dd9b0a7997696ffd522999cb029"
     },
     {
       "path": "src/live/name-wrap.js",

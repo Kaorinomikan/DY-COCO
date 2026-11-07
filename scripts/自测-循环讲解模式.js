@@ -9,6 +9,11 @@ let passed = 0;
 function check(value, label) { assert.ok(value, label); passed++; }
 async function flush() { for (let n=0;n<35;n++) await Promise.resolve(); }
 function setup(store = {}, extraHook = '') {
+  /* ★ 2026-11-08:本套件回归的是「关掉无限模式」时的旧行为(熔断即停)。
+   *   无限模式(守夜/待命)默认改为开之后,这里统一钉成显式关 ——
+   *   否则每条用例都在跑新默认,断言口径就串了。待命/守夜另有一套
+   *   `自测-无限循环模式.js` 专门覆盖。 */
+  store = Object.assign({ dybAutoLoopInfinite: false }, store);
   const dom = new JSDOM('<body></body>', {url:'https://example.com/not-live',runScripts:'outside-only'});
   const w = dom.window, timers = new Map();
   let now = 1000000, timerId=0, mounted=true, clicks=0;

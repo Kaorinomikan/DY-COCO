@@ -63,7 +63,8 @@ $WT/manifest.json 对应页面的 js 数组
 cd "$WT"
 python scripts/check-syntax.py --changed
 
-改过扩展运行内容时，真机冒烟后用 DYC_SMOKE_OK=1 bash scripts/回收.sh <名字>；
+改过扩展运行内容也一样直接回收（真机冒烟不拦合并，合并后在测试档验）：
+bash scripts/回收.sh <名字>
 回收脚本自动检查 manifest 顺序、文案、性能和相关自测。
 
 ⚠️ **不要**跑 make-update-manifest.py、**不要**碰 update-manifest.json ——
@@ -77,11 +78,12 @@ git add -A && git commit -m "写清你做了什么、为什么、怎么验的"
 
 提交完**接着自己回收合并**，不要回头问用户「要不要合并 / 确认合并吗」：
 
-DYC_SMOKE_OK=1 bash scripts/回收.sh $NAME     # 改过 src/** 或 manifest.json
-bash scripts/回收.sh $NAME                    # 纯脚本 / 文档任务
+bash scripts/回收.sh $NAME                    # 一律这一条，改没改 src 都一样
 
 闸门全过即合并进 main 并自动清理本工作树；闸门红了就地修（改代码或改断言），
 修完提交再跑一次。只有「真机现象拿不准」「冲突涉及别人的改动解不开」才问用户。
+改过运行内容的，合并脚本会把代码同步进 COCO TEST —— 真机验证在测试档做，
+**验过才允许推送**（冒烟不拦合并，只拦推送）。
 
 **不要自己推送** —— 推送等用户下令，你只报「已攒 N/5 点」。
 

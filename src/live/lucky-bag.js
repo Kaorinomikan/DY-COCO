@@ -194,6 +194,54 @@
  *      避免「刚点完就说没发上」；期间任何一拍读到倒计时立刻按成功结案。
  *   ⑤ 消息总量依旧克制：一轮结束 1 条、已发出 1 条（histKey 原位刷新）、
  *      失败 1 条；补发再失败的静默（同一次停机只报首次）。
+ *
+ * 【2026-11-08 · 手动发福袋：核对多看一眼，失败必收抽屉】
+ *   用户原话：「手动发福袋后应该做不止一次的确认有没有成功发，而且如果确认
+ *   信息失败了，也不能把抽屉开着就结束了。有时候平台延迟就会卡住且抽屉开着，
+ *   实际我已经成功发了福袋」。
+ *   ① 核对次数分路：手动 4 轮（REVERIFY_MAX_MANUAL，≈20 秒真实窗口），
+ *      自动仍 2 轮 —— 人当面要结果值得多等，自动后面挂着补发链不能拖。
+ *   ② 总时限看门狗（REVERIFY_WATCHDOG_MS 40 秒）：平台卡住、回调不回来时
+ *      强制按「没读到」收尾，不再让面板永远「核对中…」、按钮永远禁用。
+ *   ③ 失败收尾一律收抽屉（closeDrawerAfterFail）：旧版只关 weOpened 的，
+ *      而核对时抽屉常常本来就开着 ⇒ 一次 Esc 都没发，人看到「卡住 + 敞着」。
+ *      成功路径仍守老红线：用户亲手开的抽屉不替他关（closeBagPanel 内部挡）。
+ *
+ * 【2026-11-08 · 失败后的阶梯自查（RETRY_LADDER_MS）】
+ *   用户要求：「自动发福袋的循环自检，如果失败了多久会再查一次，按照阶梯
+ *   间隔帮我设计自查检测」。定稿问答：5 档 15/30/60/120/300 秒；用完不彻底
+ *   停，退成每 5 分钟一直查，直到读到结果 / 下播 / 手动停。
+ *   ① 取代旧的「补发 30 秒固定 × 最多 3 次」：等间隔在平台回包慢时 90 秒就
+ *      烧完三次，而失败初期其实 10 秒就能判出来；
+ *   ② 三条链路共用同一本阶梯（retryStep / retryAt / retryWhy）：
+ *      点击复核失败→补发、已发出但没倒计时→只读追读、以及追读中间的等待；
+ *      任何一次读到「进行中/倒计时」⇒ retryReset；
+ *   ③ 归零点：读到结果、明确下播（idle）、手动停、总闸关闭、切回中控台；
+ *      **unknown 不归零** —— 直播中判据抖动是常态，清在那里等于阶梯永远走不到第二档；
+ *   ④ 可见性：圆钮/面板「下轮开始」在等待期显示「等 mm:ss」，气泡写「X 后自查一次」。
+ *
+ * 【2026-11-08 · 重载后先等一个间隔（不做场次记忆）】
+ *   用户原话：「不需要记忆是不是同一场直播，只要在发福袋前做一次检测有没有
+ *   福袋在进行就可以了。在设定自动发福袋的情况下。然后按照时间间隔发，如果
+ *   刷新重新进来，只要确认没有福袋进行，就开始等设定的间隔，就可以继续发了」。
+ *   ⇒ 不引入场次 ID、不持久化阶梯进度。只补一处：页面加载后**第一次明确
+ *     确认「没有福袋在跑」**（读到行且无进行中 / 平台空态 / 已经看到可点的
+ *     待开始行）时，把间隔起算点钉在此刻（freshWaitPending → maybeFreshWait）。
+ *     否则刷新会把 lastRoundEndAt 一起清掉，间隔这一层被整段跳过 —— 等于
+ *     刷新一次就白送一次「不等间隔」的特权。
+ *   三条边界：gapSec=0 不生效；holdDrawAt 未到期（上一轮真在跑）不设 now；
+ *   「什么都没读到」不起算（读不到 ≠ 没有）。
+ *
+ * 【2026-11-08 · 现场读数持久化（FACT_KEY）】
+ *   用户追加：「可以做持久化，就是刚才读的读数，刷新后仍然记得，这也能降低
+ *   重复发福袋的概率」。
+ *   ⇒ 把整份现场写进 chrome.storage.local：到期时刻、间隔起算锚点、是否读到
+ *     进行中、进行中凭据、活动名、汇总倒计时。刷新与重启都能接回来。
+ *     与 sessionStorage 的 holdDrawAt 并存（那条是同步快路径，刷新立刻可用；
+ *     这条异步兜底，管重启）。
+ *   安全前提：**不做场次记忆** —— 每个字段都是绝对时间戳，恢复时只收此刻仍
+ *     有效的，整份档案超过 6 小时直接丢弃，跨场残留天然失效。
+ *   清除：总闸关闭时 clearFact()；其余场景靠过期自然失效。
  * ============================================================
  */
 
@@ -227,12 +275,22 @@
   var STUCK_MS = 90000;        // 预期开始时间过了多久还没结束 = 卡住
   var QUIET_LIMIT_MS = 90000;  // 一直找不到弹窗，多久放弃
 
-  /* 补发（2026-11-01 深夜）：见文件头「停机监视 + 自动补发」一节。
-   * 2026-11-04 用户改口径：原来 10 分钟太久 —— 他实测的是 2 分钟一轮的
-   * 超快速福袋，10 分钟等于「这一轮彻底废了」。缩到 30 秒，与本文件的
-   * 结束证据静默期（RESUME_QUIET_MS）同档，补发最多 3 次仍在 2 分钟内收完。 */
-  var RESUME_COOLDOWN_MS = 30 * 1000;       // 同一停机会话里两次补发的间隔
-  var RESUME_MAX = 3;                       // 连续补发失败上限，超过彻底停
+  /* 失败后的**阶梯自查**（2026-11-08 用户定稿）。
+   *
+   * 沿革：旧版是「补发 30 秒一次 × 最多 3 次，用完彻底停」。问题是等间隔 ——
+   * 平台刚起播、列表回包慢的那一两分钟里三次机会在 90 秒内烧完，然后彻底
+   * 不动；而失败初期「点了没生效」其实 10 秒内就能判出来，等 30 秒又太钝。
+   *
+   * 现在的口径（用户拍板）：
+   *   15s → 30s → 60s → 120s → 300s 各试一次（5 档），
+   *   用完后**不再彻底停**，退成每 5 分钟一直查，直到读到结果 / 下播 / 手动停。
+   * 任何一次读到「进行中」或倒计时 ⇒ 阶梯归零；切场 / 手动停 / 总闸关闭同样归零。
+   *
+   * 为什么是这串数：前 3 次落在 1 分 45 秒内（覆盖绝大多数「点了没生效」），
+   * 第 4、5 次拉到 2 分钟、5 分钟（覆盖平台回包慢），累计 8 分 45 秒刚好跨过
+   * 一个 2 分钟福袋的完整生命周期，再往后按 5 分钟低频兜，不再打扰平台校验。 */
+  var RETRY_LADDER_MS = [15 * 1000, 30 * 1000, 60 * 1000, 120 * 1000, 300 * 1000];
+  var RETRY_FALLBACK_MS = 300 * 1000;   // 阶梯用完后的低频兜底（一直查）
 
   /* 防双开 + 自动收抽屉（2026-11-01 定稿）：有「进行中」绝不开第二个，
    * 且替用户把挡视线的抽屉收起来（进行中卡片常驻页面，收了照样读）。
@@ -405,11 +463,16 @@
   var CHECK_MAX = 10;
   var CHECK_DEF = 5;
   var CHECK_REC = 5;
-  /* 滑条左右各留的余量（2026-11-02 用户「按钮拉到最左边最右边会轻微出界」）。
-   * 轨道撑满整宽，但圆钮圆心只能在 [R, W-R] 里跑 —— R 取放大态半径 10px
-   * （常态 9px、hover/拖动 10px），两端外沿才恰好与轨道端点相切、不出界。
-   * 刻度、圆钮共用这个内缩域，拖动映射也用同一套，指针与圆心严格对齐。 */
-  var SLIDE_INSET = 10;
+  /* 滑条左右各留的余量（2026-11-02 用户「按钮拉到最左边最右边会轻微出界」，
+   * 2026-11-08 用户再次指出「端末最尽头还有突出」）。
+   * 轨道撑满整宽，圆钮圆心只能在 [R, W-R] 里跑 —— R 要**大于**放大态半径，
+   * 端点才留得出余量：
+   *   · 2026-11-02 取 10 = 放大态半径 10 ⇒ 端点只是「相切」，圆钮外沿仍与
+   *     轨道端点齐平，再加上光环（box-shadow 外扩 3~4px）看着就是凸出去一块；
+   *   · 2026-11-08 改为 12 ⇒ 常态（半径 9）留 3px、放大态（半径 10）留 2px，
+   *     光环即使外扩也压不到面板边缘。
+   * 刻度、圆钮、拖动映射、填充条计算全用这一个常量（两条滑条共用）。 */
+  var SLIDE_INSET = 12;
   /* 「发福袋间隔」滑条（2026-11-05 用户）。
    * 用户原话：「当倒计时结束后，会自动数这个设定的时间，时间到了才会执行
    * 下一轮福袋，当然在这个前提下，依然遵守自动发福袋的流程」。
@@ -482,7 +545,24 @@
    * REVERIFY_MAX 轮都读不到才报结论，并给出复核出路。 */
   var REVERIFY_DELAY_MS = 3000;   // 首次读不到 → 隔多久重新开抽屉复核
   var REVERIFY_RETRY_MS = 3500;   // 复核仍读不到 → 隔多久再读一轮
-  var REVERIFY_MAX = 2;           // 复核轮次上限（含第一轮）
+  var REVERIFY_MAX = 2;           // 复核轮次上限（含第一轮）—— 自动路径
+  /* 手动路径单独放宽（2026-11-08 用户：「手动发福袋后应该做不止一次的确认有
+   * 没有成功发」+「有时候平台延迟就会卡住，实际我已经成功发了福袋」）。
+   * 人点「手动发福袋」是当面要结果的动作，两轮（≈6.5 秒 + 读窗）读不到就
+   * 下结论太草率；平台延迟十几秒才把活动渲染成「进行中」是常态。
+   * 4 轮 = 3 + 3.5×3 ≈ 13.5 秒等待 + 每轮读窗（≤3 秒），真实窗口 ≈ 20 秒。
+   * 自动路径不动：它后面还挂着停机补发链，拖长会连带拖慢整条节奏。 */
+  var REVERIFY_MAX_MANUAL = 4;
+  /* 核对的**总时限**看门狗（2026-11-08）。异步读数靠抽屉渲染回调，
+   * 平台卡住时回调可能迟迟不回来 —— 旧版没有兜底，面板永远停在「核对中」、
+   * 「手动发福袋」按钮永远禁用，抽屉也一直开着。到点强制按「没读到」收尾，
+   * 至少把状态与抽屉还给人。取 40 秒：正常 4 轮 ≈ 20 秒，留一倍余量。 */
+  var REVERIFY_WATCHDOG_MS = 40000;
+  /* 失败收尾后的「安静期」（2026-11-08 自测实测暴露）：失败收尾刚把抽屉收起，
+   * 自动确认节拍若正好到点（自测里 nextConfirmAt 是过期值），200ms 内就又把
+   * 抽屉打开 —— 用户看到的是「关一下又开」，等于没收。这里只把节拍推迟 8 秒，
+   * 不改 5 分钟节拍语义：正常运行时 nextConfirmAt 本来就在远处，Math.max 不动它。 */
+  var REVERIFY_FAIL_QUIET_MS = 8000;
   /* 读数的「保质期」（2026-11-03 深夜真机：「福袋已经停了很久了，按钮还显示
    * 进行中，用了手动刷新，他自己也查不出来」）。
    *
@@ -524,10 +604,11 @@
    *
    * 三条硬约束：
    *   ① **只读不点** —— 已经确认发出去了，再点一次就是双开；
-   *   ② 节奏与补发冷却同档（30 秒），最多追 2 次，追不到就报失败并停手；
-   *   ③ 失败后同样锁 30 秒再让 tick 开始下一轮，避免「报失败」与「又发一个」同时发生。 */
-  var PROBE_DELAY_MS = 30 * 1000;
-  var PROBE_MAX = 2;
+   *   ② 节奏走**阶梯自查**（2026-11-08：首次 30 秒，随后按 RETRY_LADDER_MS
+   *      的下一档推；阶梯走完交回常规确认节拍每 N 分钟读一次）——
+   *      旧版是「固定 30 秒 × 最多 2 次」，用完就再也不追；
+   *   ③ 失败后同样锁到下一次自查，避免「报失败」与「又发一个」同时发生。 */
+  var PROBE_DELAY_MS = 30 * 1000;   // 首次追读的等待（与阶梯第一档无关，见 scheduleProbe）
 
   /* 抽屉入口文案候选（按具体度从高到低，依次试）。
    * 精确相等匹配（tight 后），避免点到旁边「推荐使用超级福袋」那条运营提示
@@ -618,6 +699,14 @@
   var resumeLastAt = 0;      // 上次补发点击时刻（冷却用）
   var resumePending = false; // 待校验的这次点击是补发（成功播报写「已补发」）
 
+  /* 阶梯自查（2026-11-08，见 RETRY_LADDER_MS）。
+   *   retryStep：本场已经用掉几档（0 = 还没失败过；>= 5 = 已在低频兜底）
+   *   retryAt  ：下一次允许自查的时刻（0 = 没有等待中的自查）
+   *   retryWhy ：是谁触发的（'resume' 补发失败 / 'probe' 追读没读到倒计时），只作诊断 */
+  var retryStep = 0;
+  var retryAt = 0;
+  var retryWhy = '';
+
   /* 全自动相关 */
   /* 2026-11-01 重新设计：每行各自记自己的开始时刻。
    * 旧版只有一个全局 drawAt，只在点成功那一拍读一次、
@@ -674,6 +763,105 @@
       if (v) sessionStorage.setItem(HOLD_KEY, String(v));
       else sessionStorage.removeItem(HOLD_KEY);
     } catch (e) { /* 隐私模式等取不到就算了，内存里仍然有效 */ }
+    saveFact();             // 到期时刻变了 ⇒ 顺手把整份现场写盘（2026-11-08）
+  }
+
+  /* ── 现场读数档案（2026-11-08）──────────────────────────────
+   * 用户原话：「可以做持久化，就是刚才读的读数，刷新后仍然记得，这也能降低
+   * 重复发福袋的概率」。
+   *
+   * 与 holdDrawAt 的分工：那个只存「上一轮到期时刻」，且只在 sessionStorage
+   * （刷新接得住、重启丢）。这里存**整份现场**：到期时刻、间隔起算锚点、
+   * 是否读到进行中、进行中凭据、活动名、汇总倒计时 —— 写 chrome.storage.local，
+   * 刷新与重启都接得住。
+   *
+   * 安全前提（**不做场次记忆**，用户明确）：
+   *   · 每个字段都是**绝对时间戳**，恢复时只收「此刻仍然有效」的那些；
+   *   · 整份档案超过 FACT_MAX_AGE_MS 直接丢弃。
+   *   跨场残留因此天然失效 —— 上一场的读数不会冒充这一场。
+   *
+   * 为什么这能降双开：重启后第一拍就能知道「刚才有福袋在跑 / 到期时刻还没到」，
+   * 不必等页面把进行中卡片渲染出来，防双开预检（holdDrawAt / runningFactUntil）
+   * 立刻就是有效的。 */
+  var FACT_KEY = 'dycBagFact';
+  var FACT_MAX_AGE_MS = 6 * 3600 * 1000;   // 6 小时外的档案不再相信
+  var factLoaded = false;                  // 是否已经做过一次恢复
+  var factSig = '';                        // 上次写盘的签名（去重，别每拍都写）
+  var factAt = 0;                          // 上次写盘时刻
+
+  function factSnap() {
+    return {
+      at: Date.now(),
+      hold: holdDrawAt || 0,
+      roundEnd: lastRoundEndAt || 0,
+      running: !!liveRunning,
+      runningUntil: runningFactUntil || 0,
+      draw: drawAt || 0,
+      name: lastRunningName || ''
+    };
+  }
+
+  /** 写盘：内容没变就不写（tick 2.5 秒一拍，不去重就是每分钟 24 次写入）。 */
+  function saveFact() {
+    try {
+      if (!(window.chrome && chrome.storage && chrome.storage.local)) return;
+      var f = factSnap();
+      var sig = [f.hold, f.roundEnd, f.running, f.runningUntil, f.draw, f.name].join('|');
+      if (sig === factSig) return;
+      factSig = sig;
+      factAt = f.at;
+      var obj = {};
+      obj[FACT_KEY] = f;
+      chrome.storage.local.set(obj);
+    } catch (e) { /* 存不上不影响功能 */ }
+  }
+
+  /**
+   * 恢复档案。返回是否真的用上了（诊断用）。
+   * 「取更晚/更大」而不是直接覆盖：chrome 的值可能比当前内存旧
+   * （sessionStorage 已经接住的那份更新），合并而不是抢夺。
+   */
+  function applyFact(f) {
+    factLoaded = true;
+    if (!f || typeof f.at !== 'number') return false;
+    var now = Date.now();
+    if (now - f.at > FACT_MAX_AGE_MS) return false;
+    var used = false;
+    if (f.hold > now && f.hold > holdDrawAt) {
+      holdDrawAt = f.hold;
+      try { sessionStorage.setItem(HOLD_KEY, String(f.hold)); } catch (e0) {}
+      used = true;
+    }
+    if (f.roundEnd > lastRoundEndAt) { lastRoundEndAt = f.roundEnd; used = true; }
+    if (f.running && f.runningUntil > now && !liveRunning) {
+      liveRunning = true;
+      runningFactUntil = Math.max(runningFactUntil || 0, f.runningUntil);
+      used = true;
+    }
+    if (f.name && !lastRunningName) { lastRunningName = f.name; used = true; }
+    if (used) {
+      paintBadge();
+      paintPanel();
+    }
+    return used;
+  }
+
+  function loadFact() {
+    try {
+      if (!(window.chrome && chrome.storage && chrome.storage.local)) { factLoaded = true; return; }
+      chrome.storage.local.get(FACT_KEY, function (r) {
+        applyFact(r && r[FACT_KEY]);
+      });
+    } catch (e) { factLoaded = true; }
+  }
+
+  function clearFact() {
+    factSig = '';
+    try {
+      if (window.chrome && chrome.storage && chrome.storage.local) {
+        chrome.storage.local.remove(FACT_KEY);
+      }
+    } catch (e) { /* 清不掉也无害：过期自然失效 */ }
   }
   var badgeHost = null;     // 悬浮窗宿主
   var badgeTimer = 0;
@@ -700,6 +888,23 @@
    * 0 = 本场还没读到过到期时刻（冷启动/刚切进来）⇒ 不额外等，
    * 免得把「用户刚打开插件」也当成「刚刚结束了一轮」。 */
   var lastRoundEndAt = 0;
+  /* 「重载后先等一个间隔」（2026-11-08 用户口径）。
+   * 用户原话：「不需要记忆是不是同一场直播……如果刷新重新进来，只要确认
+   * 没有福袋进行，就开始等设定的间隔，就可以继续发了」。
+   *
+   * 问题：刷新/重开标签页后内存清空，lastRoundEndAt 归零 ⇒ 间隔这一层
+   * 「没有起算点」⇒ 旧行为直接跳过，等于刷新就白送一次「不等间隔」的特权。
+   * 现在：页面加载后的**第一次明确否定确认**（读到行且无进行中，或平台
+   * 空态文案）把锚点钉在此刻，于是要等满 gapSec 才发；只生效一次，之后
+   * 全交给正常记账（读到进行中 → endAnchor → 结束才起算）。
+   *
+   * 三条边界：
+   *   · gapSec = 0 ⇒ 不生效（这一层本来就不加等，老节奏不变）；
+   *   · holdDrawAt 还没到期（上一轮确实还在跑）⇒ 不设 now，
+   *     否则会把「正在跑」当成「刚结束」，硬生生多等一个间隔；
+   *   · 「读不到」不算否定 —— 页面刚加载什么都没渲染时不能起算，
+   *     否则凭空扣掉一个间隔还多发一轮。 */
+  var freshWaitPending = true;
   var ring = [];
 
   /* 确认节拍（2026-11-01 05:0x）：滑块值 + 该开的时刻 + 是不是我们开的抽屉 */
@@ -736,6 +941,7 @@
     'reverify': '正在核对刚才那次发送',
     'probe': '正在追读倒计时',
     'gap': '按「发福袋间隔」等待中',
+    'fresh-gap': '刚重载进来，先等一个设定间隔',
     'user-open': '你刚亲手开过抽屉，这 10 秒不抢',
     'running': '还有活动进行中（防双开）',
     'hold': '上一轮的倒计时还没走完',
@@ -744,7 +950,7 @@
     'lock': '刚点过，防连点锁',
     'link-down': '「开始活动」此刻不可点',
     'halted': '停机监视中（只补发，不新开）',
-    'resume-cap': '补发次数用完了'
+    'retry-wait': '按阶梯等待下一次自查'
   };
 
   function setAutoVeto(code) {
@@ -795,7 +1001,9 @@
   /* 点击后的延时复核（2026-11-03）：pendingClick 超时没读到不落结论，
    * 由这份状态驱动「隔几秒重开抽屉再看一眼」。
    *   { key: 点的哪一行, n: 已复核轮次, at: 本轮起算时刻,
-   *     weOpened: 抽屉是我们为复核开的（读完要关）, timer: 下一轮定时器,
+   *     weOpened: 抽屉是这一轮为复核开的（诊断用；收尾关抽屉改由
+   *               openedByUs / closeDrawerAfterFail 判，不再看它）,
+   *     timer: 下一轮定时器, watchdog: 总时限兜底（2026-11-08）,
    *     pokedAt: 上次被「手动刷新」催办的时刻 }
    * 存在期间 phase 保持 starting —— 自动点击候选与再点一次「手动发福袋」
    * 都被挡住（宁可不发，不能多发一个）。 */
@@ -2064,6 +2272,34 @@
   }
 
   /**
+   * 核对 / 追读**失败**时的收尾关抽屉（2026-11-08 用户原话：
+   * 「如果确认信息失败了，也不能把抽屉开着就结束了。有时候平台延迟就会卡住
+   *   且抽屉开着，实际我已经成功发了福袋」）。
+   *
+   * 与 closeBagPanel 的分工：
+   *   · 成功路径仍守老红线 —— 用户自己开的抽屉不替他关（读数还要看）；
+   *   · 失败路径**不管谁开的都收**：这一刻抽屉里已经没有要继续做的事，
+   *     留着只会挡视线，还让人以为插件卡在那儿。
+   * 关不掉再补一次：平台抽屉偶尔第一下 Esc 不收，得点关闭按钮那一拍。
+   */
+  function closeDrawerAfterFail() {
+    openedByUs = false;
+    var was = false;
+    try { was = panelInfo().open; } catch (e) { was = false; }
+    forceClosePanel();
+    /* 收起之后先安静几秒，别让自动确认节拍立刻又把它打开（见 REVERIFY_FAIL_QUIET_MS）。
+     * 只往后推、不提前：正常状态下节拍本来就在更远处。 */
+    nextConfirmAt = Math.max(nextConfirmAt, Date.now() + REVERIFY_FAIL_QUIET_MS);
+    if (was) {
+      setTimeout(function () {
+        try { if (panelInfo().open) forceClosePanel(); } catch (e2) { /* 尽力而为 */ }
+      }, 700);
+    }
+    markBagBusy(was ? 900 : 600);
+    return was;
+  }
+
+  /**
    * 真正的关抽屉动作：先发 Esc（平台抽屉的通用关闭键），
    * 200ms 后还在才去找关闭按钮。关不掉就留着 —— 不危险，只是挡视线，
    * 下一拍满足条件还会再试。
@@ -2309,6 +2545,10 @@
       paintPanel();
     } else if (prevLive === 'live' && liveState !== 'live') {
       nextConfirmAt = 0;                      // 下播 / 判不出：复位，下次开播重新计时
+      /* 阶梯归零（2026-11-08）：上一场的失败记录不该惩罚新一场。
+       * **只在明确下播（idle）时清** —— 这个分支也包含 unknown，
+       * 而 unknown 在直播中是常态抖动，清在这里等于阶梯永远走不到第二档。 */
+      if (liveState === 'idle') retryReset();
       /* 这一支同样不动 lastRoundEndAt：条件里的 `!== 'live'` 包含 unknown，
        * 而 unknown 在直播中是常态抖动。在这里清锚点 = 间隔时灵时不灵。
        * 锚点只在读到新的到期时刻时往后推，语义上也不需要跟着场次复位。 */
@@ -2588,7 +2828,16 @@
        * 认不出的行（弱证据那种只写「已开始」的行）不算否定 ——
        * 否则复核刚确认完，下一拍就被自己读不懂的行打回「未开始」。 */
       runningFactUntil = 0;
+      /* 重载后的第一次「明确没有」：把间隔起算点钉在此刻（2026-11-08，见
+       * freshWaitPending 的注释）。「读到已结束 / 平台空态」就是明白话，
+       * 正是用户说的「确认没有福袋进行」。 */
+      if (maybeFreshWait()) { paintBadge(); paintPanel(); }
     }
+
+    /* 现场读数写盘（2026-11-08，见 FACT_KEY）：放在这里是因为
+     * 「到期时刻 / 进行中凭据 / 在跑标记」都刚更新完，一次覆盖全部字段。
+     * saveFact 内部按签名去重，同一状态不会重复写。 */
+    saveFact();
 
     /* ---- 有进行中就替用户收抽屉（防双开闸的姊妹动作，2026-11-01 定稿）----
      * 闸关着时不收（这是写动作）；同时把连续拍数清零，免得闸一开就立刻收。 */
@@ -2624,6 +2873,15 @@
      * phase 已停在 starting，这里再显式拦一道 —— 这个分支只看 pendingClick，
      * 不看 phase，漏了就等于复核期间照发第二个。 */
     if (gateOpen && flags.auto && pendingCand && !pendingClick && !reverify && !probe) {
+      /* 重载后先等一个间隔（2026-11-08）：本拍已经找到可点的「待开始」行，
+       * 说明读到的是「没有进行中」的真现场 —— 正是用户说的「确认没有福袋
+       * 进行，就开始等设定的间隔，再继续发」。钉下锚点后本拍不发。 */
+      if (maybeFreshWait()) {
+        setAutoVeto('fresh-gap');
+        paintBadge();
+        paintPanel();
+        return;
+      }
       /* 发福袋间隔（2026-11-05 用户）：「当倒计时结束后，会自动数这个设定的
        * 时间，时间到了才会执行下一轮福袋，当然在这个前提下，依然遵守自动
        * 发福袋的流程」。
@@ -2690,16 +2948,18 @@
       if (Date.now() < lockUntil) { setAutoVeto('lock'); return; }
       if (!clickable(pendingCand.link)) { setAutoVeto('link-down'); return; }
       if (phase === 'halted') {
-        /* 补发：第一次立即补；失败后同一会话冷却；超过上限不再点 */
-        if (resumeCount >= RESUME_MAX) { setAutoVeto('resume-cap'); return; }
-        if (resumeLastAt && Date.now() - resumeLastAt < RESUME_COOLDOWN_MS) {
-          setAutoVeto('halted');
-          return;
-        }
+        /* 阶梯自查（2026-11-08 用户定稿，见 RETRY_LADDER_MS）：
+         * 失败后按 15/30/60/120/300 秒各试一次，用完后每 5 分钟一直兜底，
+         * 不再「用完就彻底停」。这里只判「到点了没」—— 推进阶梯的是失败
+         * 那一刻的 retryFail；成功由 settleClickOk 归零。
+         * retryAt 还是 0（刚停机、还没排过）⇒ 立即补一次，与老口径
+         * 「第一次立即补」一致。 */
+        var retryWait = retryLeft();
+        if (retryWait > 0) { setAutoVeto('retry-wait'); return; }
         resumeCount += 1;
         resumeLastAt = Date.now();
         resumePending = true;
-        note('尝试补发', { count: resumeCount });
+        note('尝试补发', { count: resumeCount, step: retryStep });
       }
       setAutoVeto('');
       clickStart(pendingCand);
@@ -2920,6 +3180,7 @@
     haltedAt = 0;              // 补发成功 ⇒ 停机监视结束
     resumeCount = 0;
     resumeLastAt = 0;
+    retryReset();              // 读到结果 ⇒ 阶梯归零（2026-11-08）
     doneAnnounced = false;     // 新一轮已经开始，结束播报重新武装
     /* 开始时刻不在这里预设：交给逐行/逐卡扫描每拍校准。
      * 读不到就是读不到，不编数字（2026-11-01 重新设计）。 */
@@ -3103,6 +3364,11 @@
     return (reverify && reverify.manual) ? '手动发福袋｜' : '自动发福袋｜';
   }
 
+  /** 这一轮核对允许多少次：手动路径比自动路径宽容（见 REVERIFY_MAX_MANUAL）。 */
+  function reverifyMaxCount() {
+    return (reverify && reverify.manual) ? REVERIFY_MAX_MANUAL : REVERIFY_MAX;
+  }
+
   /** 交接：点击没读到，进入延时复核（不报任何结论）。
    *  manual = 这次点击是人点的（手动发福袋）；false = 自动开始下一轮/补发。
    *  两条路走同一套复核，只在**复核真失败**后的收尾上分开：
@@ -3117,13 +3383,19 @@
       dueAt: Date.now() + REVERIFY_DELAY_MS,
       weOpened: false,
       pokedAt: 0,
-      timer: 0
+      timer: 0,
+      watchdog: 0
     };
     phase = 'starting';          // 复核期不许自动点候选、不许再发一个
     confirmBusy = true;          // 自动确认节拍让路（别跟复核抢抽屉）
     confirmStat = reverifyHead() + '已点「开始活动」，等 ' +
       Math.ceil(REVERIFY_DELAY_MS / 1000) + ' 秒复核结果';
     reverify.timer = setTimeout(runReverify, REVERIFY_DELAY_MS);
+    /* 看门狗：卡住的读数也要有个收尾（2026-11-08，见 REVERIFY_WATCHDOG_MS）。 */
+    reverify.watchdog = setTimeout(function () {
+      if (!reverify) return;
+      finishReverify('miss', 'watchdog');
+    }, REVERIFY_WATCHDOG_MS);
     paintPanel();
   }
 
@@ -3131,6 +3403,7 @@
   function cancelReverify() {
     if (!reverify) return false;
     if (reverify.timer) clearTimeout(reverify.timer);
+    if (reverify.watchdog) clearTimeout(reverify.watchdog);
     reverify = null;
     confirmBusy = false;
     return true;
@@ -3203,7 +3476,7 @@
   /** 这一轮没读到：还有额度就等下一轮，用完才落结论 */
   function afterReverifyMiss(why) {
     if (!reverify) return;
-    if (reverify.n < REVERIFY_MAX) {
+    if (reverify.n < reverifyMaxCount()) {
       reverify.dueAt = Date.now() + REVERIFY_RETRY_MS;
       confirmStat = reverifyHead() + '第 ' + reverify.n + ' 次没读到，' +
         Math.ceil(REVERIFY_RETRY_MS / 1000) + ' 秒后再核一次';
@@ -3231,7 +3504,10 @@
        * closeBagPanel 会把卡片与行一起带走，关掉之后就再也读不到倒计时了。 */
       adoptRunningFact(fact && fact.cards, fact && fact.rows, fact && fact.settled);
       settleClickOk();
-      if (weOpened) { try { closeBagPanel(); } catch (eC) {} }
+      /* 2026-11-08：这里不再用 weOpened 作条件。核对常常是「抽屉本来就开着」
+       * 就直接读，那时 weOpened 一直是 false，而抽屉其实是我们上一手开的
+       * —— 判据漏掉 ⇒ 成功之后也留着抽屉（closeBagPanel 自己会挡「用户开的」）。 */
+      try { closeBagPanel(); } catch (eC) {}
       markBagBusy(600);
       note('发福袋复核', { detail: '已确认发出' });
       /* announceSent 内部决定「成功 / 30 秒后只读追读」，并写回 confirmStat ——
@@ -3241,16 +3517,32 @@
     }
     phase = 'live';
     clicked = {};                      // 允许人再点一次
-    if (weOpened) { try { closeBagPanel(); } catch (eC) {} }
-    markBagBusy(600);
-    if (verdict === 'stop') { paintPanel(); paintBadge(); return; }
-    /* 自动这一路真失败（2026-11-04）：转停机监视，30 秒后可补发。
+    if (verdict === 'stop') {
+      /* 总闸关了 / 已停机 = 我们主动收工，不是「确认失败」：只关自己开的，
+       * 用户亲手开的抽屉不动（老红线，别在静默收工时越界）。 */
+      if (weOpened) { try { closeBagPanel(); } catch (eS2) {} }
+      markBagBusy(600);
+      paintPanel();
+      paintBadge();
+      return;
+    }
+    /* 失败收尾必须收起抽屉（2026-11-08 用户：「确认信息失败了，也不能把抽屉
+     * 开着就结束」）。旧版只在 weOpened 时关，而复核时抽屉通常本来就开着
+     * ⇒ 一次 Esc 都没发，人看到的就是「卡住 + 抽屉敞着」。 */
+    closeDrawerAfterFail();
+    /* 自动这一路真失败（2026-11-04）：转停机监视，之后按**阶梯**重查
+     * （2026-11-08 用户定稿：15/30/60/120/300 秒，用完后每 5 分钟一直查）。
      * 不再额外 sayManual —— 一次失败只报一条（sayStop 里已说清重开抽屉复核过）。 */
     if (!wasManual) {
-      confirmStat = '自动发福袋｜复核 ' + REVERIFY_MAX + ' 次都没读到「进行中」';
+      confirmStat = '自动发福袋｜复核 ' + reverifyMaxCount() + ' 次都没读到「进行中」';
+      var retryWaitMs = retryFail('resume');
+      note('排下一次自查', {
+        detail: Math.round(retryWaitMs / 1000) + ' 秒后重试（第 ' + retryStep + ' 档）'
+      });
       /* 已经在停机监视里 = 这是「补发又失败」，静默回 halted：
-       * 每 30 秒补一次、每次都弹「已停止」会刷屏，人只需要一条首次通知。 */
-      if (haltedAt && resumeCount < RESUME_MAX) {
+       * 每次补发都弹「已停止」会刷屏，人只需要一条首次通知。
+       * 2026-11-08 起不再有「补发次数上限」—— 上限交给阶梯 + 5 分钟兜底。 */
+      if (haltedAt) {
         phase = 'halted';
         note('补发失败', { resume: resumeCount });
         paintPanel();
@@ -3277,10 +3569,11 @@
    * 就报失败。然后 XX 秒后重试」。
    *
    * 触发时机：已经确认发出（读到进行中/卡片/链接消失），但没读到倒计时。
-   * 做法：每 30 秒开一次抽屉**只读一眼**，绝不点「开始活动」——
+   * 做法：开抽屉**只读一眼**，绝不点「开始活动」——
    * 这时福袋已经在跑了，再点一次就是双开，那是本文件最不能犯的错。
-   * 追到倒计时 ⇒ 按成功播报；追满 2 次仍没有 ⇒ 报失败，并锁 30 秒
-   * 再让自动开始下一轮接管（避免「刚报失败就又发一个」）。
+   * 节奏（2026-11-08 起）：走**阶梯自查**，15/30/60/120/300 秒各看一眼，
+   * 用完后交回常规确认节拍（每 N 分钟一次）一直看下去。
+   * 追到倒计时 ⇒ 按成功播报；阶梯走完仍没有 ⇒ 报一条失败，并锁到下一次自查。
    * ========================================================== */
 
   function cancelProbe() {
@@ -3291,16 +3584,25 @@
 
   function scheduleProbe(manual) {
     cancelProbe();
-    probe = { n: 0, manual: !!manual, weOpened: false, timer: setTimeout(runProbe, PROBE_DELAY_MS) };
+    /* 首次等待也走阶梯第一档（15 秒）：比旧的固定 30 秒更早拿到倒计时，
+     * 也保证整条自查序列是单调递增的（15→30→60→120→300）。 */
+    var wait = retryFail('probe');
+    probe = { n: 0, manual: !!manual, weOpened: false, timer: setTimeout(runProbe, wait) };
     note('倒计时待确认', {
-      detail: '已发出，' + Math.round(PROBE_DELAY_MS / 1000) + ' 秒后只读确认倒计时'
+      detail: '已发出，' + Math.round(wait / 1000) + ' 秒后只读确认倒计时'
     });
   }
 
   function runProbe() {
     if (!probe) return;
     probe.timer = 0;
-    if (!flags.watch || phase === 'stopped' || phase === 'off') { cancelProbe(); return; }
+    if (!flags.watch || phase === 'stopped' || phase === 'off') {
+      var weOpenedProbe = probe.weOpened;
+      cancelProbe();
+      /* 静默取消也要把自己开的抽屉还回去（否则下次看到的就是「敞着没动静」） */
+      if (weOpenedProbe) { try { closeBagPanel(); } catch (eP0) {} }
+      return;
+    }
     /* tick 已经读到倒计时了就不必开抽屉，直接结案 */
     if (currentLeft() > 0) { finishProbeOk(); return; }
     if (panelInfo().open) { readProbe(); return; }
@@ -3338,7 +3640,10 @@
           if (at > Date.now() && (!left || at - Date.now() < left)) left = at - Date.now();
         }
       }
-      if (probe.weOpened) { try { closeBagPanel(); } catch (eP) {} }
+      /* 2026-11-08：不再用 weOpened 作条件（追读时抽屉常常本来就开着，
+       * weOpened 记不到 ⇒ 我们开的抽屉也留下来了）。closeBagPanel 自己会挡
+       * 「用户亲手开的」那一种。 */
+      closeBagPanel();
       confirmBusy = false;
       markBagBusy(600);
       if (left > 0) { finishProbeOk(left); return; }
@@ -3351,6 +3656,7 @@
     if (!probe) return;
     var manual = probe.manual;
     cancelProbe();
+    retryReset();              // 读到倒计时 ⇒ 阶梯归零（2026-11-08）
     liveRunning = true;
     runningCount = Math.max(1, runningCount);
     lastRunningAt = Date.now();
@@ -3365,27 +3671,37 @@
     paintBadge();
   }
 
-  /** 这一轮没追到：还有额度就再来一次，用完报失败并锁 30 秒 */
+  /**
+   * 这一轮没追到（2026-11-08 改阶梯）：
+   *   ① 阶梯还没用完 ⇒ 按下一档等待后再追一次（只读，不点）；
+   *   ② 阶梯用完 ⇒ 不再自己追（再追就会跟确认节拍抢抽屉），
+   *      交回常规节拍每 N 分钟读一次 —— 这就是用户要的「每 5 分钟一直查」。
+   * 中间不报失败（一次失败只报一条），只在收尾时报。
+   */
   function probeMiss() {
     if (!probe) return;
     probe.n += 1;
-    if (probe.n < PROBE_MAX) {
-      probe.timer = setTimeout(runProbe, PROBE_DELAY_MS);
+    var wait = retryFail('probe');
+    if (retryStep <= RETRY_LADDER_MS.length) {
+      probe.timer = setTimeout(runProbe, wait);
       confirmStat = (probe.manual ? '手动发福袋｜' : '自动发福袋｜') +
-        '还没读到倒计时，' + Math.round(PROBE_DELAY_MS / 1000) + ' 秒后再看一次';
+        '还没读到倒计时，' + Math.round(wait / 1000) + ' 秒后再看一次';
       paintPanel();
+      paintBadge();
       return;
     }
     var manual = probe.manual;
     cancelProbe();
-    /* 失败后锁一段：这段时间里 tick 不许立刻开始下一轮下一个（可能只是读不到，
-     * 真发了就是双开）。用户要的「XX 秒后重试」也正好是这一段。 */
-    lockUntil = Date.now() + PROBE_DELAY_MS;
+    /* 追读失败同样不能把抽屉敞着结束（2026-11-08 用户口径，见 closeDrawerAfterFail） */
+    closeDrawerAfterFail();
+    /* 锁到下一次自查：这段时间 tick 不许开始下一轮（可能只是读不到，
+     * 真发了就是双开）。之后由确认节拍接手低频复查。 */
+    lockUntil = retryAt;
     phase = 'live';
     saySendFail(manual, '已经发出福袋，但没读到倒计时。');
     confirmStat = (manual ? '手动发福袋｜' : '自动发福袋｜') +
-      '已发出，但没读到倒计时（追读 ' + PROBE_MAX + ' 次）';
-    note('发福袋失败', { detail: '已发出但没读到倒计时，追读 ' + PROBE_MAX + ' 次' });
+      '已发出，但没读到倒计时（自查 ' + (retryStep - 1) + ' 次）';
+    note('发福袋失败', { detail: '已发出但没读到倒计时，自查 ' + (retryStep - 1) + ' 次' });
     paintPanel();
     paintBadge();
   }
@@ -3959,16 +4275,14 @@
     if (mode === 'watch') {
       /* 只说「会自己再试」，不说怎么试（间隔/次数/盯着哪个 DOM 都是原理）。
        * 「还会」承接前一句「已停下」：停下的是自动接续，不是重试。 */
-      full += '还会自动再试。';
-    } else if (mode === 'giveup') {
-      full += '自动重试 ' + (resumeTried || 0) + ' 次仍未成功，请手动发一次。';
+      full += '还会按阶梯自查，直到读到结果或你手动停。';
     }
     setStatus(r.short, 'alert', {
       source: SOURCE,
-      /* 只交代**结果承诺**（多久后重试），不交代原理；其它停止原因写「已停止」。
+      /* 只交代**结果承诺**（多久后自查），不交代原理；彻底停的写「已停止」。
        * 轮次不再出现（2026-11-04 用户：福袋不计数轮次）。 */
-      count: reason === 'no-effect'
-        ? (Math.round(RESUME_COOLDOWN_MS / 1000) + ' 秒后重试')
+      count: mode === 'watch'
+        ? (retryLeft() > 0 ? (Math.round(retryLeft() / 1000) + ' 秒后自查') : '马上自查')
         : '已停止',
       full: full
     });
@@ -4101,10 +4415,11 @@
 
   function doStop(reason, extra) {
     /* 停机不再是终局（2026-11-01 深夜）：自动发福袋开着且不是用户手动停 ⇒
-     * 转 halted 继续监视、可补发；补发次数用完（或手动停）才是真停。 */
+     * 转 halted 继续监视、按阶梯重查。2026-11-08 用户定稿取消了「补发次数
+     * 上限」—— 阶梯用完后每 5 分钟一直查，直到读到结果 / 下播 / 手动停，
+     * 所以这里不再有 giveUp 这一档。 */
     var userStop = (reason === 'user-takeover');
-    var giveUp = !userStop && haltedAt > 0 && resumeCount >= RESUME_MAX;
-    var keepWatch = !userStop && flags.auto && !giveUp;
+    var keepWatch = !userStop && flags.auto;
     var resumeTried = resumeCount;
     if (!keepWatch) stopLoop();
     phase = keepWatch ? 'halted' : 'stopped';
@@ -4129,8 +4444,13 @@
       resumeLastAt = 0;
     }
     resumePending = false;
-    sayStop(reason, extra, keepWatch ? 'watch' : (giveUp ? 'giveup' : ''), resumeTried);
+    /* 手动停 / 彻底停 ⇒ 阶梯归零（下一场重新从最短一档开始）；
+     * 转 halted 时**保留**阶梯进度 —— 补发失败就该继续往后推一档。 */
+    if (!keepWatch) retryReset();
+    sayStop(reason, extra, keepWatch ? 'watch' : '', resumeTried);
     note('已停止', { reason: reason, resume: keepWatch ? resumeCount : resumeTried });
+    /* 停机把「在跑」一并清掉了 ⇒ 立刻写一次盘，别让重启后还看到旧的 true */
+    saveFact();
     paintPanel();
     paintBadge();
   }
@@ -4158,6 +4478,7 @@
     liveRunning = false;
     runningFactUntil = 0;
     userBagOpenAt = 0;
+    retryReset();              // 离开中控台 ⇒ 阶梯作废（回来重新从 15 秒起）
     note('离开中控台，福袋已停用');
   }
 
@@ -4212,6 +4533,9 @@
       resumeCount = 0;
       resumeLastAt = 0;
       resumePending = false;
+      retryReset();                 // 总闸关 ⇒ 失败记录作废（下次开启重新从 15 秒起）
+      /* 关掉福袋功能 ⇒ 现场档案也清掉：留着只会在下次打开时恢复一份过时读数 */
+      clearFact();
       destroyPanel();
       paintBadge();                 // 只隐藏不销毁，重新打开时不用重建
       return;
@@ -4227,6 +4551,7 @@
       haltedAt = 0;
       resumeCount = 0;
       resumeLastAt = 0;
+      retryReset();                 // 重新开启同样从最短一档开始（2026-11-08）
       /* 重新开启时清掉「异常已播报」记录 —— 否则上一轮停过之后，
        * 你再拨一次开关会静默停机（原因看得见，却没有任何播报）。 */
       errSaid = {};
@@ -4250,6 +4575,10 @@
       /* 刷新网页后把「上一轮读到还没到期」的读数接回来（见 holdDrawAt）：
        * 平台上的福袋不会因为刷新就消失，插件也不该一刷新就失忆。 */
       holdDrawAt = readHoldDraw();
+      /* 再把整份现场档案接回来（2026-11-08，见 FACT_KEY）：sessionStorage 只
+       * 管刷新，重启浏览器就没了；chrome.storage.local 那份能跨重启，
+       * 于是「发之前先检测有没有在跑」在重启后第一拍就是有效的。 */
+      loadFact();
       if (flags.watch) {
         phase = 'live';
         startBadge();
@@ -4621,7 +4950,11 @@
    * 可能手动再点一次，变成重复开始。 */
   function badgeText() {
     if (haltedAt) {
-      /* 停机监视（2026-11-01 深夜）：停了多久持续可见 —— 这就是「停了也不知道」的解药 */
+      /* 停机监视（2026-11-01 深夜）：停了多久持续可见 —— 这就是「停了也不知道」的解药。
+       * 2026-11-08：停机后仍按阶梯自查，所以先报「等 mm:ss」表明它还在动；
+       * 没有排定的自查（刚停机、or 正在补发）才退回「已停 N 分」。 */
+      var rl = retryLeft();
+      if (rl > 0) return '等 ' + fmtMs(rl);
       var m = Math.floor((Date.now() - haltedAt) / 60000);
       return m < 1 ? '已停<1分'
         : m < 60 ? '已停 ' + m + '分'
@@ -4630,6 +4963,11 @@
     if (drawAt) {
       var r = drawAt - Date.now();
       if (r > 0) return fmtMs(r);         // 走完就停住，不切词，等下一拍刷新
+      /* 刚刚走完、正按「发福袋间隔」等下一轮（2026-11-08）：先于「陈旧读数」
+       * 判定 —— 倒计时一过 lastRunningAt 就停在那一刻，等 20 秒再核就变
+       * 「未开始」，可间隔本身是分钟级的，这段秒数不能丢。 */
+      var g1 = gapWaitLeft();
+      if (g1 > 0) return '等 ' + fmtMs(g1);
       /* 倒计时早走完了，却一直没有新读数（tick 停摆 / 页面在后台）——
        * 不能在 00:00 上无限挂着，更不能退回「进行中」（2026-11-03 深夜）。 */
       if (staleNoSite()) { drawAt = 0; liveRunning = false; return '未开始'; }
@@ -4648,7 +4986,109 @@
       if (staleNoSite()) { liveRunning = false; return '未开始'; }
       return '进行中';
     }
+    /* 没有在跑的福袋、但自动发福袋正按「发福袋间隔」等下一轮 ——
+     * 圆钮显示「等 mm:ss」，否则这里只会写「未开始」，人完全看不出它正在
+     * 数秒（2026-11-08 用户：「等待下一轮的时候也要有倒计时指示」）。
+     * 失败后的阶梯自查（retryAt）同形呈现：两者都是「还要多久才会再动作」，
+     * 用户不需要区分，只有气泡/面板文案不同。 */
+    var rw = retryLeft();
+    if (rw > 0) return '等 ' + fmtMs(rw);
+    var g2 = gapWaitLeft();
+    if (g2 > 0) return '等 ' + fmtMs(g2);
     return '未开始';
+  }
+
+  /**
+   * 「等下一轮」还剩多久（毫秒；0 = 此刻不在等）。
+   *
+   * 用户 2026-11-08：「福袋在设定的间隔时间等待下一轮的时候也要有倒计时指示」。
+   * 口径与 tick 里那道间隔闸**同源**（lastRoundEndAt + gapSec，见自动执行下一轮
+   * 那一段），这里只读同一本账，不另立一套判定 —— 两处口径一旦分开，就会出现
+   * 「圆钮在倒计时、闸门却还在等」这种自相矛盾。
+   *
+   * 五个前提（任一不成立就没有可数的数）：
+   *   · 自动发福袋开着（这个等待只为自动续轮存在，手动不受它约束）；
+   *   · gapSec > 0（0 = 这一层不额外等）；
+   *   · 有上一轮结束锚点（本场还没读到过到期时刻就没有起点）；
+   *   · 不在停机/已停/核对中（那几种状态另有自己的提示）；
+   *   · 没有福袋在跑（在跑的时候圆钮显示它自己的倒计时，不能抢）。 */
+  function gapWaitLeft() {
+    if (!flags.watch || !flags.auto || !autoOn) return 0;
+    if (gapSec <= 0 || !lastRoundEndAt) return 0;
+    if (phase === 'halted' || phase === 'stopped' || phase === 'off') return 0;
+    if (pendingClick || reverify || probe) return 0;
+    /* 「有没有福袋在跑」用**还活着的读数**判，不用 liveRunning 这个更宽的状态：
+     * liveRunning 会赖到 STALE_READING_MS 才自愈，而这一等就是分钟级，
+     * 拿它当闸会让倒计时晚 20 秒才出现。 */
+    var now = Date.now();
+    if (drawAt && drawAt > now) return 0;                      // 还在跑，有自己的秒数
+    if (runningFactUntil && runningFactUntil > now) return 0;   // 刚确认在跑、没秒数
+    var left = lastRoundEndAt + gapSec * 1000 - now;
+    return left > 0 ? left : 0;
+  }
+
+  /**
+   * 重载后第一次确认「没有福袋在跑」⇒ 把间隔起算点钉在此刻（2026-11-08）。
+   *
+   * 用户原话：「如果刷新重新进来，只要确认没有福袋进行，就开始等设定的
+   * 间隔，就可以继续发了」。
+   * 返回 true = 本拍刚钉下锚点（调用方据此跳过本拍的发福袋动作）。
+   *
+   * 只在**读到明白话**的调用点使用（读到行且无进行中 / 平台空态 /
+   * 已经找到可点的待开始行）——「什么都没读到」绝不能起算，否则页面刚
+   * 加载那几拍会把间隔凭空扣掉。
+   */
+  function maybeFreshWait() {
+    if (!freshWaitPending || !flags.auto || !autoOn) return false;
+    /* 档案还没读回来就先别钉锚点（2026-11-08）：chrome.storage 是异步的，
+     * 第一拍可能在回调之前跑；这时若先钉了「现在」，等档案回来时
+     * lastRoundEndAt 已经更大、旧锚点就覆盖不上了 —— 白多等一个间隔。
+     * 等一拍（2.5 秒）代价很小，方向也更保守。 */
+    if (!factLoaded) return false;
+    if (gapSec <= 0 || lastRoundEndAt) return false;
+    if (holdDrawAt > Date.now()) return false;    // 上一轮确实还在跑
+    lastRoundEndAt = Date.now();
+    freshWaitPending = false;
+    note('重载后先等一个间隔', { sec: gapSec });
+    return true;
+  }
+
+  /* ── 阶梯自查（2026-11-08）────────────────────────────────   * 三个函数就是全部状态机，调用方只关心「下一次什么时候能再试」。
+   * 与 gapWaitLeft 的分工：那个数是**正常节奏**的间隔；这个是**失败之后**
+   * 的重查节奏。两者可能同时存在，显示层取更近的一个（见 badgeText）。 */
+
+  /** 归零：读到结果、切场、手动停、总闸关闭时都调它 */
+  function retryReset() {
+    retryStep = 0;
+    retryAt = 0;
+    retryWhy = '';
+  }
+
+  /** 距离下一次自查还有多久（0 = 现在就可以） */
+  function retryLeft() {
+    return retryAt > Date.now() ? retryAt - Date.now() : 0;
+  }
+
+  /**
+   * 记一次失败并排下一次自查，返回本次等待的毫秒数。
+   * 阶梯用完后落 RETRY_FALLBACK_MS（每 5 分钟），**没有次数上限** ——
+   * 用户 2026-11-08 定：「5 档都用完仍失败，退成每 5 分钟一直查，直到我手动停」。
+   * 不做 UI 刷新：调用方（补发分支 / 追读收尾 / 停机播报）各自决定怎么呈现。
+   */
+  function retryFail(why) {
+    var wait;
+    if (retryStep < RETRY_LADDER_MS.length) {
+      wait = RETRY_LADDER_MS[retryStep];
+    } else {
+      wait = RETRY_FALLBACK_MS;
+    }
+    /* 每次失败都推进一档，超出数组长度即「已在兜底」——
+     * 调用方用 retryStep > RETRY_LADDER_MS.length 判断阶梯是否走完。
+     * 步数只增不减，避免「兜底分支不 +=1」导致永远停在同一档（自测实测踩到）。 */
+    retryStep += 1;
+    retryAt = Date.now() + wait;
+    retryWhy = why || '';
+    return wait;
   }
 
   /**
@@ -4670,6 +5110,17 @@
     var t = badgeShadow.querySelector('.t');
     var txt = badgeText();
     if (t && t.textContent !== txt) t.textContent = txt;
+    /* 悬停气泡跟着状态走（2026-11-08）：「等 04:30」这三个字不认识上下文，
+     * 气泡补一句「自动发福袋：mm:ss 后发下一轮」，不用点开面板也看得懂。 */
+    var tipEl = badgeShadow.querySelector('.tip');
+    if (tipEl) {
+      var gwTip = gapWaitLeft();
+      var rwTip = retryLeft();
+      var tipTxt = rwTip > 0
+        ? ('自动发福袋：' + fmtMs(rwTip) + ' 后自查一次')
+        : (gwTip > 0 ? ('自动发福袋：' + fmtMs(gwTip) + ' 后发下一轮') : '超级福袋');
+      if (tipEl.textContent !== tipTxt) tipEl.textContent = tipTxt;
+    }
     box.classList.toggle('dim', !flags.watch);
     box.classList.toggle('hide', !flags.watch);
 
@@ -4681,6 +5132,12 @@
     if (drawAt) {
       var r = drawAt - Date.now();
       urgent = r > 0 && r <= 10000;
+    }
+    /* 等下一轮的最后 10 秒同样压深（2026-11-08）：这一刻就是「马上要发下一个」，
+     * 与福袋快结束时的观感保持一致。 */
+    if (!urgent) {
+      var gwUrg = gapWaitLeft();
+      urgent = gwUrg > 0 && gwUrg <= 10000;
     }
     box.classList.toggle('urgent', urgent);
 
@@ -4859,6 +5316,9 @@
       '.rl .val{margin-left:auto;font-size:14px;font-weight:600;',
       'font-variant-numeric:tabular-nums;letter-spacing:.4px}',
       '.rl .u{font-size:10px;color:#9aa1ab;margin-left:-4px}',
+      /* 等待下一轮（间隔计时中）：数字退一档灰，与「福袋剩余时间」区分开
+       * （2026-11-08 新增间隔倒计时；同一行两种含义，只能靠字色分辨）。 */
+      '.rl .val.wait{color:#646a73}',
       /* 开播闸提示（2026-11-03）：只在「非明确在播」时出现的一行灰字。
        * 口径反转后最大的风险是「判据失配 ⇒ 静默不动作」，这一行就是解药：
        * 用户打开面板能直接看到「为什么现在不自动刷新」。 */
@@ -4885,39 +5345,46 @@
        * 05:26 用户：「滑动条的按钮又觉得做的太大了，刻度线你放在上面」
        *   ⇒ 圆钮 22 → 18px（拖动 20px）；刻度线从轨道下移到**轨道上方**。
        * 竖向排布（自下而上）：轨道 12~20（中心 16）→ 刻度 7~12 贴轨道上沿，
-       * 推荐那根 5~12 更长 → 数字标签在轨道下方。圆钮 7~25，圆心 16，与轨道同轴。 */
-      '.tk{position:relative;height:28px;margin:12px 0 0;cursor:pointer;touch-action:none;outline:none}',
-      '.rail{position:absolute;left:0;right:0;top:12px;height:8px;border-radius:4px;background:#f0ede8;',
-      'box-shadow:inset 0 1px 2px rgba(31,35,41,.07)}',
+       * 推荐那根 5~12 更长 → 数字标签在轨道下方。圆钮 7~25，圆心 16，与轨道同轴。
+       *
+       * 2026-11-08：**两条滑条合并成同一套几何**（用户：「这两个设定的滑动条
+       * 样式不一样，你重新优化一下」）。旧版「发福袋间隔」是照主条手抄的一份
+       * 缩小版（轨道 6 vs 8、圆钮 16 vs 18、刻度 4 vs 5、行高 24 vs 28），
+       * 一眼看出不是一套，改尺寸也容易只改到一边。现在选择器成对写，尺寸只此一份。 */
+      '.tk,.gtk{position:relative;height:28px;margin:12px 0 0;cursor:pointer;touch-action:none;outline:none}',
+      '.rail,.grail{position:absolute;left:0;right:0;top:12px;height:8px;border-radius:4px;background:#f0ede8;',
+      'box-shadow:inset 0 1px 2px rgba(31,35,41,.07);transition:background .12s,box-shadow .12s}',
       /* 圆钮/刻度的定位域：轨道撑满整宽（.rail 是它自己的坐标系），
-       * 但圆钮圆心必须**内缩一个半径**，否则端点的圆心压在轨道极点上、
-       * 圆钮有半个身子伸到轨道外（2026-11-02 用户截图指出「最左最右轻微
-       * 出界」）。这里把刻度与圆钮统一装进 .in，left/right 各让 SLIDE_INSET，
-       * 于是 p=0 / p=100 时圆钮外沿正好与轨道端点相切。
+       * 但圆钮圆心必须**内缩一个半径还有余**，否则端点的圆心压在轨道极点上、
+       * 圆钮连同光环会伸到轨道外（2026-11-02「最左最右轻微出界」→ 2026-11-08
+       * 「端末最尽头还有突出」）。inset 取 SLIDE_INSET（12），比放大态半径 10
+       * 还大 2px ⇒ p=0 / p=100 时圆钮外沿离轨道端点仍有 2px，光环压不到边上。
        * 填充条仍从轨道最左端起（起点 0），宽度靠 calc 算到圆钮圆心。 */
-      '.in{position:absolute;left:10px;right:10px;top:0;bottom:0}',
-      '.fill{position:absolute;left:0;top:12px;height:8px;border-radius:4px;',
-      'background:linear-gradient(90deg,#ff5a33,#ff005c);box-shadow:inset 0 1px 0 rgba(255,255,255,.35);pointer-events:none}',
+      '.in,.gin{position:absolute;left:' + SLIDE_INSET + 'px;right:' + SLIDE_INSET + 'px;top:0;bottom:0}',
+      '.fill,.gfill{position:absolute;left:0;top:12px;height:8px;border-radius:4px;',
+      'background:linear-gradient(90deg,#ff5a33,#ff005c);box-shadow:inset 0 1px 0 rgba(255,255,255,.35);',
+      'pointer-events:none;transition:background .12s}',
       /* 每 1 分钟一根细刻度；推荐值（5）那根加粗上色 —— 用户要的「刻度线」 */
-      '.mk{position:absolute;top:7px;width:1px;height:5px;background:#d9d4cb;transform:translateX(-50%);',
+      '.mk,.gmk{position:absolute;top:7px;width:1px;height:5px;background:#d9d4cb;transform:translateX(-50%);',
       'pointer-events:none}',
       '.mk.rec{top:5px;width:2px;height:7px;background:#ff3a4a;opacity:.8}',
       /* 2026-11-01 晚:滑条观感与循环讲解面板对齐(同一套设计语言,红色系):
        *   实心芯点(::after)杜绝老内核「空心/透明」观感 + 常驻淡光环 +
-       *   顶部高光;悬停/拖动放大到 20px 的交互保留,光环随按压加深。 */
-      '.thumb{position:absolute;top:16px;left:0;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;',
+       *   顶部高光;悬停/拖动放大到 20px 的交互保留,光环随按压加深。
+       * 2026-11-08：光环 5px → 4px —— 端点处它是「突出」的主要来源。 */
+      '.thumb,.gthumb{position:absolute;top:16px;left:0;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;',
       'background:#fff;border:2px solid #ff3a4a;box-shadow:0 2px 6px rgba(255,58,74,.32),0 0 0 3px rgba(255,58,74,.1);',
-      'pointer-events:none;transition:width .12s,height .12s,margin .12s,box-shadow .12s}',
-      '.thumb::after{content:"";position:absolute;left:50%;top:50%;width:5px;height:5px;',
-      'margin:-2.5px 0 0 -2.5px;border-radius:50%;background:#ff3a4a}',
-      '.tk:hover .thumb,.tk.on .thumb{width:20px;height:20px;margin:-10px 0 0 -10px;',
-      'box-shadow:0 2px 8px rgba(255,58,74,.42),0 0 0 5px rgba(255,58,74,.16)}',
+      'pointer-events:none;transition:width .12s,height .12s,margin .12s,border-color .12s,box-shadow .12s}',
+      '.thumb::after,.gthumb::after{content:"";position:absolute;left:50%;top:50%;width:5px;height:5px;',
+      'margin:-2.5px 0 0 -2.5px;border-radius:50%;background:#ff3a4a;transition:background .12s}',
+      '.tk:hover .thumb,.tk.on .thumb,.gtk:hover .gthumb,.gtk.on .gthumb{width:20px;height:20px;margin:-10px 0 0 -10px;',
+      'box-shadow:0 2px 8px rgba(255,58,74,.42),0 0 0 4px rgba(255,58,74,.16)}',
       /* 标签与刻度严格对齐：.labs 也缩进同一个 SLIDE_INSET，否则「3」「10」
-       * 会贴面板边缘、跟轨道上的刻度差 10px。 */
-      '.labs{position:relative;height:13px;color:#9aa1ab;font-size:10px;margin:2px 10px 0}',
-      '.labs span{position:absolute;transform:translateX(-50%);white-space:nowrap}',
-      '.labs span.f{transform:translateX(0)}',
-      '.labs span.l{transform:translateX(-100%)}',
+       * 会贴面板边缘、跟轨道上的刻度差一截。 */
+      '.labs,.glabs{position:relative;height:13px;color:#9aa1ab;font-size:10px;margin:2px ' + SLIDE_INSET + 'px 0}',
+      '.labs span,.glabs span{position:absolute;transform:translateX(-50%);white-space:nowrap}',
+      '.labs span.f,.glabs span.f{transform:translateX(0)}',
+      '.labs span.l,.glabs span.l{transform:translateX(-100%)}',
       '.labs span.rec{color:#ff3a4a;font-weight:600}',
       /* ── 「自动发福袋」开关行（2026-11-01 深夜，popup 子开关挪进来）──
        * 行样式对齐「确认间隔」(.slab)；开关是自绘 toggle（老内核没有
@@ -4935,31 +5402,14 @@
        * 常驻在「自动发福袋」开关下方，关闭时整组置灰（用户原话：
        * 「打开按钮【自动发福袋】之后，他的下方常驻的一个灰色滑动条会恢复颜色」）。
        * 灰态只改颜色与光标，不改几何 —— 开关一开立刻原地变红，不跳动。
-       * 轨道比确认间隔那条细一档（6px vs 8px）：它调的是节奏，不是主参数。 */
+       * 几何已与确认间隔合并（2026-11-08），这里只剩容器与灰态。 */
       '.gwrap{margin-top:10px;transition:opacity .12s}',
       '.gwrap.off{opacity:.6}',
-      '.gtk{position:relative;height:24px;margin:10px 0 0;cursor:pointer;touch-action:none;outline:none}',
-      '.grail{position:absolute;left:0;right:0;top:10px;height:6px;border-radius:3px;background:#f0ede8;',
-      'box-shadow:inset 0 1px 2px rgba(31,35,41,.07);transition:background .12s,box-shadow .12s}',
-      '.gin{position:absolute;left:10px;right:10px;top:0;bottom:0}',
-      '.gfill{position:absolute;left:0;top:10px;height:6px;border-radius:3px;',
-      'background:linear-gradient(90deg,#ff5a33,#ff005c);pointer-events:none;transition:background .12s}',
-      '.gmk{position:absolute;top:5px;width:1px;height:4px;background:#d9d4cb;transform:translateX(-50%);',
-      'pointer-events:none}',
-      '.gthumb{position:absolute;top:13px;left:0;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;',
-      'background:#fff;border:2px solid #ff3a4a;box-shadow:0 2px 6px rgba(255,58,74,.28);',
-      'pointer-events:none;transition:width .12s,height .12s,margin .12s,border-color .12s,box-shadow .12s}',
-      '.gthumb::after{content:"";position:absolute;left:50%;top:50%;width:4px;height:4px;',
-      'margin:-2px 0 0 -2px;border-radius:50%;background:#ff3a4a;transition:background .12s}',
-      '.gtk:hover .gthumb,.gtk.on .gthumb{width:18px;height:18px;margin:-9px 0 0 -9px}',
-      '.glabs{position:relative;height:12px;color:#9aa1ab;font-size:10px;margin:2px 10px 0}',
-      '.glabs span{position:absolute;transform:translateX(-50%);white-space:nowrap}',
-      '.glabs span.f{transform:translateX(0)}',
-      '.glabs span.l{transform:translateX(-100%)}',
       /* 灰态：轨道、填充、圆钮、刻度、数字全退成同族灰；指针不显示可拖 */
       '.gwrap.off .gtk{cursor:default}',
       '.gwrap.off .grail{box-shadow:none}',
       '.gwrap.off .gfill{background:#d9d4cb}',
+      '.gwrap.off .gmk{background:#e3e0d9}',
       '.gwrap.off .gthumb{border-color:#c9cdd4;box-shadow:none}',
       '.gwrap.off .gthumb::after{background:#c9cdd4}',
       '.gwrap.off .glabs span{color:#c9cdd4}',
@@ -5359,12 +5809,27 @@
 
     /* 以下每次只改文字（值没变就不碰 DOM） */
     var txt = '未读到';
+    /* 「等下一轮」的剩余（2026-11-08）：福袋在跑时这一行报它的倒计时；
+     * 跑完、正按「发福袋间隔」等下一轮时报间隔倒计时 —— 两者共用这一行，
+     * 因为对用户来说问的是同一件事：还要多久才发下一轮。
+     * 等待态用灰一档的字色区分（.val.wait），不会把「快结束了」看成「快开始了」。 */
+    var waitLeft = 0;
     if (drawAt) {
       var left2 = drawAt - Date.now();
       txt = left2 > 0 ? fmtMs(left2) : '00:00';
     }
+    if (!drawAt || txt === '00:00') {
+      /* 失败后的阶梯自查优先于「等下一轮」间隔：两者都在等，但自查是当前
+       * 状态（你正等一个失败后果），间隔是正常节奏（2026-11-08）。 */
+      var rwP = retryLeft();
+      waitLeft = rwP > 0 ? rwP : gapWaitLeft();
+    }
+    if (waitLeft > 0) txt = fmtMs(waitLeft);
     if (pRefs.val.textContent !== txt) pRefs.val.textContent = txt;
-    pRefs.unit.style.display = drawAt ? '' : 'none';
+    pRefs.unit.style.display = (drawAt || waitLeft > 0) ? '' : 'none';
+    if (pRefs.val.classList.contains('wait') !== (waitLeft > 0)) {
+      pRefs.val.classList.toggle('wait', waitLeft > 0);
+    }
     /* 开播闸提示（2026-11-03）：非明确在播时说明「为什么现在不自动刷新」。
      * 这是口径反转后的必备可见性措施 —— 判据失配时功能会静默不动作，
      * 没有这一行用户只会觉得「坏了」。 */
@@ -5872,6 +6337,9 @@
         phase: phase,
         halted: !!haltedAt,
         resume: resumeCount,
+        /* 阶梯自查（2026-11-08）：step = 已用掉几档（> ladder 条数 = 已在兜底），
+         * left = 距下一次自查还有多少毫秒。真机排查「为什么还没重试」看这两个。 */
+        retry: { step: retryStep, left: retryLeft(), why: retryWhy },
         /* 福袋不计轮次（2026-11-04 用户定）。这里只暴露「追读倒计时」
          * 的进度：null = 没在追；n = 已追几次。 */
         probe: probe ? { n: probe.n, manual: probe.manual, opened: probe.weOpened } : null,
@@ -6005,6 +6473,13 @@
     gapEnd: function () { if (gapApi) gapApi.end(); },
     setGapSec: function (v) { saveGapSec(v); paintPanel(); },
     gapSec: function () { return gapSec; },
+    /* 间隔倒计时（2026-11-08）：自测要直接断言「还剩多少 / 圆钮写了什么 /
+     * 滑条几何是否留出端点余量」，不必去读 Shadow DOM 里的样式。 */
+    gapWait: function () { return gapWaitLeft(); },
+    badgeText: badgeText,
+    slideGeom: function () {
+      return { inset: SLIDE_INSET, thumb: 18, thumbGrow: 20, rail: 8 };
+    },
     lastRoundEndAt: function () { return lastRoundEndAt; },
     setRoundEndAtForTest: function (t) { lastRoundEndAt = Number(t) || 0; },
     /* 「自动发福袋」面板开关（2026-11-01 深夜）：自测直落点 + 元素出口 */
@@ -6041,6 +6516,38 @@
       runProbe();
     },
     probeState: function () { return probe ? { n: probe.n, manual: probe.manual } : null; },
+    /* 阶梯自查（2026-11-08）：自测要能直接读「用到第几档 / 还要等多久」，
+     * 不能靠推时钟把 9 分钟走完。 */
+    retryState: function () {
+      return {
+        step: retryStep,
+        left: retryLeft(),
+        why: retryWhy,
+        ladder: RETRY_LADDER_MS.slice(),
+        fallback: RETRY_FALLBACK_MS
+      };
+    },
+    retryResetForTest: retryReset,
+    /* 直接推进一档并返回等待毫秒（自测验「15/30/60/120/300 + 5 分钟兜底」
+     * 这串数值本身，不必真等 9 分钟）。 */
+    retryFailForTest: function (why) { return retryFail(why); },
+    /* 现场读数档案（2026-11-08）：自测直接喂一份档案，验恢复/过期丢弃，
+     * 不必真的模拟浏览器重启。 */
+    factForTest: function () {
+      return { loaded: factLoaded, sig: factSig, at: factAt, snap: factSnap() };
+    },
+    applyFactForTest: applyFact,
+    saveFactForTest: saveFact,
+    /* 核对状态（2026-11-08）：自测要断言「手动路径核对了几轮」「收尾后不挂
+     * 核对中」，不能只看最终文案（轮次不进用户可见文案）。 */
+    reverifyState: function () {
+      return reverify ? {
+        n: reverify.n,
+        manual: reverify.manual,
+        max: reverifyMaxCount(),
+        weOpened: reverify.weOpened
+      } : null;
+    },
     liveState: function () { return liveState; },
     /* 开播闸（2026-11-03）：自测要能直接断言「闸开没开」，不必自己推三态 */
     liveGate: liveGateOpen,
@@ -6056,16 +6563,28 @@
       o = o || {};
       if (typeof o.verify === 'number') VERIFY_MS = o.verify;
       if (typeof o.quiet === 'number') QUIET_LIMIT_MS = o.quiet;
-      if (typeof o.resume === 'number') RESUME_COOLDOWN_MS = o.resume;
+      /* 旧入口 resume 原本是「补发冷却 = 固定值」。2026-11-08 改阶梯后，
+       * 把它解释成「单档等间隔」：一次设置即让阶梯只剩一档，行为与旧用例
+       * 想验的「等 N 毫秒再试」完全一致，不必逐条改历史用例。 */
+      if (typeof o.resume === 'number') {
+        RETRY_LADDER_MS = [o.resume];
+        RETRY_FALLBACK_MS = o.resume;
+      }
+      /* 阶梯自查（2026-11-08）：自测要能在几十毫秒内走完 5 档 + 兜底，
+       * 否则一条用例要等 9 分钟。数组长度不限，语义与实际配置一致。 */
+      if (Array.isArray(o.retryLadder)) RETRY_LADDER_MS = o.retryLadder.slice();
+      if (typeof o.retryFallback === 'number') RETRY_FALLBACK_MS = o.retryFallback;
       if (typeof o.afterDrawLag === 'number') AFTER_DRAW_LAG_MS = o.afterDrawLag;
       if (typeof o.userGuard === 'number') USER_OPEN_GUARD_MS = o.userGuard;
       if (typeof o.resumeQuiet === 'number') RESUME_QUIET_MS = o.resumeQuiet;
       if (typeof o.scanMs === 'number') MANUAL_START_SCAN_MS = o.scanMs;
+      if (typeof o.precheck === 'number') START_PRECHECK_MS = o.precheck;
       if (typeof o.reverify === 'number') REVERIFY_DELAY_MS = o.reverify;
       if (typeof o.reverifyRetry === 'number') REVERIFY_RETRY_MS = o.reverifyRetry;
       if (typeof o.reverifyMax === 'number') REVERIFY_MAX = o.reverifyMax;
+      if (typeof o.reverifyMaxManual === 'number') REVERIFY_MAX_MANUAL = o.reverifyMaxManual;
+      if (typeof o.reverifyWatchdog === 'number') REVERIFY_WATCHDOG_MS = o.reverifyWatchdog;
       if (typeof o.probe === 'number') PROBE_DELAY_MS = o.probe;
-      if (typeof o.probeMax === 'number') PROBE_MAX = o.probeMax;
       if (typeof o.panelReadMs === 'number') PANEL_READ_MAX_MS = o.panelReadMs;
       // 改锁时顺便清掉已经生效的那一把 —— 否则上一拍留下的 2 秒锁
       // 会把紧接着的用例挡在外面，看起来像「功能不点」

@@ -138,20 +138,21 @@
     '.view[hidden] { display: none; }',
     // 更新日志视图(#106 · 2026-10-24 并入):版本卡片列表,与原独立日志页同口径。
     '.cl-body { flex: 1; min-height: 0; overflow-y: auto; padding: 12px 14px; }',
-    '.cl-status { font-size: 11px; color: #86909c; line-height: 1.6; margin-bottom: 8px; }',
+    '.cl-status { font-size: 12px; color: #86909c; line-height: 1.6; margin-bottom: 8px; }',
     '.cl-status.err { color: #f53f3f; }',
-    '.cl-card { border: 1px solid #e5e6eb; border-radius: 6px; padding: 8px 10px; margin-bottom: 8px; background: #fff; }',
+    '.cl-card { border: 1px solid #e5e6eb; border-radius: 6px; padding: 9px 11px; margin-bottom: 8px; background: #fff; }',
     '.cl-head { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }',
-    '.cl-no { font-size: 12px; font-weight: 600; color: #1f2329; }',
-    '.cl-date { font-size: 10px; color: #86909c; }',
-    '.cl-now { font-size: 10px; color: #ff7d00; border: 1px solid #ff7d00; border-radius: 3px; padding: 0 4px; }',
-    '.cl-sum { font-size: 11px; color: #4e5969; margin-top: 4px; line-height: 1.6; }',
-    '.cl-list { margin: 5px 0 0; padding-left: 16px; }',
-    '.cl-list li { font-size: 11px; color: #4e5969; line-height: 1.6; }',
-    '.cl-miss { font-size: 10px; color: #86909c; margin-top: 4px; line-height: 1.6; }',
-    '.cl-foot { font-size: 10px; color: #86909c; line-height: 1.7; margin-top: 2px; }',
+    '.cl-no { font-size: 13px; font-weight: 600; color: #1f2329; }',
+    '.cl-date { font-size: 11px; color: #86909c; }',
+    '.cl-now { font-size: 11px; color: #ff7d00; border: 1px solid #ff7d00; border-radius: 3px; padding: 0 4px; }',
+    '.cl-sum { font-size: 12.5px; color: #4e5969; margin-top: 5px; line-height: 1.7; }',
+    '.cl-list { margin: 6px 0 0; padding-left: 17px; }',
+    '.cl-list li { font-size: 12.5px; color: #4e5969; line-height: 1.7; }',
+    '.cl-miss { font-size: 11px; color: #86909c; margin-top: 4px; line-height: 1.6; }',
+    '.cl-foot { font-size: 11px; color: #86909c; line-height: 1.7; margin-top: 2px; }',
     '.cl-foot a { color: #ff7d00; text-decoration: none; cursor: pointer; }',
     '.cl-foot a:hover { text-decoration: underline; }',
+    '.cl-more { font-size: 11px; color: #86909c; text-align: center; padding: 4px 0 10px; line-height: 1.6; }',
     '.cl-retry { text-align: center; padding: 6px 0 2px; }'
   ].join('\n');
 
@@ -727,8 +728,17 @@
   /* ---------- 更新日志视图(#106 · 2026-10-24 并入) ----------
      数据一律由后台代拉(content script 的 fetch 以宿主页为源,会被页面 CSP 拦),
      这边只管渲染:Port(dyc-changelog) 收 {progress|done|error} 三种事件。
-     渲染口径与原独立日志页一致:单版失败该卡占位,整表失败出重试按钮。 */
+     渲染口径与原独立日志页一致:单版失败该卡占位,整表失败出重试按钮。
+     ★ #132(2026-11-07 用户口径):一次只展开 5 个版本,滑到底自动再展开 5 个;
+       未展开的版本不向后台要日志 —— 每个未缓存标签都要烧一次 API 配额,
+       按需取能省下大半。 */
   var clPort = null;
+  var CL_PAGE_SIZE = 5;      // 首屏与每次续展的版本数(#132)
+  var clAll = [];            // 全量版本数据(done 快照;patch 原地更新)
+  var clShown = 0;           // 已展开的卡片数
+  var clCur = '';            // 当前版本 tag(带 v 前缀),渲染「当前版本」角标用
+  var clWebUrl = '';         // 仓库标签页链接(footer 用)
+  var clLastMoreAt = 0;      // 滚动事件防抖
 
   function clCleanup(port) {
     if (clPort === port) clPort = null;
@@ -779,8 +789,9 @@
       }
       if (m.type === 'complete') {
         started = true;
+        /* ★ #132:complete 不再断开 Port —— 「滑到底再展开」还要按批向后台要日志。
+           Port 的清理交给 loadChangelog 重开 / 面板 close()。 */
         refreshClStatus(elStatus, elList);
-        clCleanup(port);
         return;
       }
       if (m.type === 'error') {
@@ -796,6 +807,17 @@
       }
     });
     port.postMessage({ cmd: 'get', fresh: !!fresh });
+    /* #132:滚动到底 → 再展开下一批。滚动容器是列表的父级(.cl-body),
+     * 只在首次绑定(loadChangelog 会被反复调用,重复绑会叠加触发)。 */
+    var elScroll = elList.parentNode;
+    if (elScroll && !elScroll.__dycClScroll) {
+      elScroll.__dycClScroll = true;
+      elScroll.addEventListener('scroll', function () {
+        if (elScroll.scrollTop + elScroll.clientHeight >= elScroll.scrollHeight - 160) {
+          clLoadMore(elStatus, elList);
+        }
+      });
+    }
   }
 
   function clFail(elStatus, elList, why) {
@@ -840,12 +862,12 @@
     return 'missing';
   }
 
-  /** 按当前 DOM 里的卡片状态重算顶部那行统计（patch 后要跟着变）。 */
-  function refreshClStatus(elStatus, elList) {
-    var cards = elList.querySelectorAll('.cl-card');
+  /** 顶部统计行。#132 起按**全量数据**统计(已展开的卡片只是前几批),
+   *  并把「已展开 x / 共 y」放进同一行,让人知道还能往下滑。 */
+  function refreshClStatus(elStatus) {
     var ok = 0, loading = 0, missing = 0, err = 0;
-    for (var i = 0; i < cards.length; i++) {
-      var s = cards[i].getAttribute('data-cl-state');
+    for (var i = 0; i < clAll.length; i++) {
+      var s = clStateOf(clAll[i]);
       if (s === 'ok') ok++;
       else if (s === 'loading') loading++;
       else if (s === 'error') err++;
@@ -857,66 +879,131 @@
     if (missing) parts.push(missing + ' 个未附日志');
     if (err) parts.push(err + ' 个拉取失败');
     elStatus.className = 'cl-status';
-    elStatus.textContent = cards.length
-      ? ('共 ' + cards.length + ' 个版本 · ' + parts.join(' · '))
-      : '没能读到任何版本的日志说明';
+    if (!clAll.length) {
+      elStatus.textContent = '没能读到任何版本的日志说明';
+      return;
+    }
+    elStatus.textContent = '已展开 ' + clShown + ' / 共 ' + clAll.length + ' 个版本'
+      + (parts.length ? ' · ' + parts.join(' · ') : '');
+  }
+
+  /** 单张版本卡(#132 从 renderChangelog 抽出:首屏与续展共用同一构建代码)。 */
+  function clCardEl(r) {
+    var card = document.createElement('section');
+    card.className = 'cl-card';
+    card.setAttribute('data-cl-tag', r.tag);
+    card.setAttribute('data-cl-state', clStateOf(r));
+    card.innerHTML = '<div class="cl-head">'
+      + '<span class="cl-no">' + clEsc(r.tag) + '</span>'
+      + (r.date ? '<span class="cl-date">' + clEsc(clFmtDate(r.date)) + '</span>' : '')
+      + (r.tag === clCur ? '<span class="cl-now">当前版本</span>' : '')
+      + '</div>'
+      + '<div class="cl-body">' + clBodyHtml(r) + '</div>';
+    return card;
+  }
+
+  /** 往列表末尾追加下一批卡片,返回本批 tag(供向后台按需拉日志)。 */
+  function clAppend(elList, n) {
+    var tags = [];
+    var end = Math.min(clShown + n, clAll.length);
+    for (var i = clShown; i < end; i++) {
+      elList.appendChild(clCardEl(clAll[i]));
+      tags.push(clAll[i].tag);
+    }
+    clShown = end;
+    return tags;
+  }
+
+  /** 列表末尾的提示条:还有存货就提示往下滑,见底了就说见底了。 */
+  function clMoreNote(elList) {
+    var note = elList.querySelector('[data-cl-more]');
+    if (!note) {
+      note = document.createElement('div');
+      note.className = 'cl-more';
+      note.setAttribute('data-cl-more', '');
+    }
+    note.textContent = clShown >= clAll.length
+      ? '已经到最早的版本了'
+      : '继续向下滑动，展开更早的版本（每次 ' + CL_PAGE_SIZE + ' 个）';
+    elList.appendChild(note);          // appendChild 会把它挪到当前末尾
+  }
+
+  /** 滑到底 → 再展开一批,并向后台按需拉这批版本的日志(#132)。 */
+  function clLoadMore(elStatus, elList) {
+    if (!clAll.length || clShown >= clAll.length) return;
+    var now = Date.now();
+    if (now - clLastMoreAt < 150) return;    // 滚动事件高频,防抖
+    clLastMoreAt = now;
+    var tags = clAppend(elList, CL_PAGE_SIZE);
+    clMoreNote(elList);
+    refreshClStatus(elStatus, elList);
+    if (clPort && tags.length) {
+      try { clPort.postMessage({ cmd: 'more', tags: tags }); } catch (e) { /* 断了就算了 */ }
+    }
+  }
+
+  /** 浅拷贝一个版本条目(#132):done 快照归调用方所有,我们持有自己的副本;
+   *  之后 patch 原地替换 clAll 元素,也不会动到别人的数据。 */
+  function clCloneItem(r) {
+    return {
+      tag: r.tag, date: r.date,
+      notes: r.notes ? { summary: r.notes.summary, items: (r.notes.items || []).slice() } : null,
+      loading: !!r.loading, error: r.error || '', missing: !!r.missing, fromCache: !!r.fromCache
+    };
   }
 
   function renderChangelog(elStatus, elList, data) {
-    var items = data.items || [];
-    var cur = 'v' + (data.localVersion || VER);
+    clAll = (data.items || []).map(clCloneItem);
+    clShown = 0;
+    clCur = 'v' + (data.localVersion || VER);
+    clWebUrl = data.webUrl || '';
     elList.innerHTML = '';
-    for (var i = 0; i < items.length; i++) {
-      var r = items[i];
-      var card = document.createElement('section');
-      card.className = 'cl-card';
-      card.setAttribute('data-cl-tag', r.tag);
-      card.setAttribute('data-cl-state', clStateOf(r));
-      card.innerHTML = '<div class="cl-head">'
-        + '<span class="cl-no">' + clEsc(r.tag) + '</span>'
-        + (r.date ? '<span class="cl-date">' + clEsc(clFmtDate(r.date)) + '</span>' : '')
-        + (r.tag === cur ? '<span class="cl-now">当前版本</span>' : '')
-        + '</div>'
-        + '<div class="cl-body">' + clBodyHtml(r) + '</div>';
-      elList.appendChild(card);
-    }
-    refreshClStatus(elStatus, elList);
+    clAppend(elList, data.pageSize || CL_PAGE_SIZE);
+    clMoreNote(elList);
     var foot = document.createElement('div');
     foot.className = 'cl-foot';
     foot.innerHTML = '以上说明取自各版本标签随仓库提交的 RELEASE_NOTES，'
       + '完整文档见 <a data-cl-gitee>GitHub 仓库标签页</a>。';
     foot.querySelector('a').addEventListener('click', function () {
-      if (data.webUrl) {
-        try { window.open(data.webUrl, '_blank'); } catch (e) { /* 页面拦就拦了 */ }
+      if (clWebUrl) {
+        try { window.open(clWebUrl, '_blank'); } catch (e) { /* 页面拦就拦了 */ }
       }
     });
     elList.appendChild(foot);
+    refreshClStatus(elStatus, elList);
   }
 
   /**
-   * 单版结果到达 → 就地替换那张卡（2026-11-06）。
-   * 为什么不用整表重绘：68 张卡整表重绘会丢滚动位置、也让「边拉边补」
-   * 看起来一直在闪。按 tag 定位单卡替换，用户看到的是一张张填上。
+   * 单版结果到达 → 先更新全量数据,再就地替换那张卡(2026-11-06,#132 调整)。
+   * 为什么不用整表重绘:68 张卡整表重绘会丢滚动位置、也让「边拉边补」
+   * 看起来一直在闪。按 tag 定位单卡替换;未展开的版本只更新 clAll,
+   * 等滑到它时按最新数据渲染。
    */
   function patchChangelog(elStatus, elList, m) {
     var tag = String(m.tag || '');
     if (!tag) return;
-    var cards = elList.querySelectorAll('.cl-card');
-    var card = null;
-    for (var i = 0; i < cards.length; i++) {
-      if (cards[i].getAttribute('data-cl-tag') === tag) { card = cards[i]; break; }
+    var idx = -1;
+    for (var i = 0; i < clAll.length; i++) {
+      if (clAll[i].tag === tag) { idx = i; break; }
     }
-    if (!card) return;
-    var r = {
+    if (idx < 0) return;
+    clAll[idx] = {
       tag: tag,
+      date: clAll[idx].date,
       notes: m.notes || null,
       loading: false,
       error: m.error || '',
       missing: !!m.missing
     };
-    card.setAttribute('data-cl-state', clStateOf(r));
+    var cards = elList.querySelectorAll('.cl-card');
+    var card = null;
+    for (var j = 0; j < cards.length; j++) {
+      if (cards[j].getAttribute('data-cl-tag') === tag) { card = cards[j]; break; }
+    }
+    if (!card) { refreshClStatus(elStatus, elList); return; }
+    card.setAttribute('data-cl-state', clStateOf(clAll[idx]));
     var body = card.querySelector('.cl-body');
-    if (body) body.innerHTML = clBodyHtml(r);
+    if (body) body.innerHTML = clBodyHtml(clAll[idx]);
     refreshClStatus(elStatus, elList);
   }
 

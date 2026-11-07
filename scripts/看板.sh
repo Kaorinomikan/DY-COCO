@@ -172,4 +172,12 @@ fi
 echo "  开工:bash scripts/开工.sh <名字> \"一句话描述\"(开工后条目移入「已开工」章)"
 echo ""
 echo "──────────────────────────────────────"
+# 已提交但未回收的任务(2026-11-08 机械化提醒)：「自动合并」写进规则也会被漏掉,
+# 让看板每次都把它顶出来 —— 有输出就说明有人在等一个不该等的口令。
+UNMERGED_B=$(bash "$REPO/scripts/check-unmerged.sh" 2>/dev/null)
+if [ -n "$UNMERGED_B" ]; then
+  echo "⚠️ 已提交但未回收(除新功能外一律自动合并,别等用户口令):"
+  printf '%s\n' "$UNMERGED_B"
+  echo ""
+fi
 echo " 明细:bash scripts/wt-list.sh"

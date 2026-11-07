@@ -50,7 +50,7 @@
  * 【闸门落点 —— 中间态只查语法,定稿后回收自动查其余项】
  *
  *   python scripts/check-syntax.py --changed  # 每轮中间态，约 0.1 秒
- *   DYC_SMOKE_OK=1 bash scripts/回收.sh <名字> # 真机冒烟后合并，自动跑：
+ *   bash scripts/回收.sh <名字>               # 直接合并（冒烟不拦合并），自动跑：
  *     manifest 顺序 / 产品文案 / 性能 / 断言体检 / 相关行为自测
  *   行为自测写进 scripts/ 并提交；不得把 .tmp/ 下未入库脚本作为交接必跑入口。
  *   开工与收工都读 docs/agents/用户要求.md 第 25 条；问号先说用途，最多补一条限制。

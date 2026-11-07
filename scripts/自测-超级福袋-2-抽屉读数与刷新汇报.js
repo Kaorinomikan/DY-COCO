@@ -34,73 +34,77 @@ const {
     '㊱ 中控台工具栏不再注册「福袋」按钮（开关面板只走右下浮动圆钮）');
 
   /* ============================================================
-   * ㊫ 停机监视 + 自动补发（2026-11-01 深夜 用户拍板）
-   *    停机不再是终局：圆钮持续显示「已停 X分」；还能点就自动补回去。
-   *    第一次立即补；失败后同一会话冷却 10 分钟；连续 3 次失败彻底停。
+   * ㊫ 停机监视 + 阶梯自查（2026-11-01 建立，2026-11-08 改阶梯）
+   *    停机不再是终局：圆钮显示「等 mm:ss」（等下一次自查）或「已停 X分」；
+   *    还能点就自动补回去。节奏 = 15/30/60/120/300 秒各一次，用完后每 5 分钟
+   *    一直兜底，**不再有「连续 3 次彻底停」**（用户 2026-11-08 定稿）。
    *    用户亲手点「结束活动」不在补发范围（我停它就停，红线不变）。
    * ============================================================ */
 
-  /* ㊫① 停机后第一次补发：立即点，不等冷却
-   * 2026-11-04：自动点击失败先走复核（与手动发福袋同一套），所以这里等
-   * 「复核两轮失败 → halted」而不是一次 tick 就判死。 */
+  /* ㊫①②③④ 阶梯自查四步（2026-11-08 改口径）
+   * 时间线：复核失败 → retryFail 第 1 档 → halted（等待期内 tick 不点）
+   *        → 到点补发 → 补发再失败 → 第 2 档 → …… → 阶梯用完进兜底，仍 halted。
+   * 用例把阶梯压成 [40, 120] + 兜底 400ms，整组几秒跑完。 */
   env = await boot({ watch: true, auto: true, onStartClick: 'nothing' });
-  env.api.setTimingForTest({ verify: 30, reverify: 40, reverifyRetry: 40, scanMs: 40 });
+  env.api.setTimingForTest({
+    verify: 30, reverify: 40, reverifyRetry: 40, scanMs: 40,
+    retryLadder: [40, 120], retryFallback: 400
+  });
   env.tick();                          // 第 1 次点击（没反应）
   ok(await waitBag(function () {
-    /* 先判后 tick：命中 halted 的那一拍不要再 tick，否则补发会被它顺手点掉，
-     * 下面「补发点击进入待校验」就观察不到（2026-11-04） */
     if (env.api.snapshot().phase === 'halted') return true;
     env.tick();
     return false;
-  }, 8000), '㊫① 铺垫：复核两轮仍没读到 → 停机监视');
+  }, 8000), '㊫ 铺垫：复核两轮仍没读到 → 停机监视');
   env.messages.length = 0;
-  env.tick();                          // halted 中看到还能点 → 立即补发
-  ok(env.clicks.s1 === 2, '㊫① 停机后第一次补发立即执行（共点 2 次）');
+  ok(env.api.retryState().left > 0,
+    '㊫① 停机后先进阶梯等待（剩 ' + Math.round(env.api.retryState().left) + 'ms）');
+  env.tick();                          // 等待期内 → 不点
+  ok(env.clicks.s1 === 1, '㊫① 等待期内不补发（不再「立即补」）');
+  ok(await waitBag(function () {
+    env.tick();
+    return env.clicks.s1 === 2;
+  }, 3000), '㊫① 第一档到点 → 补发一次（共 2 次点击）');
   ok(env.api.snapshot().resume === 1, '㊫① 补发计数 = 1');
   ok(env.api.snapshot().phase === 'starting' || env.api.snapshot().pending,
     '㊫① 补发点击进入待校验（phase=' + env.api.snapshot().phase +
       ' pending=' + env.api.snapshot().pending + '）');
 
-  /* ㊫② 补发也失败 → 不立即重试（同一会话冷却；用例里把冷却拨短） */
+  /* ㊫② 补发也失败 → 进第 2 档，等待期内不重试 */
   ok(await waitBag(function () {
     if (env.api.snapshot().phase === 'halted') return true;
     env.tick();
     return false;
   }, 8000), '㊫② 铺垫：补发复核也失败 → 回到停机监视');
   env.messages.length = 0;
-  env.tick();                          // 冷却中 → 不点
-  ok(env.clicks.s1 === 2, '㊫② 冷却期内不重试（仍 2 次）');
-  ok(env.api.snapshot().phase === 'halted', '㊫② 冷却期内保持停机监视');
+  env.tick();                          // 第 2 档等待中 → 不点
+  ok(env.clicks.s1 === 2, '㊫② 阶梯等待期内不重试（仍 2 次）');
+  ok(env.api.snapshot().phase === 'halted', '㊫② 等待期内保持停机监视');
   ok(env.byType('alert').length === 0, '㊫② 补发失败不重复弹「已停止」（只留首次通知）');
 
-  /* ㊫③ 冷却过后再补发 */
-  env.api.setTimingForTest({ resume: 600 });
+  /* ㊫③ 第 2 档到点 → 再补一次 */
   ok(await waitBag(function () {
     env.tick();
     return env.clicks.s1 === 3;
-  }, 4000), '㊫③ 冷却过后第二次补发（共 3 次）');
+  }, 4000), '㊫③ 第二档到点 → 再补一次（共 3 次）');
   ok(env.api.snapshot().resume === 2, '㊫③ 补发计数 = 2');
 
-  /* ㊫④ 连续 3 次补发都失败 → 彻底停，播报写明次数 */
+  /* ㊫④ 阶梯用完 → 不彻底停，转每 5 分钟兜底一直查（用户 2026-11-08 定稿） */
   ok(await waitBag(function () {
     if (env.api.snapshot().phase === 'halted') return true;
     env.tick();
     return false;
   }, 8000), '㊫④ 铺垫：第二次补发也失败');
+  const rs4 = env.api.retryState();
+  ok(rs4.step > rs4.ladder.length,
+    '㊫④ 阶梯已用完 → 进兜底（第 ' + rs4.step + ' 次，共 ' + rs4.ladder.length + ' 档）');
+  ok(rs4.left > 300,
+    '㊫④ 兜底等待 = 设定值（剩 ' + Math.round(rs4.left) + 'ms）');
+  ok(env.api.snapshot().phase === 'halted' && env.api.snapshot().timers.tick === true,
+    '㊫④ 不彻底停：仍在停机监视、定时器还在跑（旧版这里会 stopped）');
   env.messages.length = 0;
-  ok(await waitBag(function () {
-    env.tick();
-    return env.clicks.s1 === 4;
-  }, 4000), '㊫④ 第三次补发执行（共 4 次点击）');
-  ok(await waitBag(function () {
-    if (env.api.snapshot().phase === 'stopped') return true;
-    env.tick();                        // 第三次补发的校验要 tick 驱动
-    return false;
-  }, 8000), '㊫④ 连续 3 次补发失败 → 彻底停');
-  ok(env.api.snapshot().timers.tick === false, '㊫④ 彻底停后定时器已清');
-  const giveupAlert = env.byType('alert')[0];
-  ok(!!giveupAlert && /重试 3 次仍未成功/.test(giveupAlert.full),
-    '㊫④ 播报写明「自动重试 3 次仍未成功」');
+  env.tick();
+  ok(env.clicks.s1 === 3, '㊫④ 兜底等待期内同样不点');
 
   /* ㊫⑤ 停机中出现新活动 → 补发成功，播「已补发」，计数清零 */
   env = await boot({ watch: false, auto: true, status: '活动已结束', withStart: false });

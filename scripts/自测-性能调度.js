@@ -148,8 +148,15 @@ loop.api.place(); assert.equal(loop.counts.rect, 0, '定位中不读矩形'); as
 loop.api.busy(false);
 loop.api.running(); const beforeCancel = loop.api.abortMark();
 loop.api.onUserCancelClick({ isTrusted: true, target: lecture });
-assert.equal(loop.api.snapshot().phase, 'off', '真人取消立即停止循环，需手动重开');
-assert.equal(loop.api.snapshot().on, false, '取消后观察器不能自行重新启用');
+assert(loop.api.abortMark() > beforeCancel, '真人取消当场中断异步链');
+assert.notEqual(loop.api.snapshot().phase, 'off', '点击当场不停表(#133:等 800ms 复核讲解标记)');
+loop.advance(900);   // 跑复核回调:行结构量不到 ⇒ 保守按真取消处理
+/* ★ 2026-11-08 口径变更(取代 #133 的「复核确认后停表」):
+ *   用户原话「点了取消讲解不应该停,而是保持等待下一个讲解的品」。
+ *   ⇒ 复核确认真取消之后转「待命跟随」,开关保持开,不再需要手动重开。 */
+assert.equal(loop.api.snapshot().phase, 'vigil', '复核确认后转待命(vigil),不停表');
+assert.equal(loop.api.snapshot().on, true, '取消后开关保持开,不需要手动重开');
+assert.equal(loop.api.snapshot().passive, 1, '待命标记置位(等下一个讲解,期间不补讲)');
 assert(loop.api.abortMark() > beforeCancel, '真人取消中断异步链');
 let cycles = 0;
 loop.api.cycles(() => cycles++); loop.api.due(); loop.doc.hidden = true;

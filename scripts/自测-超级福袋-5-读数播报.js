@@ -201,7 +201,7 @@ const {
   bp.openDrawer();
   bp.api.setTimingForTest({
     tick: 120, verify: 300, scanMs: 200, reverify: 200, reverifyRetry: 200,
-    probe: 200, probeMax: 2
+    retryLadder: [100, 100]
   });
   bp.api.manualStart();
   ok(await waitBag(function () { return bp.clicks.dstart >= 1; }, 9000),
@@ -223,14 +223,16 @@ const {
   }, 6000), '㊾① 追到倒计时 → 报成功并带剩余时间');
   ok(bp.api.snapshot().probe === null, '㊾① 成功后追读收工');
 
-  /* ㊾② 两次都没追到 → 报失败 + 交代重试，且绝不立刻重发 */
+  /* ㊾② 阶梯走完都没追到 → 报失败 + 交代重试，且绝不立刻重发
+   * （2026-11-08 改阶梯：不再是「固定 2 次」，而是按 retryLadder 各追一次，
+   *   走完才落结论；这里把阶梯压成 2 档 100ms，等价于原来的「两次」。） */
   bp = await bootBagPage(null, {
     drawerRowHtml: '<span id="ds21">● 活动待开始</span><a id="dstart">开始活动</a>'
   });
   bp.openDrawer();
   bp.api.setTimingForTest({
     tick: 120, verify: 300, scanMs: 200, reverify: 200, reverifyRetry: 200,
-    probe: 200, probeMax: 2
+    retryLadder: [100, 100]
   });
   bp.api.manualStart();
   ok(await waitBag(function () { return bp.clicks.dstart >= 1; }, 9000),
@@ -248,7 +250,7 @@ const {
   bp.api.probeNow();
   ok(await waitBag(function () {
     return bp.messages.some(function (m) { return /发福袋失败/.test(m.text); });
-  }, 6000), '㊾② 追满两次仍没有倒计时 → 报失败');
+  }, 6000), '㊾② 阶梯走完仍没有倒计时 → 报失败');
   const fail21 = bp.messages.filter(function (m) { return /发福袋失败/.test(m.text); })[0];
   ok(!!fail21 && /\S/.test(fail21.count || ''), '㊾② 失败消息带结果数（手动这一路是「未发出」）');
   ok(!!fail21 && /倒计时/.test(fail21.full || ''), '㊾② 失败原因写清是「没读到倒计时」（不冤枉平台没发出）');
@@ -256,7 +258,7 @@ const {
   bp.api.tick();
   await sleep(80);
   bp.api.tick();
-  ok(bp.clicks.dstart === c21, '㊾② 报失败后不立刻重发（锁 30 秒，防双开）');
+  ok(bp.clicks.dstart === c21, '㊾② 报失败后不立刻重发（锁到下一次自查，防双开）');
 
   /* ㊯② 确认窗口内点「手动刷新」：不再被「等它完成再刷新」挡死 */
   bp = await bootBagPage(null, {

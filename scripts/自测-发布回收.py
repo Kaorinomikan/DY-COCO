@@ -212,13 +212,16 @@ zh() {{ cat; }}
         self.assertEqual(self.run_script(merge, 'already-sync-fail', 'case', '--go', '--cleanup'), 2, self.output)
         self.assertNotIn('worktree remove', self.trace())
 
-    def test_runtime_change_requires_fresh_smoke_ack(self):
+    def test_runtime_change_merges_without_smoke_ack(self):
+        # 2026-11-08 口径:真机冒烟不拦合并(改为推送前置)。
+        # 旧断言要求 exit 1 + 「缺少当次真机冒烟确认」——口径变更后过时,
+        # 改为:照样合并,但在输出里明示「真机验证待测试档、验过才许推」。
         merge, _ = self.prepare_merge()
         self.env.pop('DYC_SMOKE_OK', None)
-        self.assertEqual(self.run_script(merge, 'src-change', 'case', '--go'), 1, self.output)
-        self.assertIn('缺少当次真机冒烟确认', self.output)
-        self.assertNotIn('merged', self.trace())
-        self.assertNotIn('worktree remove', self.trace())
+        self.assertEqual(self.run_script(merge, 'src-change', 'case', '--go'), 0, self.output)
+        self.assertIn('未带真机冒烟声明', self.output)
+        self.assertIn('验过才允许推送', self.output)
+        self.assertIn('merge --no-ff', self.trace())
 
     def test_runtime_change_merges_with_smoke_ack(self):
         merge, _ = self.prepare_merge()

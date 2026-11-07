@@ -535,6 +535,9 @@
           in: (typeof dycIsLiveControl === 'function') ? dycIsLiveControl() : null,
           installed: !!window.__DYC_LIVE_CTRL_LOADED__,
           agent: !!window.__DYC_LIVE_AGENT__,
+          /* 重试次数（2026-11-08）：补注入失败会按退避一直重试，
+             报告里带次数才能分清「一次都没试」与「试了几十次都不成」。 */
+          askTries: Number(window.__DYC_LIVE_INJECT_TRIES__ || 0),
           askError: clamp(String(window.__DYC_LIVE_INJECT_ERROR__ || ''), 120)
         }
       };

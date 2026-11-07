@@ -110,8 +110,8 @@ const { ok, boot, bootBagPage, setText, summary } = B;
   ok(bp.api.panelGapValue().textContent === '0 分钟', '③ 0 秒显示「0 分钟」');
 
   /* 拖动映射：轨道两端 = 0 / 300 秒，中点 = 150 秒。
-   * 打桩矩形 left=900 / width=250，圆钮圆心内缩 SLIDE_INSET=10。 */
-  bp.api.gapTo(1025);                       // 轨道中点（x=115 / 可用 230）
+   * 打桩矩形 left=900 / width=250，圆钮圆心内缩 SLIDE_INSET（2026-11-08 起 12）。 */
+  bp.api.gapTo(1025);                       // 轨道中点（左右对称，与内缩量无关）
   ok(Math.abs(bp.api.gapState().target - 150) < 1,
      '③ 拖到轨道中点 = 150 秒（0~300 线性映射，含内缩）');
   bp.api.gapEnd();
@@ -120,7 +120,7 @@ const { ok, boot, bootBagPage, setText, summary } = B;
   bp.api.gapTo(910);                        // 最左（圆心 0）
   bp.api.gapEnd();
   ok(bp.api.gapSec() === 0, '③ 拖到最左 = 0 秒（圆心不出界）');
-  bp.api.gapTo(1140);                       // 最右（圆心 = 轨道右端 - 10）
+  bp.api.gapTo(1140);                       // 最右（超出可用行程 → 钳到端点）
   bp.api.gapEnd();
   ok(bp.api.gapSec() === 300, '③ 拖到最右 = 300 秒');
 
@@ -199,6 +199,239 @@ const { ok, boot, bootBagPage, setText, summary } = B;
   env4.tick();
   ok(env4.api.lastRoundEndAt() === anchor,
      '④ 读到更短的倒计时不把锚点往回拉（起算点只前进）');
+
+  /* ============================================================
+   * ⑤ 等下一轮期间要有倒计时指示（2026-11-08 用户原话：
+   * 「福袋在设定的间隔时间等待下一轮的时候也要有倒计时指示」）
+   * ------------------------------------------------------------
+   * 口径：等待窗口 = 上一轮倒计时到期（lastRoundEndAt）+ 设定间隔；
+   *       与 tick 里那道间隔闸同一本账，显示层只读不算。
+   * ============================================================ */
+  let env6 = await bootBagPage();
+  env6.api.togglePanel();
+  const sh6 = env6.doc.getElementById('dyb-bag-panel').shadowRoot;
+  env6.api.setAutoForTest(true);
+  env6.api.setGapSec(120);                               // 2 分钟
+  env6.api.setRoundEndAtForTest(Date.now() - 30000);     // 30 秒前刚结束
+  env6.api.setGapSec(120);                               // 触发一次重绘
+  const gw6 = env6.api.gapWait();
+  ok(gw6 > 85000 && gw6 <= 91000,
+     '⑤ 剩余量 = 120 − 30 ≈ 90 秒（实际 ' + Math.round(gw6 / 1000) + ' 秒）');
+  ok(/^等 \d\d:\d\d$/.test(env6.api.badgeText()),
+     '⑤ 圆钮显示「等 mm:ss」，不是干巴巴的「未开始」：' + env6.api.badgeText());
+  const val6 = sh6.querySelector('.rl .val');
+  const u6 = sh6.querySelector('.rl .u');
+  ok(/^\d\d:\d\d$/.test(val6.textContent) && u6.style.display !== 'none',
+     '⑤ 面板「下轮开始」这一行报间隔倒计时（不再写「未读到」）：' + val6.textContent);
+  ok(val6.classList.contains('wait'),
+     '⑤ 等待态单独一档字色（不会看成「福袋还剩这么多」）');
+
+  /* ⑤-b 到点就不再报（发出去之后该由下一轮的倒计时接管） */
+  env6.api.setRoundEndAtForTest(Date.now() - 200000);    // 间隔已过
+  ok(env6.api.gapWait() === 0 && env6.api.badgeText() === '未开始',
+     '⑤ 间隔走完 → 不再报等待（圆钮回「未开始」等下一拍读数）');
+
+  /* ⑤-c 间隔 = 0 时没有可数的东西（这一层不额外等），不能显示 00:00 */
+  env6.api.setGapSec(0);
+  env6.api.setRoundEndAtForTest(Date.now() - 30000);
+  ok(env6.api.gapWait() === 0 && env6.api.badgeText() === '未开始',
+     '⑤ 间隔设 0 时不显示等待倒计时（0 = 这一层不加等）');
+
+  /* ⑤-d 福袋还在跑时不抢：这一行/圆钮该报福袋自己的剩余时间 */
+  let env7 = await boot({ watch: true, auto: true, status: '活动进行中 距结束 03:00' });
+  env7.api.setGapSec(300);
+  env7.tick();
+  ok(env7.api.gapWait() === 0, '⑤ 有福袋在跑时不算间隔（不抢它自己的倒计时）');
+  ok(/^0[23]:\d\d$/.test(env7.api.badgeText()),
+     '⑤ 圆钮仍报福袋剩余时间：' + env7.api.badgeText());
+
+  /* ⑤-e 自动发福袋关着时同样不报（等待只服务于自动续轮） */
+  let env8 = await boot({ watch: true, auto: false });
+  env8.api.setGapSec(300);
+  env8.api.setRoundEndAtForTest(Date.now() - 30000);
+  env8.tick();
+  ok(env8.api.gapWait() === 0, '⑤ 自动发福袋关着 → 不做间隔倒计时');
+
+  /* ============================================================
+   * ⑥ 两条滑条一套尺寸 + 端点留余量（2026-11-08 用户原话：
+   * 「这两个设定的滑动条样式不一样，你重新优化一下，而且端末最尽头还有
+   *   突出，不太对」）
+   * ============================================================ */
+  const geom = bp.api.slideGeom();
+  ok(geom.inset * 2 > geom.thumbGrow,
+     '⑥ 端点余量：内缩 ' + geom.inset + 'px 比放大态半径 ' + (geom.thumbGrow / 2) +
+     'px 大 ' + (geom.inset - geom.thumbGrow / 2) + 'px（端点不再顶到轨道尽头）');
+  /* 断言「两条滑条的尺寸一致」而不是「选择器必须写成成对形式」：
+   * 前者是用户看得见的结果（样式齐不齐），后者是实现细节，
+   * 以后真拆开写也不该红。 */
+  const css7 = sh.querySelector('style').textContent;
+  const cssNum = function (re) { const m = re.exec(css7); return m ? +m[1] : -1; };
+  const tkH = cssNum(/\.tk[^{]*\{[^}]*height:(\d+)px/);
+  const gtkH = cssNum(/\.gtk[^{]*\{[^}]*height:(\d+)px/);
+  const railH = cssNum(/\.rail[^{]*\{[^}]*height:(\d+)px/);
+  const grailH = cssNum(/\.grail[^{]*\{[^}]*height:(\d+)px/);
+  const thumbW = cssNum(/\.thumb[^{]*\{[^}]*width:(\d+)px/);
+  const gthumbW = cssNum(/\.gthumb[^{]*\{[^}]*width:(\d+)px/);
+  ok(tkH > 0 && tkH === gtkH && railH > 0 && railH === grailH &&
+     thumbW > 0 && thumbW === gthumbW,
+     '⑥ 两条滑条尺寸完全一致（行高 ' + tkH + '/' + gtkH + '、轨道 ' + railH + '/' +
+     grailH + '、圆钮 ' + thumbW + '/' + gthumbW + '）');
+  ok(railH === 8 && thumbW === 18 && gthumbW === 18,
+     '⑥ 发福袋间隔不再是小一号的 6px 轨道 / 16px 圆钮');
+  ok(css7.indexOf('height:24px') < 0,
+     '⑥ 旧的 24px 缩小版行高已删除（样式不齐的根源）');
+  ok(css7.indexOf('0 0 0 5px') < 0,
+     '⑥ 悬停光环由 5px 收到 4px（端点处这块外扩是「突出」的主因）');
+
+  /* ============================================================
+   * ⑦ 失败后的阶梯自查（2026-11-08 用户定稿）
+   *   「自动发福袋的循环自检，如果失败了多久会再查一次，按照阶梯间隔
+   *    帮我设计自查检测」→ 定稿：15/30/60/120/300 秒（5 档），用完后
+   *    退成每 5 分钟一直查，直到读到结果 / 下播 / 手动停。
+   * ============================================================ */
+  let env9 = await boot({ watch: true, auto: true });
+  const seq = [];
+  for (let i = 0; i < 7; i++) seq.push(env9.api.retryFailForTest('resume'));
+  ok(JSON.stringify(seq) === JSON.stringify([15000, 30000, 60000, 120000, 300000, 300000, 300000]),
+     '⑦ 阶梯 = 15/30/60/120/300 秒，之后每 5 分钟一直兜底：' + seq.join(' / ') + '（毫秒）');
+  ok(env9.api.retryState().step === 7,
+     '⑦ 每失败一次推进一档（7 次失败 → 第 7 档）');
+  ok(env9.api.retryState().left > 0, '⑦ 等待中：下一次自查还有 ' +
+     Math.round(env9.api.retryState().left / 1000) + ' 秒');
+  ok(/^等 \d\d:\d\d$/.test(env9.api.badgeText()),
+     '⑦ 等待期圆钮显示「等 mm:ss」：' + env9.api.badgeText());
+
+  env9.api.retryResetForTest();
+  ok(env9.api.retryState().step === 0 && env9.api.retryState().left === 0,
+     '⑦ 读到结果 / 切场 / 手动停 → 阶梯归零');
+
+  /* ⑦-b 归零后再失败，从最短一档重新开始（不是从上次的第 7 档继续） */
+  ok(env9.api.retryFailForTest('probe') === 15000,
+     '⑦ 归零后重新从 15 秒起（新一场不背上一场的账）');
+
+  /* ============================================================
+   * ⑧ 刷新重进：确认「没有福袋在跑」→ 先等设定间隔，再继续发
+   *   （2026-11-08 用户：「不做场次记忆……如果刷新重新进来，只要确认没有
+   *    福袋进行，就开始等设定的间隔，就可以继续发了」）
+   * ============================================================ */
+  let env10 = await boot({ watch: true, auto: true, onStartClick: 'runningTimed' });
+  env10.api.setGapSec(120);                 // 2 分钟
+  ok(env10.api.lastRoundEndAt() === 0, '⑧ 铺垫：刚重载进来没有上一轮锚点');
+  env10.tick();
+  ok(env10.clicks.s1 === 0, '⑧ 确认没有在跑 → 不立刻发，先等间隔');
+  const anchor10 = env10.api.lastRoundEndAt();
+  ok(anchor10 > Date.now() - 3000 && anchor10 <= Date.now() + 1000,
+    '⑧ 间隔起算点钉在「确认没有在跑」的这一刻（+0 秒，不是凭空跳过）');
+  ok(env10.api.gapWait() > 100000,
+    '⑧ 等待量 = 设定间隔（剩 ' + Math.round(env10.api.gapWait() / 1000) + ' 秒）');
+
+  env10.api.setRoundEndAtForTest(Date.now() - 130000);   // 拨到间隔已过
+  env10.tick();
+  ok(env10.clicks.s1 === 1, '⑧ 间隔满了 → 照常发下一轮');
+
+  /* ⑧-b 间隔 = 0 时不受这条影响（老节奏不变，刷新进来照旧立即发） */
+  let env11 = await boot({ watch: true, auto: true, onStartClick: 'runningTimed' });
+  env11.api.setGapSec(0);
+  env11.tick();
+  ok(env11.clicks.s1 === 1, '⑧ 间隔设 0 → 重进后照旧立即发（这一层不额外等）');
+
+  /* ⑧-c 上一轮确实还在跑（sessionStorage 里的 holdDrawAt 未到期）→ 锚点用它
+   * 自己的到期时刻，不能被改写成「现在」（否则会把还在跑的那一轮当成刚结束，
+   * 硬多等一个间隔）。bootBagPage 支持 opts.hold，boot 不支持，所以这里换页面。 */
+  const hold12 = Date.now() + 10 * 60 * 1000;
+  let env12 = await bootBagPage(null, {
+    preOpen: true,
+    hold: hold12,
+    rowStatus: '<span id="ds12">● 活动待开始</span><a id="dstart">开始活动</a>'
+  });
+  env12.api.setAutoForTest(true);
+  env12.api.setGapSec(120);
+  env12.api.tick();
+  ok(env12.api.lastRoundEndAt() >= hold12 - 3000,
+    '⑧ 重进时上一轮还在跑 → 锚点仍是它自己的到期时刻，不是「现在」');
+  ok(env12.clicks.dstart === 0, '⑧ 上一轮还在跑 → 不发（防双开闸照旧生效）');
+
+  /* ============================================================
+   * ⑨ 现场读数持久化（2026-11-08 用户：「可以做持久化，就是刚才读的读数，
+   *   刷新后仍然记得，这也能降低重复发福袋的概率」）
+   *   验三件事：有效档案能接回来、过期档案整份丢弃、进行中凭据过期不背书。
+   *   真正的「重启浏览器」不好模拟，所以直接喂档案给恢复函数 ——
+   *   恢复逻辑才是这条链路的风险点。
+   * ============================================================ */
+  let env13 = await boot({ watch: true, auto: true, onStartClick: 'runningTimed' });
+  env13.api.setGapSec(120);
+  const nowF = Date.now();
+  ok(env13.api.applyFactForTest({
+    at: nowF,
+    hold: nowF + 5 * 60000,
+    roundEnd: nowF - 30000,
+    running: true,
+    runningUntil: nowF + 5 * 60000,
+    draw: 0,
+    name: '抽奖活动'
+  }) === true, '⑨ 有效档案能被接回来（返回 true）');
+  ok(env13.api.lastRoundEndAt() === nowF - 30000,
+    '⑨ 间隔起算锚点接回来了（不必按「现在」重算）');
+  ok(env13.api.gapWait() === 0,
+    '⑨ 档案说「还在跑」⇒ 不显示间隔倒计时（在跑时该报它自己的倒计时）');
+  ok(env13.api.badgeText() === '进行中',
+    '⑨ 「刚才有福袋在跑」被记住 → 圆钮显示进行中（不是未开始）');
+
+  /* ⑨-a 档案里只有锚点（上一轮已结束）→ 间隔接着上次的数走 */
+  let env13b = await boot({ watch: true, auto: true, onStartClick: 'runningTimed' });
+  env13b.api.setGapSec(120);
+  const nowG = Date.now();
+  ok(env13b.api.applyFactForTest({
+    at: nowG, hold: 0, roundEnd: nowG - 30000,
+    running: false, runningUntil: 0, draw: 0, name: ''
+  }) === true, '⑨ 只有结束锚点的档案同样能接回来');
+  ok(env13b.api.gapWait() > 80000 && env13b.api.gapWait() <= 91000,
+    '⑨ 间隔剩余 = 120 − 30 ≈ 90 秒（接着上次的数走）：' +
+    Math.round(env13b.api.gapWait() / 1000) + ' 秒');
+  ok(env13.win.sessionStorage.getItem('dycBagHoldDrawAt') !== null,
+    '⑨ 到期时刻同时写进 sessionStorage（刷新这条快路径也接得上）');
+
+  /* ⑨-b 超过 6 小时上限的档案整份丢弃（跨场残留不得冒充这一场） */
+  ok(env13.api.applyFactForTest({
+    at: nowF - 7 * 3600 * 1000,
+    hold: nowF + 60000,
+    roundEnd: nowF - 60000,
+    running: true,
+    runningUntil: nowF + 60000
+  }) === false, '⑨ 超过 6 小时的档案整份丢弃');
+
+  /* ⑨-c 进行中凭据已过期 → 不当成「还在跑」 */
+  let env14 = await boot({ watch: true, auto: true });
+  ok(env14.api.applyFactForTest({
+    at: Date.now(),
+    hold: 0,
+    roundEnd: 0,
+    running: true,
+    runningUntil: Date.now() - 1000,
+    draw: 0,
+    name: ''
+  }) === false, '⑨ 进行中凭据已过期 → 不恢复');
+  ok(env14.api.badgeText() === '未开始',
+    '⑨ 圆钮回「未开始」，不替过期读数背书');
+
+  /* ⑨-d 写盘内容：含写入时刻与间隔锚点（注入 storage 桩，验真实写入路径） */
+  let env15 = await boot({ watch: true, auto: true });
+  const bagStore = {};
+  env15.win.chrome = {
+    storage: {
+      local: {
+        get: function (k, cb) { const o = {}; o[k] = bagStore[k]; cb(o); },
+        set: function (o) { Object.keys(o).forEach(function (k) { bagStore[k] = o[k]; }); },
+        remove: function (k) { delete bagStore[k]; }
+      }
+    }
+  };
+  env15.api.setGapSec(60);
+  env15.api.tick();
+  env15.api.saveFactForTest();
+  const savedFact = bagStore['dycBagFact'];
+  ok(!!savedFact && typeof savedFact.at === 'number' && savedFact.roundEnd > 0,
+    '⑨ 写盘：档案含写入时刻与间隔锚点（' + (savedFact ? Object.keys(savedFact).join(',') : '无') + '）');
 
   summary();
 })().catch(function (e) {

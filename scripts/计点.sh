@@ -56,6 +56,23 @@ INFRA_CAP=1
 
 MODE="${1:---detail}"
 
+# 机械提醒:已提交但未回收的任务(2026-11-08)。
+# 「写过规则不等于会执行」—— 收工停在「已提交、未合并」的坑反复出现,
+# 所以每次查点都把它顶到眼前。不影响点数计算,也不改变退出码。
+# --count / --board 是给脚本与看板取数的,**不许插话**,否则解析会和版式一起坏。
+case "$MODE" in
+  --count|--board) ;;
+  *)
+    UNMERGED=$(bash "$HERE/check-unmerged.sh" 2>/dev/null)
+    if [ -n "$UNMERGED" ]; then
+      echo ""
+      echo "⚠️ 发现已提交但未回收的任务(除新功能外一律自动合并,别等用户口令):"
+      printf '%s\n' "$UNMERGED"
+      echo ""
+    fi
+    ;;
+esac
+
 if [ ! -f "$TODO_FILE" ]; then
   echo "[计点] 找不到 $TODO_FILE —— 待推送清单不存在,无法计点。" >&2
   exit 2

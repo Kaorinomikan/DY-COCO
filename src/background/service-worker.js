@@ -48,7 +48,7 @@
 // │ 发布会被直接中止。不需要靠人记。                                 │
 // └──────────────────────────────────────────────────────────────────┘
 // 全面整改：后台统一设置写入、私有历史与反馈来源截图，更新导入的开关定义。
-var DYC_BUILD = '26.11.07.1+sw30';
+var DYC_BUILD = '26.11.08.1+sw31';
 
 // classic worker，可以 importScripts（manifest 里没有设 type: module）
 importScripts('../shared/gitee.js', '../content/flags.js', '../shared/live-control-assets.js');
@@ -1156,17 +1156,19 @@ async function nudgeFeedbackPanelMode(tabId, mode) {
  *   · 纯展示数据:不碰更新链路,任何失败都不弹系统对话框。
  * ──────────────────────────────────────────────────────────────────── */
 var CL_CACHE_TTL = 5 * 60 * 1000;
-var clCache = { at: 0, data: null };
+var clCache = { at: 0, data: null, list: null };
 
-/* ★ 2026-11-06：取消「只展示 10 个」的硬截断。
+/* ★ 2026-11-07(#132 用户口径):「更新日志一次只展开 5 个,往下滑再继续展开」。
  *
- * 原先是 CL_LIST_SIZE = 10，因为 Gitee tags.atom 只给 10 条、且每多一版
- * 就多烧一次 GitHub 配额。现在两件事都变了：
- *   ① 标签源换成 /api/v5/tags?per_page=100，一次就能拿全（实测 68 个）；
- *   ② 各版解析结果按 tag 持久缓存，老版本不再重复消耗配额。
- * 所以窗口直接放开成全量：首屏先把缓存里的卡片画出来，剩下的边拉边补。
- */
+ * 版本标签列表仍是全量拿(标签源一次能拿全),但**日志正文按需分批拉**:
+ *   · 首屏只拉前 CL_PAGE_SIZE 个未缓存标签的 RELEASE_NOTES;
+ *   · 用户滑到底,前端发 {cmd:'more', tags:[…]},再拉下一批;
+ *   · 未展开的版本一个请求都不发。
+ * 为什么必须这样:.md 不走 CDN,每个未缓存标签固定烧 1 次 GitHub 匿名配额
+ * (60 次/小时);原来一次打开最多烧 60+,现在最多烧用户真正看到的那些。
+ * CL_MAX_ITEMS 退回它原本的语义:单个版本最多显示的要点条数。 */
 var CL_MAX_ITEMS = 10;
+var CL_PAGE_SIZE = 5;
 
 /* ★ 各版日志的持久缓存（2026-11-03，2026-11-06 扩容）
  *
@@ -1338,105 +1340,140 @@ async function buildChangelog(fresh, emit) {
     return;
   }
 
-  var tags;
-  try {
-    tags = await clFetchTags();
-  } catch (e) {
-    emit({ type: 'error', message: (e && e.message) || String(e) });
-    return;
-  }
-
-  // ★ 2026-11-06：全量展示，不再按条数截断。
-  //   标签源已换成能拿全的 API（实测 68 个），配额顾虑由「按 tag 持久缓存」解决。
-  //   标签本身已按版本降序，直接整份用。
-  var list = tags;
-
-  var cached = await clReadNotesCache();
-  var items = new Array(list.length);
-  var todo = [];
-  for (var i = 0; i < list.length; i++) {
-    var tag = list[i].tag;
-    if (Object.prototype.hasOwnProperty.call(cached, tag)) {
-      items[i] = clItemFromCache(tag, list[i].date, cached[tag]);
-    } else {
-      // 未缓存：先占位，稍后由 patch 事件补上（面板显示「读取中」）
-      items[i] = { tag: tag, date: list[i].date, notes: null, loading: true };
-      todo.push(i);
+  var list, items, cached;
+  var reuse = !fresh && clCache.data && clCache.list
+    && Date.now() - clCache.at < CL_CACHE_TTL;
+  if (reuse) {
+    // 5 分钟内的重开:列表与已拉结果直接复用,不再打仓库。
+    list = clCache.list;
+    items = clCache.data.items.slice();
+    cached = await clReadNotesCache();
+  } else {
+    var tags;
+    try {
+      tags = await clFetchTags();
+    } catch (e) {
+      emit({ type: 'error', message: (e && e.message) || String(e) });
+      return null;
+    }
+    list = tags;
+    cached = await clReadNotesCache();
+    items = new Array(list.length);
+    for (var i = 0; i < list.length; i++) {
+      var tag = list[i].tag;
+      if (Object.prototype.hasOwnProperty.call(cached, tag)) {
+        items[i] = clItemFromCache(tag, list[i].date, cached[tag]);
+      } else {
+        // 未缓存:先占位,滑到它时再拉(#132)。
+        items[i] = { tag: tag, date: list[i].date, notes: null, loading: true };
+      }
     }
   }
 
-  var data = {
-    items: items,
-    localVersion: chrome.runtime.getManifest().version,
-    webUrl: DYC_GITEE.TAGS_PAGE,
-    total: list.length,
-    pending: todo.length
-  };
-  // 首屏立刻出：缓存命中的版本马上可看，未命中的显示「读取中」。
-  // 68 个版本全读完约十几秒，不能让面板一直白屏。
-  // ★ 这里发的是 items 的**快照**：后续 patch 会替换数组元素，若直接发活引用，
-  //   拿到 done 的一方回头看会看到已被填满的数据，「首屏在读」这个状态就没了。
+  // 首屏立刻出:items 是全量快照(前端自己只展开前 5 个),缓存命中的版本
+  // 马上可看,未命中的显示「读取中」。★ 发的是快照不是活引用,理由同旧版。
   emit({
     type: 'done',
     data: {
       items: items.slice(),
-      localVersion: data.localVersion,
-      webUrl: data.webUrl,
-      total: data.total,
-      pending: data.pending
+      localVersion: chrome.runtime.getManifest().version,
+      webUrl: DYC_GITEE.TAGS_PAGE,
+      total: list.length,
+      pending: 0,
+      pageSize: CL_PAGE_SIZE
     }
   });
 
-  if (!todo.length) {
-    clCache = { at: Date.now(), data: data };
-    emit({ type: 'complete' });
-    return;
-  }
+  var job = clMakeJob(list, items, cached, emit);
+  // 只拉首屏那批(#132):其余等前端滑到底、按批来要。
+  var first = [];
+  for (var j = 0; j < list.length && first.length < CL_PAGE_SIZE; j++) first.push(list[j].tag);
+  await clFetchInto(job, first);
 
-  var dirty = false;
-  await clPool(todo.map(function (idx) { return list[idx]; }), CL_FILL_CONCURRENCY, function (t) {
-    return DYC_GITEE.fetchRawFile(t.tag, 'RELEASE_NOTES.md').then(function (buf) {
+  clCache = {
+    at: Date.now(),
+    data: {
+      items: items.slice(),
+      localVersion: chrome.runtime.getManifest().version,
+      webUrl: DYC_GITEE.TAGS_PAGE,
+      total: list.length,
+      pending: 0,
+      pageSize: CL_PAGE_SIZE
+    },
+    list: list
+  };
+  emit({ type: 'complete' });
+  return job;
+}
+
+/** 一次「打开日志面板」会话的上下文:列表、数据、缓存与回传函数。
+ *  Port 在面板开着期间常驻(#132 滑到底还要按批拉),每个 Port 一份。 */
+function clMakeJob(list, items, cached, emit) {
+  var index = {};
+  for (var i = 0; i < list.length; i++) index[list[i].tag] = i;
+  return { list: list, items: items, index: index, cached: cached, inflight: {}, dirty: false, emit: emit };
+}
+
+/**
+ * 保证这批 tag 的日志已拉取(已有结果/在途的跳过),拉完写持久缓存。
+ * #132:前端滑到哪批就拉哪批;未展开的版本一个请求都不发。
+ */
+async function clFetchInto(job, tags) {
+  var todo = [];
+  for (var i = 0; i < tags.length; i++) {
+    var tag = String(tags[i] || '');
+    var idx = job.index[tag];
+    if (idx === undefined) continue;
+    var it = job.items[idx];
+    if (it.notes || it.missing || it.error) continue;   // 已有结果
+    if (job.inflight[tag]) continue;                    // 在途,别重复烧配额
+    job.inflight[tag] = true;
+    todo.push(tag);
+  }
+  if (!todo.length) return;
+  await clPool(todo, CL_FILL_CONCURRENCY, function (t) {
+    return DYC_GITEE.fetchRawFile(t, 'RELEASE_NOTES.md').then(function (buf) {
       return { notes: clParseNotes(clDecodeUtf8(buf)) };
     }, function (e) {
       // ★ 区分两种失败（2026-11-06）：
       //   noRetry = 两个源都确认没有这个文件 ⇒ 该版本确实没附日志，可缓存；
-      //   其它（超时/5xx/限流）= 临时故障 ⇒ 只标错、不缓存，下次打开再试。
+      //   其它（超时/5xx/限流）= 临时故障 ⇒ 只标错、不缓存，下次再试。
       return { error: (e && e.message) || String(e), missing: !!(e && e.noRetry) };
     });
   }, function (done, total) {
-    emit({ type: 'progress', done: done, total: total });
+    job.emit({ type: 'progress', done: done, total: total });
   }, function (k, row) {
-    var idx = todo[k];
+    var tag = todo[k];
+    delete job.inflight[tag];
+    var idx = job.index[tag];
     if (idx === undefined) return;
-    var tag = list[idx].tag;
+    var date = job.list[idx].date;
     var patch = { type: 'patch', tag: tag };
 
     if (row && row.missing) {
-      // 两源都没有 → 确定性缺失，写进缓存，免得每次打开都白问一遍
-      items[idx] = { tag: tag, date: list[idx].date, notes: null, missing: true };
-      cached[tag] = { s: '', i: [], m: 1 };
-      dirty = true;
+      // 两源都没有 → 确定性缺失，写进缓存，免得以后再白问一遍
+      job.items[idx] = { tag: tag, date: date, notes: null, missing: true };
+      job.cached[tag] = { s: '', i: [], m: 1 };
+      job.dirty = true;
       patch.missing = true;
     } else if (row && row.error) {
-      // 临时故障：只坏这一张卡，不进缓存，下次打开会再试
-      items[idx] = { tag: tag, date: list[idx].date, error: row.error };
+      // 临时故障：只坏这一张卡，不进缓存，下次再试
+      job.items[idx] = { tag: tag, date: date, error: row.error };
       patch.error = row.error;
     } else {
       var nn = (row && row.notes) || null;
-      items[idx] = { tag: tag, date: list[idx].date, notes: nn };
-      cached[tag] = { s: (nn && nn.summary) || '', i: (nn && nn.items) || [], m: nn ? 0 : 1 };
-      dirty = true;
+      job.items[idx] = { tag: tag, date: date, notes: nn };
+      job.cached[tag] = { s: (nn && nn.summary) || '', i: (nn && nn.items) || [], m: nn ? 0 : 1 };
+      job.dirty = true;
       patch.notes = nn;
     }
-    emit(patch);
+    job.emit(patch);
   });
-
-  data.pending = 0;
   // 写失败不影响本次展示，只是下次还要再花配额。
-  if (dirty) await clWriteNotesCache(clTrimNotesCache(cached, tags));
-
-  clCache = { at: Date.now(), data: data };
-  emit({ type: 'complete' });
+  if (job.dirty) {
+    job.dirty = false;
+    await clWriteNotesCache(clTrimNotesCache(job.cached, job.list));
+  }
 }
 
 /**
@@ -1458,18 +1495,124 @@ function clItemFromCache(tag, date, c) {
 chrome.runtime.onConnect.addListener(function (port) {
   if (!port || port.name !== 'dyc-changelog') return;
   var dead = false;
+  var job = null;
   port.onDisconnect.addListener(function () { dead = true; });
   port.onMessage.addListener(function (msg) {
-    if (!msg || msg.cmd !== 'get') return;
-    buildChangelog(!!msg.fresh, function (ev) {
-      if (dead) return;
-      try { port.postMessage(ev); } catch (e) { dead = true; }
-    });
+    if (!msg) return;
+    if (msg.cmd === 'get') {
+      buildChangelog(!!msg.fresh, function (ev) {
+        if (dead) return;
+        try { port.postMessage(ev); } catch (e) { dead = true; }
+      }).then(function (j) { job = j; }, function () { /* 失败已 emit error */ });
+      return;
+    }
+    if (msg.cmd === 'more' && job && !dead) {
+      // #132:前端滑到底,把新展开那批的 tag 送来按需拉取。
+      clFetchInto(job, msg.tags || []).catch(function () { /* 单批失败不拖垮会话 */ });
+    }
   });
 });
 
 /**
- * 把中控台那套脚本补注入到当前标签页（2026-11-05）。
+ * 调一个 chrome API，同时接住「回调形态」与「Promise 形态」（2026-11-08）。
+ *
+ * 为什么必须两种都接：本机实际内核是 360 极速浏览器X，它对
+ * `chrome.scripting.*` 只给 Promise、回调永不触发的情况确实存在 —— 旧封装
+ * `chromeCb` 只等回调，于是探针每次 8 秒超时被判「探不到」，补注入直接放弃。
+ * 用户看到的现象就是「切进中控台一个按钮都没有，刷新一次又好了」。
+ *
+ * 两种形态谁先回来用谁，另一个的结果直接丢弃（同一调用不会执行两次：
+ * 回调与 Promise 反映的是同一次注入）。
+ *
+ * @param {function(function(*)): *} invoke 接收 done 回执的函数，返回值可能是 Promise
+ * @param {number} timeoutMs 超时上限
+ */
+function dualCall(invoke, timeoutMs) {
+  return new Promise(function (resolve, reject) {
+    var settled = false;
+    var timer = setTimeout(function () {
+      if (settled) return;
+      settled = true;
+      reject(new Error('调用超时'));
+    }, timeoutMs || 8000);
+
+    function fin(err, res) {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      if (err) reject(err instanceof Error ? err : new Error(String(err)));
+      else resolve(res);
+    }
+
+    try {
+      var ret = invoke(function (res) {
+        var e = chrome.runtime.lastError;
+        fin(e ? (e.message || String(e)) : null, res);
+      });
+      if (ret && typeof ret.then === 'function') {
+        ret.then(function (res) { fin(null, res); },
+          function (e) { fin((e && e.message) || String(e)); });
+      }
+    } catch (e) {
+      fin((e && e.message) || String(e));
+    }
+  });
+}
+
+/**
+ * 探「中控台脚本是否已在场」。
+ *
+ * 两条通道：新内核走 chrome.scripting 的 func；老内核（MV2 风格、仍保留
+ * tabs.executeScript）走 code 片段 —— 两者都在扩展的 isolated world 里执行，
+ * 读的是同一个 `window.__DYC_LIVE_CTRL_LOADED__`。
+ *
+ * @returns {Promise<boolean>}
+ */
+function probeLiveControlLoaded(tabId) {
+  var target = { tabId: tabId, frameIds: [0] };
+  if (chrome.scripting && chrome.scripting.executeScript) {
+    return dualCall(function (done) {
+      return chrome.scripting.executeScript({
+        target: target,
+        func: function () { return !!window.__DYC_LIVE_CTRL_LOADED__; }
+      }, done);
+    }, 6000).then(function (r) { return !!(r && r[0] && r[0].result); });
+  }
+  if (chrome.tabs && chrome.tabs.executeScript) {
+    return dualCall(function (done) {
+      return chrome.tabs.executeScript(tabId,
+        { code: 'window.__DYC_LIVE_CTRL_LOADED__===true' }, done);
+    }, 6000).then(function (r) { return !!(r && r[0]); });
+  }
+  return Promise.reject(new Error('本内核既无 chrome.scripting 也无 tabs.executeScript'));
+}
+
+/**
+ * 注入**单个**脚本文件。返回 Promise，失败即 reject（由调用方逐个记账）。
+ *
+ * 为什么必须逐个注入（2026-11-08）：
+ *   `executeScript({files: [26 个]})` 是一个整体调用，其中任一文件抛错，
+ *   整个调用就 reject，**后面的文件全部不执行** —— 而清单末位是 toolbar.js，
+ *   它不在，工具栏与所有按钮就都不出现。逐文件注入把「一处失败」的爆炸半径
+ *   压到那一个文件，并让失败文件可枚举、可写进诊断。
+ */
+function injectOneLiveFile(tabId, file) {
+  var target = { tabId: tabId, frameIds: [0] };
+  if (chrome.scripting && chrome.scripting.executeScript) {
+    return dualCall(function (done) {
+      return chrome.scripting.executeScript({ target: target, files: [file] }, done);
+    }, 10000);
+  }
+  if (chrome.tabs && chrome.tabs.executeScript) {
+    return dualCall(function (done) {
+      return chrome.tabs.executeScript(tabId, { file: file }, done);
+    }, 10000);
+  }
+  return Promise.reject(new Error('本内核既无 chrome.scripting 也无 tabs.executeScript'));
+}
+
+/**
+ * 把中控台那套脚本补注入到当前标签页（2026-11-05，健壮性重写 2026-11-08）。
  *
  * 为什么要补：content_scripts 只在导航时注入。中控台那条 matches 是
  * `…/live/control*`，而侧栏切页是 Garfish 微前端的 pushState —— document
@@ -1483,8 +1626,14 @@ chrome.runtime.onConnect.addListener(function (port) {
  *   · 其余模块会叠出第二套 observer 与定时器，讲解/福袋直接双开。
  * 所以标记（src/live/live-control-flag.js）必须在场即跳过。
  *
+ * 2026-11-08 改了三处（用户复报同一现象）：
+ *   ① 探针改 dualCall：只认回调会在这台内核上必超时，探不到就永不注入；
+ *   ② 逐文件注入：一处失败不再连坐后面的 toolbar.js；
+ *   ③ 注入后回探标记，把「装没装上」如实回报给页面侧探子，由它决定是否重试。
+ *
  * @param {Object} sender 消息发送者，取 tabId
- * @returns {Promise<{ok:boolean, skipped?:boolean, count?:number, error?:string}>}
+ * @returns {Promise<{ok:boolean, skipped?:boolean, installed?:boolean,
+ *                    count?:number, total?:number, failed?:string[], error?:string}>}
  */
 async function injectLiveControl(sender) {
   const tabId = sender && sender.tab && sender.tab.id;
@@ -1495,47 +1644,72 @@ async function injectLiveControl(sender) {
     return { ok: false, error: '注入清单缺失' };
   }
 
-  /* 与文件里其它注入点同一套兼容策略：先看 chrome.scripting 在不在。
-   * MV3 下 tabs.executeScript 已不保证存在，所以这里只报清楚原因，不硬回退。 */
-  const api = chrome.scripting;
-  if (!api || !api.executeScript) {
-    return { ok: false, error: '本内核没有 chrome.scripting，无法补注入' };
+  // 探标记：探到失败重试一次（偶发超时不等于通道不可用）
+  let loaded = false;
+  let probeErr = null;
+  for (let i = 0; i < 2; i++) {
+    try {
+      loaded = await probeLiveControlLoaded(tabId);
+      probeErr = null;
+      break;
+    } catch (e) {
+      probeErr = e;
+    }
   }
-
-  // 只补顶层框架：这些功能全部作用于顶层文档，子框架里注入会重复建 UI
-  const target = { tabId: tabId, frameIds: [0] };
-
-  let probe = null;
-  try {
-    probe = await chromeCb(function (done) {
-      api.executeScript({
-        target: target,
-        func: function () { return !!window.__DYC_LIVE_CTRL_LOADED__; }
-      }, done);
-    }, 8000);
-  } catch (e) {
-    /* 探不到就**不注**：宁可这一次没补上（用户刷新即可恢复），
+  if (probeErr) {
+    /* 探不到就**不注**：宁可这一次没补上（页面侧探子会按退避再问），
      * 也不能重复注入 —— anchor / dialog / row-scan 有顶层 const，
      * 第二次执行整段作废；其余模块会叠出第二套 observer 与定时器。 */
-    return { ok: false, error: '探针失败：' + ((e && e.message) || '未知原因') };
+    return { ok: false, error: '探针失败：' + ((probeErr && probeErr.message) || '未知原因') };
   }
-  if (probe && probe[0] && probe[0].result) return { ok: true, skipped: true };
+  if (loaded) return { ok: true, skipped: true, installed: true };
 
-  if (Array.isArray(assets.css) && assets.css.length && api.insertCSS) {
+  // 样式先补：失败不阻断脚本（先有样式再建 DOM，避免闪一下没样式）
+  if (Array.isArray(assets.css) && assets.css.length && chrome.scripting && chrome.scripting.insertCSS) {
     try {
-      await chromeCb(function (done) {
-        api.insertCSS({ target: target, files: assets.css }, done);
-      }, 8000);
+      await dualCall(function (done) {
+        return chrome.scripting.insertCSS({
+          target: { tabId: tabId, frameIds: [0] },
+          files: assets.css
+        }, done);
+      }, 10000);
     } catch (e) {
-      /* 样式失败不阻断脚本：先把功能拉起来，样式下次进来还会补。
-       * 硬中止的后果是「功能完全没有」，比「控件没样式」严重得多。 */
+      /* 硬中止的后果是「功能完全没有」，比「控件没样式」严重得多。 */
     }
   }
 
-  await chromeCb(function (done) {
-    api.executeScript({ target: target, files: assets.js }, done);
-  }, 15000);
-  return { ok: true, count: assets.js.length };
+  const failed = [];
+  let done = 0;
+  let firstErr = null;
+  for (let i = 0; i < assets.js.length; i++) {
+    const file = assets.js[i];
+    try {
+      await injectOneLiveFile(tabId, file);
+      done++;
+    } catch (e) {
+      failed.push(file);
+      if (!firstErr) firstErr = (e && e.message) || String(e) || '注入失败';
+      /* 头两个就失败 ⇒ 不是「某个文件坏」，而是这条通道根本不通。
+         此时继续跑完 26 个只会让页面侧多等十几秒，直接收手。 */
+      if (done === 0 && failed.length >= 2) break;
+    }
+  }
+
+  if (done === 0) {
+    return { ok: false, error: '脚本注入失败：' + (firstErr || '未知原因'), failed: failed };
+  }
+
+  // 回探：标记在 = 装了；标记不在 = 连 flags/标记文件都没跑起来，交给页面侧重试
+  let installed = false;
+  try { installed = await probeLiveControlLoaded(tabId); } catch (e) { installed = false; }
+
+  return {
+    ok: true,
+    installed: installed,
+    count: done,
+    total: assets.js.length,
+    failed: failed
+  };
 }
 
 /**

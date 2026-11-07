@@ -107,7 +107,9 @@ function cardOf(ui, tag) {
   return ui.all('.cl-card').find((c) => c.getAttribute('data-cl-tag') === tag) || null;
 }
 
-const firstScreen = {
+/** 首屏夹具(#132 起面板会持有 items 的克隆,但夹具本身仍按用例复制一份,
+ *  不让用例之间通过共享对象串味。) */
+const firstScreenBase = {
   localVersion: '26.11.06.1',
   webUrl: 'https://github.com/x/y/tags',
   total: 3,
@@ -118,6 +120,16 @@ const firstScreen = {
     { tag: 'v26.11.04.1', date: '2026-11-04T10:00:00Z', notes: null, loading: true }
   ]
 };
+function makeFirstScreen() {
+  return {
+    localVersion: firstScreenBase.localVersion,
+    webUrl: firstScreenBase.webUrl,
+    total: firstScreenBase.total,
+    pending: firstScreenBase.pending,
+    pageSize: 5,
+    items: firstScreenBase.items.map((it) => Object.assign({}, it))
+  };
+}
 
 let passed = 0;
 let failed = 0;
@@ -138,7 +150,7 @@ async function test(name, fn) {
 
     await test(label + '：首屏按 done 渲染全部卡片，未缓存的标为读取中', async () => {
       const { ui, port } = await openChangelog(kind);
-      port.emit({ type: 'done', data: firstScreen });
+      port.emit({ type: 'done', data: makeFirstScreen() });
       await turns();
       const list = cards(ui);
       assert.equal(list.length, 3, '应有 3 张卡，实得 ' + list.length);
@@ -151,7 +163,7 @@ async function test(name, fn) {
 
     await test(label + '：patch 就地补全单卡，其余卡片不受影响', async () => {
       const { ui, port } = await openChangelog(kind);
-      port.emit({ type: 'done', data: firstScreen });
+      port.emit({ type: 'done', data: makeFirstScreen() });
       await turns();
       const untouchedBefore = cardOf(ui, 'v26.11.06.1');
 
@@ -171,9 +183,43 @@ async function test(name, fn) {
       ui.win.close();
     });
 
+    await test(label + '：#132 首屏只展开 5 个，滑到底再展开一批并按批向后台要日志', async () => {
+      const { ui, port } = await openChangelog(kind);
+      const items = [];
+      for (let i = 1; i <= 10; i++) {
+        items.push({ tag: 'v26.11.06.' + (11 - i), date: '', notes: { summary: 's' + i, items: [] } });
+      }
+      port.emit({
+        type: 'done',
+        data: { localVersion: '26.11.06.1', webUrl: 'x', total: 10, pending: 0, pageSize: 5, items }
+      });
+      await turns();
+      assert.equal(cards(ui).length, 5, '首屏只应展开 5 张卡，实得 ' + cards(ui).length);
+      assert.match(statusText(ui, kind), /已展开 5 \/ 共 10/);
+      const scroller = kind === 'panel'
+        ? ui.q('[data-cl-list]').parentNode
+        : ui.q('#cl-list').parentNode;
+      scroller.dispatchEvent(new ui.win.Event('scroll'));
+      await turns();
+      assert.equal(cards(ui).length, 10, '滑到底应再展开一批到 10 张');
+      assert.match(statusText(ui, kind), /已展开 10 \/ 共 10/);
+      const more = port.fired.filter((m) => m && m.cmd === 'more');
+      assert.equal(more.length, 1, '应向后台发一次按批拉取');
+      assert.equal(
+        JSON.stringify(more[0].tags),
+        JSON.stringify(items.slice(5).map((it) => it.tag)),
+        '要的应是新展开那批的 tag'
+      );
+      scroller.dispatchEvent(new ui.win.Event('scroll'));
+      await turns();
+      assert.equal(port.fired.filter((m) => m && m.cmd === 'more').length, 1,
+        '已见底后再滑不应重复请求');
+      ui.win.close();
+    });
+
     await test(label + '：两源都没有的版本标为缺失，临时失败标为拉取失败', async () => {
       const { ui, port } = await openChangelog(kind);
-      port.emit({ type: 'done', data: firstScreen });
+      port.emit({ type: 'done', data: makeFirstScreen() });
       await turns();
       port.emit({ type: 'patch', tag: 'v26.11.05.1', missing: true });
       port.emit({ type: 'patch', tag: 'v26.11.04.1', error: '更新源连接超时（30 秒无响应）' });
@@ -184,9 +230,9 @@ async function test(name, fn) {
       ui.win.close();
     });
 
-    await test(label + '：complete 后状态行给出版本账，并断开连接', async () => {
+    await test(label + '：complete 后状态行给出版本账，且 Port 保持连接（#132 滑到底还要按批拉）', async () => {
       const { ui, port } = await openChangelog(kind);
-      port.emit({ type: 'done', data: firstScreen });
+      port.emit({ type: 'done', data: makeFirstScreen() });
       await turns();
       port.emit({ type: 'patch', tag: 'v26.11.05.1', notes: { summary: 'x', items: [] } });
       port.emit({ type: 'patch', tag: 'v26.11.04.1', missing: true });
@@ -195,13 +241,13 @@ async function test(name, fn) {
       await turns();
       const status = statusText(ui, kind);
       assert.match(status, /3/, '状态行应带总版本数：' + status);
-      assert.equal(port.disconnected, true, 'complete 后应断开 Port');
+      assert.equal(port.disconnected, false, 'complete 后 Port 应保持连接(#132)');
       ui.win.close();
     });
 
     await test(label + '：complete 之后迟到的 patch 不会破坏已渲染内容', async () => {
       const { ui, port } = await openChangelog(kind);
-      port.emit({ type: 'done', data: firstScreen });
+      port.emit({ type: 'done', data: makeFirstScreen() });
       await turns();
       port.emit({ type: 'complete' });
       await turns();

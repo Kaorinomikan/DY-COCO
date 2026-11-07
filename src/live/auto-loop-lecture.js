@@ -292,7 +292,7 @@
     /* ★ 无限模式(2026-11-05):开关 + 守夜账本。全部只在内存里,不落盘 ——
      *   开关值单独存 INFINITE_KEY;守夜进度、配额一律不记忆,
      *   刷新后从「按设定间隔重新起算」开始,避免恢复一个过期倒计时。 */
-    infinite: false,        // 无限模式开关(缺省关)
+    infinite: false,        // 无限模式开关(缺省开,见 setup 的读盘口径)
     vigilAt: 0,             // 进守夜的时刻
     vigilLeft: 0,           // 上次退出守夜的时刻(抖动抑制用:60 秒内二次进入不重新加密)
     vigilWhy: '',           // 为什么进守夜(文案与诊断)
@@ -303,6 +303,12 @@
     resumeAt: 0,            // 下一次允许补讲的时刻(冷却)
     resumeFails: 0,         // 连续补讲失败次数
     lastBtnSeen: 0,         // 最后一次看见任何「讲解 / 取消讲解」按钮的时刻(30 分钟兜底)
+    /* ★ 2026-11-08 待命跟随(passive):1 = 用户刚取消讲解,循环在「等下一个品」。
+     *   与普通守夜的区别只有一条:**绝不主动点「讲解」** ——
+     *   普通守夜看到按钮翻回「讲解」会当拍补讲(接上同一个品),
+     *   而待命是"这个品我不看了",补讲等于把用户刚关掉的讲解又点开。
+     *   等页面出现**任意**正在讲解的商品(主播自己开的/平台连的)才接管。 */
+    passive: 0,
     vigilPaintAt: 0         // 守夜文案上次刷新时刻(秒级刷新,不另开定时器)
   };
 
@@ -595,7 +601,18 @@
    * 现在直接在**捕获阶段**接真人点击:按钮写着 取消/结束/停止讲解 ⇒ 立刻停表 + 中止在跑的链。
    * ★ 只认 e.isTrusted —— 我们自己的 fireClick 是合成事件,必须放过,
    *   否则每轮「取消→续讲」都会被自己判成「用户取消」。
+   *
+   * ★ 2026-11-07(#133「无限循环模式会自动停止」):
+   *   实机 timeline 四次停表(10:54:44 / 11:03:51 / 11:26:09 / 11:33:42)全部出自这里,
+   *   另外四个出口一条日志都没有。最后一次尤其不对:11:33:41.6 用户点的是**导航搜索框**
+   *   (#dyb-nav-input),1.15 秒后就判成了「用户手动取消讲解」—— 点搜索框不可能是取消讲解。
+   *   能把两者连起来的只有一条链:平台的讲解卡/浮层盖在列表上方,真人点那一下时
+   *   捕获阶段读到的「取消讲解」在浮层里,不在商品行里。
+   *   ⇒ 对 DOM 是真点击,对循环却不等于「停掉整条循环」。
+   *   所以把命中拆两档 + 加复核(详见函数内注释)。
    * ========================================================== */
+  var CANCEL_CONFIRM_MS = 800;    // 行内取消点下去后,等标记真消失才停表
+  var cancelProbeSeq = 0;         // 复核令牌:连点两次时只认最后一次
   function onUserCancelClick(e) {
     if (!e || !e.isTrusted) return;
     if (!state.on) return;
@@ -614,15 +631,66 @@
       el = el.parentElement;
     }
     if (s !== '取消讲解' && s !== '结束讲解' && s !== '停止讲解') return;
-    diagOnce('user-cancel', '用户手动取消讲解 ⇒ 立即停表');
-    var who = productName();                     // 「谁在被执行」先取,reset 之后 state 就空了
-    var value = stopValue();                     // 「已停止 · 共 N 轮」也先取
+
+    /* 命中元素的落点归属:它到底在商品行里,还是在讲解卡 / 浮层里?
+     * 判据只用结构,不用坐标 —— 缩放、transform 都会让坐标算错。 */
+    var hit = el;
+    var hitInfo = '<' + String(hit.tagName || '').toLowerCase() + '>「' + s + '」'
+      + ' 距上次合成点击 ' + Math.round(Date.now() - lastSelfClickAt) + 'ms';
+    var list = [];
+    try { list = rows(); } catch (e1) { list = []; }
+    var inRow = false;
+    for (var j = 0; j < list.length; j++) {
+      if (list[j] === hit || list[j].contains(hit)) { inRow = true; break; }
+    }
+    if (!inRow) {
+      /* 行集合抓不全时(虚拟滚动间隙)再用平台行容器的属性复核一次。 */
+      var up = hit;
+      for (var k = 0; k < 12 && up && up !== document.body; k++) {
+        if (up.getAttribute && up.getAttribute('data-rbd-draggable-id')) { inRow = true; break; }
+        up = up.parentElement;
+      }
+    }
+    if (list.length && !inRow) {
+      /* 浮层里的取消讲解 = 用户关掉了一张卡,不是要停整条循环。
+       * 不停表:下一轮自己会按原节奏弹卡/续讲(无限模式尤其不能因为这一下就死)。 */
+      noteDiag('取消讲解命中｜' + hitInfo + '｜不在商品行内(讲解卡/浮层) ⇒ 只关卡片,循环继续');
+      return;
+    }
+
+    /* 行内点击:先掐断在跑的链(别再补点一下),800ms 后复核这一行是不是真的不讲了。
+     * 平台把按钮在「弹出讲解卡 / 讲解 / 取消讲解」之间同位翻转,
+     * 真人在那一刻顺手点到,标记根本不会消失 —— 那种情况继续循环。 */
     abortCycle();
-    setOn(false, true);
-    /* 2026-10-27:这条也写进盒子的 cycle 那条(而不是新加一行)——
-     * 否则盒子会一直停在「已续讲 · 第 N 轮」,让事后回看的人以为还在跑。
-     * 段位同口径:值=商品名,状态进右端。 */
-    boxNote(BOX_CYCLE, 'info', who, value + ' · 手动取消');
+    var tok = ++cancelProbeSeq;
+    noteDiag('取消讲解命中｜' + hitInfo + '｜' + (inRow ? '在商品行内' : '行结构量不到')
+      + ' ⇒ ' + CANCEL_CONFIRM_MS + 'ms 后复核讲解标记');
+    setTimeout(function () {
+      if (tok !== cancelProbeSeq) return;        // 期间又点了一次,以后者为准
+      if (!state.on) return;
+      var rowNow = null;
+      try { rowNow = findRowByKey(); } catch (e2) { rowNow = null; }
+      var still = false;
+      if (rowNow) { try { still = isLecturing(rowNow); } catch (e3) { still = false; } }
+      if (still) {
+        noteDiag('取消讲解复核｜该行仍显示讲解中 ⇒ 判为误触,继续循环');
+        return;
+      }
+      var who = productName();                   // 「谁在被执行」先取,reset 之后 state 就空了
+      var value = stopValue();                   // 「已停止 · 共 N 轮」也先取(setOn 之后 state 就清了)
+      /* ★ 2026-11-08 用户口径:「点了取消讲解不应该停,而是保持等待下一个讲解的品开始讲解才继续跟进」。
+       *   旧版这里 setOn(false, true) 硬停 —— 一次顺手取消、一次误判,整场循环就没了,
+       *   用户以为是「不知为何自己停了」,还得手动重开开关。
+       *   现在交给待命态接手:不点、不搜、不补讲这个品,等页面上出现新的讲解就跟上。
+       *   ⚠ 唯一的真停在 30 分钟兜底(距上一次循环介入超过 30 分钟,用户 2026-11-08 认可)。 */
+      diagOnce('user-cancel', '用户手动取消讲解(复核后确认) ⇒ 进待命,等下一个讲解的商品');
+      if (enterVigil('手动取消', true)) return;   // 消息由 enterVigil 统一发一条,这里不再重复
+      setOn(false, true);
+      /* 2026-10-27:这条也写进盒子的 cycle 那条(而不是新加一行)——
+       * 否则盒子会一直停在「已续讲 · 第 N 轮」,让事后回看的人以为还在跑。
+       * 段位同口径:值=商品名,状态进右端。 */
+      boxNote(BOX_CYCLE, 'info', who, value + ' · 手动取消');
+    }, CANCEL_CONFIRM_MS);
   }
 
 
@@ -2327,6 +2395,12 @@
        * 一直挂着会把真正有用的"守了多久 / 探了几次"挤没了。 */
       var why = (Date.now() - state.vigilAt < 60000 && state.vigilWhy)
         ? ' · ' + state.vigilWhy : '';
+      /* 待命:不写「补讲」—— 待命期压根不会去点,写了反而让人以为它随时会动手。 */
+      if (state.passive) {
+        refs.r3.textContent = '待命中 ' + fmtLeft(Date.now() - state.vigilAt) +
+          ' · 探 ' + state.probeCount + ' 次 · 等下一个讲解' + why;
+        return;
+      }
       refs.r3.textContent = '无限 · 守候中 ' + fmtLeft(Date.now() - state.vigilAt) +
         ' · 探 ' + state.probeCount + ' 次' + why +
         (state.resumeFails ? ' · 补讲 ' + state.resumeFails + ' 次未成' : '');
@@ -2928,10 +3002,11 @@
       slot.textContent = state.busyLabel || '定位中';
     } else if (state.phase === 'vigil') {
       /* 守夜:循环还活着,但页面上什么都不做。胶囊用 wait(黄)而不是 err(红)——
-       * 红是"出错了",黄是"还在等",语义不同。槽里固定 3 个字,宽度与「待讲解」一致。 */
+       * 红是"出错了",黄是"还在等",语义不同。槽里固定 3 个字,宽度与「待讲解」一致。
+       * 待命(手动取消后)另用「待命中」:它不会补讲,用户得知道这一档不会自己动手。 */
       cap.classList.add('wait');
-      key = 'vigil';
-      slot.textContent = '守候中';
+      key = state.passive ? 'passive' : 'vigil';
+      slot.textContent = state.passive ? '待命中' : '守候中';
     } else if (state.phase === 'run') {
       cap.classList.add('on');
       var left = fmtLeft(state.nextAt - Date.now());
@@ -3018,9 +3093,13 @@
         state.seconds = isFinite(seconds) ? snapSec(Math.max(15, seconds)) : SEC_DEF;
         state.on = r[ENABLED_KEY] !== false;
         state.stopped = !state.on;
-        /* 无限模式:缺省关(用户 2026-11-05 定「这个按钮默认是关闭的,有记忆功能」)。
-         * 只认真正的 true —— 旧版本没这个键时是 undefined,必须落回 false。 */
-        state.infinite = r[INFINITE_KEY] === true;
+        /* ★ 2026-11-08 口径变更(取代 2026-11-05「默认关闭」):
+         *   用户原话:「经常我没有关掉循环讲解的按钮,但是不知为何它就停止要我手动触发开启,
+         *   我不希望这样子,而是让它待命直到发现下一个讲解的品」。
+         *   ⇒ 「接不上就停」这一侧不能当默认:一停就得人肉重开,夜间无人值守等于停摆。
+         *   缺省开 = 待命;只有**显式关过**(存了布尔 false)才是关,记忆功能照旧。
+         *   旧版本没这个键时是 undefined ⇒ 落回开。 */
+        state.infinite = !(r[INFINITE_KEY] === false || r[INFINITE_KEY] === 0);
         /* 从存盘恢复「开」时也要记下起跑时刻,否则报告里「节奏」会算成 0 秒/轮
          * (实机 02:39:36 就是这个现象:完成 4 次、已跑 0 秒)。 */
         if (state.on) { state.runSince = Date.now(); state.cycles = 0; }
@@ -3115,6 +3194,7 @@
      * 注意 relocLog 也清 —— 用户主动关掉再开,等于重置一次,这是他的明确动作。 */
     state.vigilAt = 0;
     state.vigilLeft = 0;
+    state.passive = 0;
     state.vigilWhy = '';
     state.probeAt = 0;
     state.probeCount = 0;
@@ -4351,11 +4431,23 @@
    * 进守夜。**不停表、不报"已停止"** —— 这是无限模式与旧行为的唯一分叉点。
    * 返回 true 表示已接管(调用方立刻 return,不再走原来的停表逻辑)。
    */
-  function enterVigil(why) {
+  function enterVigil(why, passive) {
     if (!state.on) return false;
-    if (state.phase === 'vigil') return true;      // 已经在守,不重复记账
+    if (state.phase === 'vigil') {
+      /* 已经在守:允许「待命」覆盖普通守夜(用户取消讲解的意图优先级最高),
+       * 反方向永远不允许 —— 若让普通守夜把待命降级成"补讲",等于把用户刚关掉的讲解又点开。
+       * ⚠ 升级成待命必须重画:否则胶囊还挂着「守候中」,用户看不出这一档已经不会补讲了。 */
+      if (passive && !state.passive) {
+        state.passive = 1;
+        noteDiag('守夜 ⇒ 待命(手动取消覆盖):' + (why || ''));
+        boxNote(BOX_FAIL, 'warn', productName(), '待命中 · 等下一个讲解');
+        paint();
+      }
+      return true;
+    }
     var now = Date.now();
     state.phase = 'vigil';
+    state.passive = passive ? 1 : 0;
     state.vigilAt = now;
     state.vigilWhy = why || '';
     state.probeCount = 0;
@@ -4365,6 +4457,9 @@
     state.resumeAt = 0;
     state.resumeFails = 0;
     if (!state.lastBtnSeen) state.lastBtnSeen = now;
+    /* 待命的 30 分钟兜底从「最后一次真动作」起算;从没动过就从现在起算,
+     * 否则刚开启就取消会当场被判超时。 */
+    if (!state.lastShotAt) state.lastShotAt = now;
     /* 失败计数全部清零:守夜不是失败态,是等待态。
      * 留着它们只会让下次判死提前触发(而无限模式下判死本来就不该存在)。 */
     state.fails = 0;
@@ -4374,8 +4469,14 @@
     state.failSince = 0;
     state.status = null;
     state.busyLabel = '';
-    noteDiag('进守夜(无限模式):' + (why || ''));
-    boxNote(BOX_FAIL, 'warn', productName(), '守候中' + (why ? ' · ' + why : '') + ' · 不停表');
+    if (state.passive) {
+      noteDiag('进待命(手动取消后等下一个讲解):' + (why || ''));
+      boxNote(BOX_FAIL, 'warn', productName(),
+        '待命中' + (state.round ? ' · 共 ' + state.round + ' 轮' : '') + ' · 等下一个');
+    } else {
+      noteDiag('进守夜(无限模式):' + (why || ''));
+      boxNote(BOX_FAIL, 'warn', productName(), '守候中' + (why ? ' · ' + why : '') + ' · 不停表');
+    }
     paint();
     return true;
   }
@@ -4384,6 +4485,7 @@
   function resumeToWait(now, why) {
     state.vigilLeft = now;
     state.phase = 'run';
+    state.passive = 0;              // 待命只活到接上为止;回到倒计时就没有"不补讲"这条约束了
     state.startedAt = now;
     state.nextAt = now + intervalMs();
     state.lastShotAt = now;
@@ -4421,12 +4523,87 @@
   }
 
   /**
+   * 待命期:页面上**任意**一行正在讲解 ⇒ 返回它。
+   * 只读,不滚不点 —— 为了发现视野外的商品去滚动,等于把页面又抢回来,
+   * 与"待命"这个语义正相反(也正是用户抱怨过的"3 次全局滚动搜索")。
+   * 优先认按钮文案(取消讲解 / 弹出讲解卡),其次认行内「讲解中」标记。
+   */
+  function findAnyLecturingRow() {
+    var list = [];
+    try { list = rows(); } catch (e) { list = []; }
+    var markRow = null;
+    for (var i = 0; i < list.length; i++) {
+      var r = list[i];
+      var b = null;
+      try { b = findLectureBtn(r); } catch (e) { b = null; }
+      var k = b ? kindOf(b) : '';
+      if (k === 'stop' || k === 'pop') return r;
+      if (!markRow) {
+        var lt = false;
+        try { lt = isLecturing(r); } catch (e) { lt = false; }
+        if (lt) markRow = r;
+      }
+    }
+    return markRow;
+  }
+
+  /** 待命接上:把那条正在讲的商品认成新目标,回到正常倒计时。 */
+  function adoptPassiveRow(row) {
+    var now = Date.now();
+    var held = state.vigilAt ? now - state.vigilAt : 0;
+    var key = '', name = '';
+    try { key = rowKey(row) || ''; } catch (e) { key = ''; }
+    try { name = rowName(row) || ''; } catch (e) { name = ''; }
+    if (key) state.key = key;
+    if (name) state.product = name;
+    state.round += 1;
+    state.cycles += 1;
+    noteDiag('待命接上:' + (name || key || '未具名') + '(待命 ' + Math.round(held / 1000) + ' 秒)');
+    resumeToWait(now, '接上新的讲解');
+    boxNote(BOX_CYCLE, 'success', productName(),
+      '待命 ' + fmtLeft(held) + ' 后接上 · 第 ' + state.round + ' 轮');
+    paint();
+  }
+
+  /**
+   * 待命拍点(2026-11-08 用户定)。
+   * ----------------------------------------------------------
+   * 与 normal vigil 的区别:**绝不点「讲解」**。用户刚亲手取消了这一品的讲解,
+   * 我们再把按钮点回去,等于推翻他的动作。只等页面自己出现"某个品在讲"。
+   * 唯一的停:距上一次循环真正介入(成功一轮 / 接上)超过 30 分钟。
+   */
+  function passiveTick(now) {
+    if (now < state.probeAt) {
+      if (now - (state.vigilPaintAt || 0) >= 1000) {
+        state.vigilPaintAt = now;
+        paintStatusLine();
+      }
+      return;
+    }
+    state.probeAt = now + probeGap();
+    state.probeCount += 1;
+    if (userBusy()) { noteDiag('待命探针让路:用户正在操作'); return; }
+    /* ★ 30 分钟兜底(用户 2026-11-08 认可):判据是 lastShotAt(真动作),不是 lastBtnSeen。
+     *   待命期本来就不点,用"看见按钮"计时会永远不算超时 —— 一条没人管的直播能挂一整夜。 */
+    var lastAct = state.lastShotAt || state.vigilAt;
+    if (now - lastAct > VIGIL_DEAD_MS) {
+      stopVigil('超过 30 分钟没有新的讲解');
+      return;
+    }
+    var row = findAnyLecturingRow();
+    if (!row) { noteDiag('待命:暂时没有商品在讲解,继续等'); return; }
+    adoptPassiveRow(row);
+  }
+
+  /**
    * 守夜拍点。**每拍只读 DOM,绝不点击** —— 点击一律走 doVigilResume。
    * 由 checkNow 在 phase==='vigil' 时直接调用,2 秒一拍,未到 probeAt 时立即返回。
    */
   function vigilTick() {
     if (!state.on || state.phase !== 'vigil' || state.busy) return;
     var now = Date.now();
+    /* 待命跟随单独一条路:只扫"有没有品在讲",不补讲、不重定位。 */
+    if (state.passive) { passiveTick(now); return; }
     /* 30 分钟兜底:一个「讲解」按钮都没见过 ⇒ 认定已离开商品页 / 列表空了。
      * 这是无限模式唯一会自己停的条件,其余一律守到底。 */
     if (now - state.lastBtnSeen > VIGIL_DEAD_MS) {
@@ -4974,6 +5151,9 @@
       /* 2026-11-06 弹卡优先通道是否真的在跑:点了多少次 / 确认仍在讲多少次 /
        * 多少次没有可用按钮(后者持续增长 ⇒ 平台又改版了,已自动退回老流程)。 */
       pop: { tries: state.popTries || 0, ok: state.popOk || 0, none: state.popNone || 0 },
+      /* 2026-11-08:0 = 没在待命;1 = 手动取消后待命(等下一个讲解的商品,期间绝不点讲解)。 */
+      passive: state.passive || 0,
+      infinite: !!state.infinite,
       secondsLeft: state.nextAt ? Math.round((state.nextAt - Date.now()) / 1000) : null,
       /* 2026-11-01 统一闹钟活体证据:n = 收过几拍,last = 距今几秒(null = 一拍没收到)。
          切到后台之后循环还动不动,看这两个数就知道,不用再靠猜。 */

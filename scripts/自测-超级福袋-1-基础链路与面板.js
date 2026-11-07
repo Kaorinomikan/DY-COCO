@@ -137,10 +137,11 @@ const {
   ok(env.clicks.s1 === 1, '⑨ 失败后不立即连点（只点过一次）');
   ok(env.byType('alert').length === 1, '⑨ 失败只报一条 alert');
   /* 文案只承诺「会自己再试」，不暴露间隔/次数/复核动作（2026-11-04 用户：
-   * 「不需要跟客户讲太明白操作原理」）。反向断言更稳：不绑死具体措辞。 */
-  ok(/自动再试|自动重试|自动补/.test(env.byType('alert')[0].full),
+   * 「不需要跟客户讲太明白操作原理」）。反向断言更稳：不绑死具体措辞。
+   * 2026-11-08 改阶梯后措辞是「还会按阶梯自查，直到读到结果或你手动停」。 */
+  ok(/自动再试|自动重试|自动补|自查/.test(env.byType('alert')[0].full),
     '⑨ 停止播报交代「会自动补」 [' + env.byType('alert')[0].full + ']');
-  ok(/秒后重试/.test(env.byType('alert')[0].count || ''),
+  ok(/秒后(重试|自查)/.test(env.byType('alert')[0].count || ''),
     '⑨ 自动发福袋失败交代「多少秒后重试」：' + env.byType('alert')[0].count);
   ok(!/复核|停机|秒没读到|进行中」/.test(env.byType('alert')[0].full),
     '⑨ 停止播报不暴露内部机制（复核次数 / 停机 / 校验秒数）');
@@ -751,10 +752,14 @@ const {
     '㊦① 标签按真实比例定位：' + labs.map(function (e) { return e.style.left; }).join(' / '));
   /* ㊦① 尺寸与层级（用户 05:26「按钮又觉得做的太大了，刻度线你放在上面」） */
   const cssText = sh.querySelector('style').textContent;
-  ok(/\.rail\{[^}]*top:12px[^}]*height:8px/.test(cssText) && /\.thumb\{[^}]*width:18px/.test(cssText),
+  /* 2026-11-08：两条滑条的样式定义合并成 `.rail,.grail{...}` 这类成对选择器，
+   * 所以这里不再绑死「选择器后紧跟 {」的写法，只在类名后允许逗号/伪类等前缀。
+   * 断言约束的是**几何值**（轨道 8px、圆钮 18px），换了写法不该红。 */
+  ok(/\.rail[^{]*\{[^}]*top:12px[^}]*height:8px/.test(cssText) &&
+     /\.thumb[^{]*\{[^}]*width:18px/.test(cssText),
     '㊦① 轨道 8px / 圆钮 18px（比上一版 22px 收小）');
-  const railTop = +( /\.rail\{[^}]*top:(\d+)px/.exec(cssText) || [0, 0])[1];
-  const mkTop = +( /\.mk\{[^}]*top:(\d+)px/.exec(cssText) || [0, 0])[1];
+  const railTop = +( /\.rail[^{]*\{[^}]*top:(\d+)px/.exec(cssText) || [0, 0])[1];
+  const mkTop = +( /\.mk[^{]*\{[^}]*top:(\d+)px/.exec(cssText) || [0, 0])[1];
   ok(mkTop < railTop, '㊦① 刻度线在轨道**上方**（刻度 top ' + mkTop + 'px < 轨道 top ' + railTop + 'px）');
 
   /* ㊦① 两端不出界（2026-11-02 用户截图：「这个滑动条，按钮拉到最左边最右边
@@ -764,12 +769,16 @@ const {
   const tin = sh.querySelector('.tk > .in');
   ok(!!tin && !!tin.querySelector('.thumb') && tin.querySelectorAll('.mk').length === 8,
     '㊦① 刻度与圆钮同在一个内缩域里（.tk > .in），左沿才跟轨道对齐');
-  const insetM = /\.in\{[^}]*left:(\d+)px[^}]*right:(\d+)px/.exec(cssText);
+  const insetM = /\.in[^{]*\{[^}]*left:(\d+)px[^}]*right:(\d+)px/.exec(cssText);
   const inset = insetM ? +insetM[1] : -1;
-  const rNorm = (+( /\.thumb\{[^}]*width:(\d+)px/.exec(cssText) || [0, 0])[1]) / 2;
+  const rNorm = (+( /\.thumb[^{]*\{[^}]*width:(\d+)px/.exec(cssText) || [0, 0])[1]) / 2;
   const rBig = (+( /\.tk:hover \.thumb[^{]*\{[^}]*width:(\d+)px/.exec(cssText) || [0, 0])[1]) / 2;
-  ok(inset >= rBig && inset >= rNorm && rBig > 0,
-    '㊦① 内缩 ' + inset + 'px ≥ 圆钮半径（常态 ' + rNorm + 'px / 放大 ' + rBig + 'px），拉到头也不越过轨道端点');
+  /* 2026-11-08 口径收紧：从「≥ 半径（相切）」改成「> 半径（留余量）」。
+   * 相切时圆钮外沿正好压在轨道端点上，加上光环看着就是凸出去一块 ——
+   * 用户这次报的「端末最尽头还有突出」正是这一态。 */
+  ok(inset > rBig && inset > rNorm && rBig > 0,
+    '㊦① 内缩 ' + inset + 'px 大于圆钮半径（常态 ' + rNorm + 'px / 放大 ' + rBig +
+    'px），拉到头也留 ' + (inset - rBig) + 'px 余量');
   const thumbNow = parseFloat(tin.querySelector('.thumb').style.left);
   /* 不绑死 calc 的子句顺序：jsdom/cssstyle 会把 `A + k * (B)` 规范成
    * `A + k * (B)` 或 `A + k*(B)` 之类，顺序也不保证与源码一致。

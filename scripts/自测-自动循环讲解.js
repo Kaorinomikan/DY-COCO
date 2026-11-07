@@ -928,10 +928,39 @@ ok('还原滚动位置前停 350ms(让用户看见它真在找) #115;被中止�
   /if \(moved && !aborted\(mark\)\) await sleep\(350\)/.test(src));
 
 /* ---------------- E. 2026-10-27 手动取消 / 强制停止 / 别乱找 ---------------- */
-ok('用户手动点「取消讲解」⇒ 捕获阶段立刻停表(只认 isTrusted,放过自己的合成点击)',
+ok('用户手动点「取消讲解」⇒ 捕获阶段接住(只认 isTrusted,放过自己的合成点击)',
   /function onUserCancelClick/.test(src) && /!e\.isTrusted\) return;/.test(src) &&
-  /addEventListener\('click', onUserCancelClick, true\)/.test(src) &&
-  /abortCycle\(\);\s*\n\s*setOn\(false, true\);/.test(src));
+  /addEventListener\('click', onUserCancelClick, true\)/.test(src));
+
+/* ---------------- G. 2026-11-07 #133(无限模式自行停止) ---------------- */
+/* 实机四次停表全出自 onUserCancelClick,最后一次真人点的是导航搜索框 ⇒
+ * 命中元素得先判「在不在商品行里」,停表前还要复核讲解标记真的没了。 */
+ok('#133 取消讲解落在讲解卡/浮层(不在任何商品行内)⇒ 只关卡片,循环继续(不停表)',
+  /var inRow = false;/.test(src) &&
+  /if \(list\[j\] === hit \|\| list\[j\]\.contains\(hit\)\) \{ inRow = true; break; \}/.test(src) &&
+  /if \(list\.length && !inRow\) \{/.test(src) &&
+  /不在商品行内\(讲解卡\/浮层\) ⇒ 只关卡片,循环继续/.test(src));
+
+ok('#133 行内「取消讲解」点下去后要复核 800ms,标记还在则判误触、继续循环',
+  /CANCEL_CONFIRM_MS = 800/.test(src) &&
+  /取消讲解复核｜该行仍显示讲解中 ⇒ 判为误触,继续循环/.test(src) &&
+  /still = isLecturing\(rowNow\)/.test(src));
+
+ok('#133 停表(setOn false)只在复核回调里发生,点击当场不再直接停',
+  (function () {
+    const i = src.indexOf('function onUserCancelClick');
+    if (i < 0) return false;
+    const iTimer = src.indexOf('setTimeout(function () {', i);
+    const iSet = src.indexOf('setOn(false, true);', i);
+    const iBack = src.indexOf('function txt', i);
+    return iTimer > i && iSet > iTimer && (iBack < 0 || iSet < iBack);
+  })());
+
+ok('#133 连点两次以最后一次为准(复核令牌),且诊断带命中元素与距上次合成点击毫秒数',
+  /var tok = \+\+cancelProbeSeq;/.test(src) &&
+  /if \(tok !== cancelProbeSeq\) return;/.test(src) &&
+  /距上次合成点击/.test(src));
+
 ok('关胶囊 / 关总闸 ⇒ 中止正在跑的那条链(能强制停止)',
   /function abortCycle/.test(src) && /abortSeq \+= 1/.test(src) &&
   (function () {
