@@ -66,6 +66,7 @@
     chrome.storage.local.get('dybDebug', function (r) {
       if (chrome.runtime.lastError) return;
       dybDebugOn = !!(r && r.dybDebug);
+      scheduleMark();
 
       // ⚠️ 这里**不再挂面板**(2026-10-18 用户改口径)。
       // 原实现在此补一次 boot() 把面板挂出来 —— 用户反馈「开着调试模式时那块
@@ -113,6 +114,7 @@
         if (dybDebugOn) { scheduleMark(); return; }   // 开:补标记,但不弹面板
 
         clearUrlParam();
+        ensureMark();
         if (!isDebugMode()) teardown();
       });
     }
@@ -988,10 +990,21 @@
    *     不重复建容器 —— 重复建会出现两个标记
    */
   function ensureMark() {
-    if (!isDebugMode()) return;
     if (!document.body) return;
 
     var bar = document.getElementById('dyb-status-bar');
+    if (!isDebugMode()) {
+      if (bar) {
+        bar.classList.remove('dyb-status-bar--debug');
+        var normalBadge = bar.querySelector('.dyb-badge');
+        if (normalBadge) {
+          normalBadge.classList.remove('dyb-badge--debug');
+          normalBadge.classList.add('dyb-badge--normal');
+          normalBadge.textContent = 'DY-COCO';
+        }
+      }
+      return;
+    }
     if (!bar) {
       bar = document.createElement('div');
       bar.id = 'dyb-status-bar';

@@ -1323,17 +1323,10 @@
   }
 
   /**
-   * 消息盒子（左下角 DY-COCO 绿标记）的显隐跟着「本页是不是回放页」走。
-   *
-   * 为什么需要这一步：脚本现在注入到 anchor 全域（否则 SPA 从别的页切进
-   * 复盘页时根本没脚本可用，见 ensurePoll 的注释），而 dialog.js 一加载就
-   * 会主动把绿标记建出来 —— 若不收，用户在主播后台的**任意**页面都会看到
-   * 一枚挂在左下角的绿标记，既没内容也没入口，纯噪音。
-   * 回放页照旧常驻（用户要能点开历史）；非回放页连节点一起摘掉，
-   * 真正来消息时 dialog.js 的 ensureStatusBar() 会自己重建。
+   * 支持页的消息与调试入口常驻；回放模块只控制自己的下载按钮。
    */
   function syncStatusBar(on) {
-    if (on) {
+    if (on || (typeof dycIsSupportedPage === 'function' && dycIsSupportedPage(location.href))) {
       if (document.getElementById('dyb-status-bar')) return;
       if (document.body && typeof ensureStatusBar === 'function') {
         try { ensureStatusBar(); } catch (e) { /* 尽力而为 */ }

@@ -1,5 +1,5 @@
 {
-  "version": "26.11.08.2",
+  "version": "26.11.08.3",
   "algorithm": "sha256",
   "files": [
     {
@@ -19,18 +19,18 @@
     },
     {
       "path": "manifest.json",
-      "size": 10241,
-      "sha256": "29c08845e09b440b44a9396803fd8ee47356554e4d10b0d066a1016c4428e760"
+      "size": 12816,
+      "sha256": "86578a7e53cd5f1c6fb882c7f7aeee39c1214e4a70d45ad21e3fa26e61279f6a"
     },
     {
       "path": "src/background/service-worker.js",
-      "size": 92537,
-      "sha256": "564c63e4904813692cea12a7d244a79b552be73efb5ada488b5e5dd09113c140"
+      "size": 92220,
+      "sha256": "21517dc4adc1b144bbbec5bdb5436a7858c670881f870cea5198d234d92861e6"
     },
     {
       "path": "src/content/anchor.js",
-      "size": 29020,
-      "sha256": "33a2600a7ff0f21deaf16d5651c0b75c5c32af74f0ca3ce5436f9d23324684fa"
+      "size": 26547,
+      "sha256": "cae729753012598b34c06a5370411b4c84f0b264d84dce3ef87bd95ed7e14099"
     },
     {
       "path": "src/content/campaign-channel-tick.js",
@@ -74,18 +74,18 @@
     },
     {
       "path": "src/content/debug-panel.js",
-      "size": 51573,
-      "sha256": "a01872c1a34bb54baadf0dd71403531f545cb3317930137fde73505988dd6d08"
+      "size": 51972,
+      "sha256": "096bde37b3f5340a1e88187bbc6422d5530028f9d79f4cbcba5547fe8223cca1"
     },
     {
       "path": "src/content/diag.js",
-      "size": 62474,
-      "sha256": "a29c4926963b029779f18ea300552c56ea0b4d582e07295b2100e78485f447d5"
+      "size": 62566,
+      "sha256": "31fcfc0a2b822f95e2f9c5be3a1016a98dd3b57bf869239367c255f7f8bdf7ab"
     },
     {
       "path": "src/content/dialog.js",
-      "size": 35310,
-      "sha256": "a2b1c0003a9171f22699f852f4dc9e0120f87adc1b12196e837038d4f2b945c7"
+      "size": 35452,
+      "sha256": "46d092c2386a2c3b8c0f0de115742d19836fb695f37f446da708d987055cf67e"
     },
     {
       "path": "src/content/drag-gate.js",
@@ -93,9 +93,19 @@
       "sha256": "cd4563c47150e8a0c13ef7317082765436b59c799de8069e5f2339dbc1543457"
     },
     {
+      "path": "src/content/fabric-smart-fill-main.js",
+      "size": 12294,
+      "sha256": "eaf4e1185936aa44c9eb550c8d12a19208c110e5c795d54cd406d88d34f8df70"
+    },
+    {
+      "path": "src/content/fabric-smart-fill.js",
+      "size": 72144,
+      "sha256": "4da6bb8f3bb57883ea207bb4bd52ccafbb45c24781b5e06aa0b4ad7058c65a76"
+    },
+    {
       "path": "src/content/flags.js",
-      "size": 87744,
-      "sha256": "ae6ddf4349e973ca3b0d3341022602af4305562f24993e96c53d7f45b6bac826"
+      "size": 89396,
+      "sha256": "eb012f6bb40e96ac4e8a8affd0d8ec6f4d36b3546a1ddd11d042a5a34c4a3cd2"
     },
     {
       "path": "src/content/goods-batch-copy.js",
@@ -109,8 +119,8 @@
     },
     {
       "path": "src/content/goods-image-paste.js",
-      "size": 33660,
-      "sha256": "7fc805303c958bad25f6b6042466e7a80fb2aef11c96b7cf7a15d9f86143e1d2"
+      "size": 32837,
+      "sha256": "2026660b183ea3935309c1bd235f1145163f444b862e3c8c9c29775f2a49136d"
     },
     {
       "path": "src/content/goods-list-flag.js",
@@ -194,8 +204,8 @@
     },
     {
       "path": "src/content/style.css",
-      "size": 9812,
-      "sha256": "605da73ef22243a6cb7a9abd671fcaf743e4ce672eaa44612ee276da1d67335f"
+      "size": 13122,
+      "sha256": "4a82b82293aa88b341efaa081dd58de94065c73a059dcea78d3791607cf6f852"
     },
     {
       "path": "src/content/wx-goods-title.js",
@@ -219,13 +229,13 @@
     },
     {
       "path": "src/feedback/feedback.js",
-      "size": 37840,
-      "sha256": "9568fd176e88569ffceb35f3fa53dfa6abb3b6fccd4bae32ce577cf0dad92093"
+      "size": 37859,
+      "sha256": "93993ec5e589d23c50ffe5cf556b0d070ea63d811b2554d41f8af6d368a3fc99"
     },
     {
       "path": "src/feedback/panel.js",
-      "size": 60059,
-      "sha256": "b2c8cf8f5c12b7d4fb3df652dfa051a2ec4686eed9f10d46c5de50a037b00785"
+      "size": 59979,
+      "sha256": "6a5658b5aa4b32b07e63f931070b67dc7e849ac8329b2159b26ec7bb65b89af2"
     },
     {
       "path": "src/live/auto-loop-lecture.js",
@@ -364,8 +374,8 @@
     },
     {
       "path": "src/popup/popup.js",
-      "size": 72846,
-      "sha256": "f40f068b4388d3b5eec96fd54ee65ae075a1cb161f7542def242d7379aad668e"
+      "size": 72587,
+      "sha256": "874168003147a39b8684bddf733630c04add72a68450b987a09950163fa852be"
     },
     {
       "path": "src/replay/m3u8.js",
@@ -374,8 +384,8 @@
     },
     {
       "path": "src/replay/replay-download.js",
-      "size": 71208,
-      "sha256": "6df319a7f4ba6a028e80c16bd7a781d00564b3ce82f7f850f2fac8c4a295f612"
+      "size": 70719,
+      "sha256": "11ce207e2665eecc4e435a8a5d22881ccdad0242f14edd8fd60f85c4b0b28008"
     },
     {
       "path": "src/replay/replay-guard.js",
@@ -424,8 +434,8 @@
     },
     {
       "path": "src/shared/live-control-assets.js",
-      "size": 7568,
-      "sha256": "fc7dc07336a3340e77d201baa9fdab768bcccf8d2efb70242abbb64558422838"
+      "size": 7874,
+      "sha256": "312cf476980d16733885b036152f0fb0ba22e6d3c5d2db6853697a57eba00a87"
     },
     {
       "path": "src/update/update.css",

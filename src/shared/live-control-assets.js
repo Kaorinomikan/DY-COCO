@@ -118,7 +118,10 @@ var DYC_INJECT_GROUPS = {
     ]
   },
 
-  /* ---- 抖店商品新建 / 编辑页 ---- */
+  /* ---- 抖店商品新建 / 编辑页 ----
+   * 已知边界：本组的 MAIN world 桥(fabric-smart-fill-main.js)是 document_start
+   * 注入的，SPA 补注入只能补 isolated world —— 直填通道退回逐项流程可用，
+   * 完整直填要刷新一次。 */
   goodsCreate: {
     label: '商品编辑',
     marker: '__DYC_GOODS_CREATE_LOADED__',
@@ -129,6 +132,7 @@ var DYC_INJECT_GROUPS = {
       'src/content/anchor.js',
       'src/content/dialog.js',
       'src/content/goods-image-paste.js',
+      'src/content/fabric-smart-fill.js',
       'src/live/hide-elements.js',
       'src/content/stock-net-probe.js',
       'src/content/debug-panel.js'
@@ -149,6 +153,7 @@ var DYC_INJECT_GROUPS = {
       'src/content/diag.js',
       'src/content/anchor.js',
       'src/content/dialog.js',
+      'src/content/debug-panel.js',
       'src/content/campaign-channel-tick.js',
       'src/live/hide-elements.js'
     ],

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "可可助手",
-  "version": "26.11.08.2",
+  "version": "26.11.08.3",
   "description": "抖音抖店、微信小店、中控台小助手",
   "permissions": [
     "storage",
@@ -189,6 +189,7 @@
         "src/content/anchor.js",
         "src/content/dialog.js",
         "src/content/goods-image-paste.js",
+        "src/content/fabric-smart-fill.js",
         "src/live/hide-elements.js",
         "src/content/stock-net-probe.js",
         "src/content/debug-panel.js"
@@ -298,6 +299,7 @@
         "src/content/diag.js",
         "src/content/anchor.js",
         "src/content/dialog.js",
+        "src/content/debug-panel.js",
         "src/content/campaign-channel-tick.js",
         "src/live/hide-elements.js"
       ],
@@ -347,6 +349,68 @@
       "js": [
         "src/content/flags.js",
         "src/content/shop-header-name.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://fxg.jinritemai.com/ffa/g/create*"
+      ],
+      "js": [
+        "src/content/fabric-smart-fill-main.js"
+      ],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": [
+        "https://*.jinritemai.com/*",
+        "https://*.jinritemai.com/ffa/g/create*",
+        "https://anchor.douyin.com/*",
+        "https://buyin.jinritemai.com/dashboard/live/control*",
+        "https://buyin.jinritemai.com/dashboard/shopwindow/*",
+        "https://channels.weixin.qq.com/*",
+        "https://compass.jinritemai.com/screen/live/*",
+        "https://compass.jinritemai.com/shop/commodity/product-list*",
+        "https://compass.jinritemai.com/shop/live-detail*",
+        "https://compass.jinritemai.com/shop/merchandise-traffic*",
+        "https://compass.jinritemai.com/talent/live-statement*",
+        "https://fxg.jinritemai.com/*",
+        "https://fxg.jinritemai.com/ffa/content-tool/live/control*",
+        "https://fxg.jinritemai.com/ffa/g/channel-goods-manage/list*",
+        "https://fxg.jinritemai.com/ffa/g/list*",
+        "https://fxg.jinritemai.com/ffa/merchant/*",
+        "https://liveservice.douyin.com/*",
+        "https://store.weixin.qq.com/*"
+      ],
+      "exclude_matches": [
+        "https://*.jinritemai.com/ffa/g/create*",
+        "https://anchor.douyin.com/*",
+        "https://buyin.jinritemai.com/dashboard/live/control*",
+        "https://buyin.jinritemai.com/dashboard/shopwindow/*",
+        "https://channels.weixin.qq.com/*",
+        "https://compass.jinritemai.com/screen/live/*",
+        "https://compass.jinritemai.com/shop/commodity/product-list*",
+        "https://compass.jinritemai.com/shop/live-detail*",
+        "https://compass.jinritemai.com/shop/merchandise-traffic*",
+        "https://compass.jinritemai.com/talent/live-statement*",
+        "https://fxg.jinritemai.com/ffa/content-tool/live/control*",
+        "https://fxg.jinritemai.com/ffa/g/channel-goods-manage/list*",
+        "https://fxg.jinritemai.com/ffa/g/list*",
+        "https://fxg.jinritemai.com/ffa/merchant/*",
+        "https://liveservice.douyin.com/*",
+        "https://store.weixin.qq.com/*"
+      ],
+      "js": [
+        "src/content/flags.js",
+        "src/content/diag.js",
+        "src/content/dialog.js",
+        "src/content/debug-panel.js"
+      ],
+      "css": [
+        "src/content/style.css",
+        "src/content/msgbox.css"
       ],
       "run_at": "document_idle"
     }

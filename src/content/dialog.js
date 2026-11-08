@@ -898,3 +898,5 @@ function failStatus(message, opts) {
   if (tryInit()) return;
   setTimeout(function () { if (!tryInit()) setTimeout(tryInit, 2000); }, 1000);
 })();
+// SPA 切入功能页时，后台复用已在全域页加载的组件，避免顶层 const 重声明。
+window.__DYC_DIALOG_LOADED__ = true;

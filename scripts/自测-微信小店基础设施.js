@@ -72,7 +72,7 @@ check('同一条 content_scripts 同时覆盖两个域（拆两条容易改一�
   });
   assert.equal(partial.length, 0, '有 ' + partial.length + ' 条只覆盖了一个域');
   const hit = (mf.content_scripts || []).filter((e) => WX_HOSTS.every((h) => (e.matches || []).includes(h)));
-  const biz = hit.filter((e) => (e.js || []).includes('src/content/flags.js'));
+  const biz = hit.filter((e) => (e.js || []).includes('src/content/flags.js') && !WX_HOSTS.every(h => (e.exclude_matches || []).includes(h)));
   assert.equal(biz.length, 1, '带开关层的业务条目应恰有 1 条，实际 ' + biz.length);
   const bridge = hit.filter((e) => (e.js || []).includes('src/content/wx-link-main.js'));
   assert.equal(bridge.length, 1, '主世界桥条目应恰有 1 条，实际 ' + bridge.length);
@@ -123,7 +123,7 @@ const dom = new JSDOM('<!doctype html><html><body></body></html>', {
 const win = dom.window;
 const store = {};
 win.chrome = {
-  runtime: { getManifest: () => ({ version: '26.10.30.1' }), lastError: null, id: 'selftest', sendMessage() {}, onMessage: { addListener() {} } },
+  runtime: { getManifest: () => mf, lastError: null, id: 'selftest', sendMessage() {}, onMessage: { addListener() {} } },
   storage: {
     local: {
       get(keys, cb) {
@@ -186,12 +186,9 @@ check('debug.pages 含 wxAll', () => {
 });
 
 console.log('\n【五】各模块的域判定与文案');
-check('anchor.js 标记白名单含三个键', () => {
-  const m = read('src/content/anchor.js').match(/var PROBE_PAGES = \[([^\]]+)\]/);
-  assert.ok(m, '找不到 PROBE_PAGES');
-  for (const k of ['wxShop', 'wxChannels', 'wxAll']) {
-    assert.ok(m[1].includes("'" + k + "'"), '缺 ' + k + '（该页不会出左下角标记）');
-  }
+check('微信页真实探针能创建左下角入口', () => {
+  win.eval(read('src/content/anchor.js'));
+  assert.ok(win.document.querySelector('#dyb-status-bar .dyb-badge'), '微信后台必须有入口');
 });
 check('diag.js 三个页面中文名齐备', () => {
   const s = read('src/content/diag.js');
@@ -199,10 +196,9 @@ check('diag.js 三个页面中文名齐备', () => {
     assert.ok(s.includes(k + ": '" + cn + "'"), '缺 ' + k + ' 的中文名');
   }
 });
-check('service-worker：消息历史白名单含两个域', () => {
-  const s = read('src/background/service-worker.js');
-  assert.ok(s.includes('^(?:store|channels)\\.weixin\\.qq\\.com$'),
-    '不含则消息能显示、却存不进历史');
+check('消息历史共享的支持判据覆盖微信两个域', () => {
+  for (const url of [WXS + 'shop', WXC + 'index']) assert.ok(win.dycIsSupportedPage(url), url);
+  assert.ok(!win.dycIsSupportedPage('https://store.weixin.qq.com.evil.test/shop'));
 });
 check('service-worker：host 权限判定含两个域', () => {
   const s = read('src/background/service-worker.js');

@@ -147,10 +147,9 @@ var DYC_PAGE_PATTERNS = {
     /^https:\/\/(?:anchor\.douyin\.com\/anchor\/review|liveservice\.douyin\.com\/)/,
   liveScreenPage:
     /^https:\/\/compass\.jinritemai\.com\/screen\/live\//,
-  // 调试开关的作用页 = 商品列表页 + 中控台两个入口。
-  // 拨动开关不改写地址;点左下角标记打开调试面板。
+  // 调试作用页直接复用 manifest 注入范围，新增页面无需维护第二张表。
   debugTarget:
-    /^https:\/\/(?:fxg\.jinritemai\.com\/ffa\/g\/list|fxg\.jinritemai\.com\/ffa\/content-tool\/live\/control|buyin\.jinritemai\.com\/dashboard\/live\/control)/,
+    { test: function (url) { return dycIsSupportedPage(url); } },
   // 渠道品管理列表页(2026-10-24 新增,计划 #1):
   //   单行「下架并删除」与批量「下架并删除」只作用于这一页。
   //   本页**仍属 shopAll**(「隐藏页面元素」等全域开关照旧生效),
@@ -271,6 +270,35 @@ function dycDetectPlatform(url) {
     if (DYC_PLATFORMS[i].urlRe.test(u)) return DYC_PLATFORMS[i].id;
   }
   return '';
+}
+
+/** Chrome 页面匹配规则；不将 host_permissions 中的更新源当成业务页面。 */
+function dycMatchPagePattern(pattern, url) {
+  var p = /^(\*|https?):\/\/([^/]+)(\/.*)$/.exec(pattern);
+  var u;
+  try { u = new URL(url); } catch (_) { return false; }
+  if (!p || !/^https?:$/.test(u.protocol) || (p[1] !== '*' && u.protocol !== p[1] + ':')) return false;
+  var host = p[2];
+  if (host !== '*' && u.hostname !== host && !(host.indexOf('*.') === 0 &&
+      (u.hostname === host.slice(2) || u.hostname.endsWith('.' + host.slice(2))))) return false;
+  var path = p[3].split('*').map(function (s) {
+    return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }).join('.*');
+  return new RegExp('^' + path + '$').test(u.pathname + u.search);
+}
+
+/** 消息、调试、弹窗与后台历史统一使用实际注入范围。 */
+function dycIsSupportedPage(url) {
+  // 无扩展运行时的离线工具仍可复用平台定义；真实扩展以 manifest 为准。
+  if (typeof chrome === 'undefined' || !chrome.runtime || typeof chrome.runtime.getManifest !== 'function') {
+    return !!dycDetectPlatform(url);
+  }
+  try {
+    return (chrome.runtime.getManifest().content_scripts || []).some(function (cs) {
+      return cs.world !== 'MAIN' && (cs.matches || []).some(function (p) { return dycMatchPagePattern(p, url); }) &&
+        !(cs.exclude_matches || []).some(function (p) { return dycMatchPagePattern(p, url); });
+    });
+  } catch (_) { return false; }
 }
 
 /** 平台 id → 它管的分组 id 数组（未知 id 返回空数组，调用方按"什么都不显示"处理）。 */
@@ -929,21 +957,31 @@ var DYC_FLAGS_META = [
     pages: ['list']
   },
 
-  /* ── 商品发布 / 编辑页 · 上传框图片粘贴(2026-11-08 用户新增需求)─────────────
+  /* ── 商品发布 / 编辑页 · 两个小工具(2026-11-08 用户新增需求)─────────────
    * 作用页 = goodsEdit(/ffa/g/create,新建与编辑同路径)。
-   * 图片剪贴板粘贴:上传框内下方挂一枚按钮,一步贴入剪贴板图片,
+   * ① 图片剪贴板粘贴:上传框内下方挂一枚按钮,一步贴入剪贴板图片,
    *    不弹系统选择窗。只挂**空白**框 —— 有图的框平台已叠了编辑/删除。
+   * ② 面料材质智能填写:原生框右侧自建输入框 + 按钮,把「棉80 丝绸20」
+   *    按平台规则填进去。合计不是 100% 只提示、不写;平台没有的材料名
+   *    按用户原话**新建**该名字,不做模糊匹配。
+   * 两个开关都默认开,互不依赖。
    * ★ 位置:排在表尾(2026-11-08 用户定:弹窗里**最新的排最下面**,
-   *   以后新加功能一律追加到 DYC_FLAGS_META 末尾,不要往中间插)。
-   * 注:面料材质「智能填写」暂时摘除不推送(2026-11-08 用户定);
-   *   代码与自测保留在摘除提交的历史里,恢复 = revert 该提交,
-   *   恢复时把注入自测的「表尾」断言推进到 fabricSmartFill。 */
+   *   以后新加功能一律追加到 DYC_FLAGS_META 末尾,不要往中间插)。 */
   {
     key: 'goodsImagePaste',
     group: 'shop',
     label: '图片剪贴板粘贴',
     desc: '上传框内加「粘贴图片」，一步贴入剪贴板图片。',
     note: '仅空白框显示；无图或塞不进会提示。',
+    default: true,
+    pages: ['goodsEdit']
+  },
+  {
+    key: 'fabricSmartFill',
+    group: 'shop',
+    label: '面料材质智能填写',
+    desc: '输入「棉80 丝绸20」一键填进原生面料框。',
+    note: '合计须 100%；平台没有的名字按原样新建。',
     default: true,
     pages: ['goodsEdit']
   }

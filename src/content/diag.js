@@ -293,6 +293,7 @@
       var pat = window.DYC_PAGE_PATTERNS;
       if (!pat) return 'unknown';
       for (var k in pat) {
+        if (k === 'debugTarget') continue; // 公共调试范围不是业务页面类型。
         if (pat[k] && pat[k].test && pat[k].test(location.href)) return k;
       }
       return 'other';

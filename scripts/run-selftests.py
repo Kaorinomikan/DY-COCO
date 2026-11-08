@@ -54,13 +54,15 @@ GLOBAL_SCRIPTS = ('scripts/run-selftests.py', 'scripts/selfcheck-assertions.py')
 # 脚本类改动 → 对应自测。只有少量条目，且长期稳定：
 # 自测脚本里引用的不是 src，反查不到，必须显式登记（否则改了闸门却跑不到它的自测）。
 SCRIPT_TARGETS = {
+    'scripts/page_infrastructure.py': '自测-全页基础设施.py',
+    'scripts/check-manifest-order.py': '自测-全页基础设施.py',
     'scripts/check-sensitive-words.py': '自测-敏感词邻近匹配.py',
     'scripts/sensitive-words-allowlist.txt': '自测-敏感词邻近匹配.py',
     'scripts/check-syntax.py': '自测-语法闸门.py',
     'scripts/wt-merge.sh': ('自测-发布回收.py', '自测-回收预检.py'),
     'scripts/回收.sh': '自测-发布回收.py',
     'scripts/publish.sh': '自测-发布回收.py',
-    'scripts/publish-github-api.py': '自测-发布回收.py',
+    'scripts/publish-github-api.py': ('自测-发布回收.py', '自测-发布提速.py'),
     'scripts/make-dist.py': '自测-发布回收.py',
     'scripts/check-sw-build.py': '自测-更新生效.js',
     # 发布基线校验（2026-11-05）：闸门本体与它的能力词表改了一处，

@@ -775,7 +775,7 @@
       // （边拉边补）→ complete（收尾）。所以 done 之后不能断开，否则补全的
       // 历史版本永远进不来。
       if (m.type === 'progress') {
-        elStatus.textContent = '正在补全历史版本日志…（' + m.done + '/' + m.total + '）';
+        refreshClStatus(elStatus);
         return;
       }
       if (m.type === 'done') {
@@ -810,10 +810,14 @@
     /* #132:滚动到底 → 再展开下一批。滚动容器是列表的父级(.cl-body),
      * 只在首次绑定(loadChangelog 会被反复调用,重复绑会叠加触发)。 */
     var elScroll = elList.parentNode;
+    if (elScroll) elScroll.__dycClTop = elScroll.scrollTop;
     if (elScroll && !elScroll.__dycClScroll) {
       elScroll.__dycClScroll = true;
       elScroll.addEventListener('scroll', function () {
-        if (elScroll.scrollTop + elScroll.clientHeight >= elScroll.scrollHeight - 160) {
+        var top = elScroll.scrollTop;
+        var downward = top > elScroll.__dycClTop;
+        elScroll.__dycClTop = top;
+        if (downward && top + elScroll.clientHeight >= elScroll.scrollHeight - 1) {
           clLoadMore(elStatus, elList);
         }
       });
@@ -862,20 +866,17 @@
     return 'missing';
   }
 
-  /** 顶部统计行。#132 起按**全量数据**统计(已展开的卡片只是前几批),
-   *  并把「已展开 x / 共 y」放进同一行,让人知道还能往下滑。 */
+  /** 只统计已展开版本的结果，未查看的版本不计入读取状态。 */
   function refreshClStatus(elStatus) {
-    var ok = 0, loading = 0, missing = 0, err = 0;
-    for (var i = 0; i < clAll.length; i++) {
+    var ok = 0, missing = 0, err = 0;
+    for (var i = 0; i < clShown; i++) {
       var s = clStateOf(clAll[i]);
       if (s === 'ok') ok++;
-      else if (s === 'loading') loading++;
       else if (s === 'error') err++;
-      else missing++;
+      else if (s === 'missing') missing++;
     }
     var parts = [];
     if (ok) parts.push(ok + ' 个附日志');
-    if (loading) parts.push(loading + ' 个读取中');
     if (missing) parts.push(missing + ' 个未附日志');
     if (err) parts.push(err + ' 个拉取失败');
     elStatus.className = 'cl-status';

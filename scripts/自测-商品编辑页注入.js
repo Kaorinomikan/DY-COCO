@@ -15,7 +15,7 @@
  *   ① manifest 里有且只有一条覆盖 `/ffa/g/create*` 的业务条目，且带齐基础设施
  *   ② 全域轻量条目必须 exclude 本路径（否则 flags/hide-elements 会被注入两次）
  *   ③ flags.js 的 goodsEdit 键存在、且**排在 shopAll 之前**（pageKind 先匹配先返回）
- *   ④ anchor.js 的 PROBE_PAGES / diag.js 的 KIND_CN 同步登记（漏了就是「注入了但没标记」）
+ *   ④ 真实 anchor.js 创建标记，diag.js 有对应页面中文名
  *   ⑤ 正则的匹配边界：认新建与编辑、不吃商品列表、不吃伪冒域名
  *
  * ⚠️ 本文件同时读 manifest.json 与 src/**。`run-selftests.py --changed` 只能反查
@@ -51,7 +51,7 @@ const mf = JSON.parse(read('manifest.json'));
 const entries = mf.content_scripts || [];
 
 function createEntry() {
-  const hit = entries.filter((e) => (e.matches || []).includes(CREATE_MATCH));
+  const hit = entries.filter((e) => (e.matches || []).includes(CREATE_MATCH) && !(e.exclude_matches || []).includes(CREATE_MATCH));
   assert.equal(hit.length, 1, '覆盖 ' + CREATE_MATCH + ' 的条目应恰有 1 条，实际 ' + hit.length);
   return hit[0];
 }
@@ -136,7 +136,7 @@ let win;
   win = dom.window;
   const store = {};
   win.chrome = {
-    runtime: { getManifest: () => ({ version: '26.11.08.1' }), lastError: null, id: 'selftest', sendMessage() {}, onMessage: { addListener() {} } },
+    runtime: { getManifest: () => mf, lastError: null, id: 'selftest', sendMessage() {}, onMessage: { addListener() {} } },
     storage: {
       local: {
         get(keys, cb) {
@@ -198,12 +198,9 @@ check('伪冒域名不被误吃', () => {
 
 console.log('\n【三】标记与诊断登记的同步');
 
-check('anchor.js 的 PROBE_PAGES 含 goodsEdit（否则「注入了但没标记」）', () => {
-  const src = read('src/content/anchor.js');
-  const m = src.match(/var\s+PROBE_PAGES\s*=\s*\[([^\]]*)\]/);
-  assert.ok(m, '找不到 PROBE_PAGES 声明');
-  const keys = m[1].split(',').map((s) => s.trim().replace(/^['"]|['"]$/g, '')).filter(Boolean);
-  assert.ok(keys.includes('goodsEdit'), 'PROBE_PAGES 缺 goodsEdit：' + keys.join(','));
+check('商品编辑页真实探针能创建左下角入口', () => {
+  win.eval(read('src/content/anchor.js'));
+  assert.ok(win.document.querySelector('#dyb-status-bar .dyb-badge'), '已注入的编辑页必须出现标记');
 });
 
 check('diag.js 的 KIND_CN 有本页中文名', () => {
@@ -219,18 +216,17 @@ check('弹窗平台判定覆盖本页（抖音分组）', () => {
   assert.ok(/dycDetectPlatform/.test(read('src/popup/popup.js')), 'popup.js 没复用平台判定');
 });
 
-check('最新开关排在 DYC_FLAGS_META 表尾（用户 2026-11-08 定：最新在底部）', () => {
+check('两个新开关排在 DYC_FLAGS_META 表尾（用户 2026-11-08 定：最新在底部）', () => {
   // 规矩:以后新加功能一律追加到 DYC_FLAGS_META 末尾,不往中间插。
-  // 本断言钉住"当前最新的开关在表尾";将来再加新开关时,把本断言改成
+  // 本断言钉住"当前最新的两个在表尾";将来再加新开关时,把本断言改成
   // "更晚的开关在表尾"即可 —— 中途插队会让弹窗里新功能出现在老功能中间。
-  // (面料材质「智能填写」2026-11-08 暂时摘除不推送;恢复时把它接回表尾
-  //  并把本断言推进到 fabricSmartFill。)
   const keys = win.DYC_FLAGS_META
     .map((m) => m.key)
     .filter(Boolean);
+  const tail = keys.slice(-2).join(',');
   // ★ 用字符串比较而不是 deepEqual:win 里的数组是 JSDOM realm 的,
   //   assert/strict 的 deepEqual 会因原型不同而永远失败。
-  assert.equal(keys[keys.length - 1], 'goodsImagePaste',
+  assert.equal(tail, 'goodsImagePaste,fabricSmartFill',
     '表尾两位是 [' + keys.slice(-2).join('、') + '] —— 有人往中间插了新开关?');
 });
 

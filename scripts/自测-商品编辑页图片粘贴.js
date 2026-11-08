@@ -51,6 +51,11 @@ const HTML = `<!doctype html><html><body>
     <div class="tip">上传图片</div>
     <input type="file" accept="image/*" style="display:none">
   </div>
+  <div id="certificateTile"><span>+</span><span>0/20</span><input type="file" accept=".JPG, .PNG, .jpeg" style="display:none"></div>
+  <div id="reportTile"><span>＋</span><span>0/20</span><input type="file" accept="application/pdf, image/jpeg" style="display:none"></div>
+  <div id="labelTile"><span>+</span><span>0/20</span><input type="file" style="display:none"></div>
+  <div id="pdfTile"><span>上传图片</span><input type="file" accept=".pdf"></div>
+  <div id="disabledTile"><span>上传图片</span><input type="file" accept="image/*" disabled></div>
   <div id="filledTile">
     <img src="https://example.test/a.png" alt="">
     <input type="file" accept="image/*" style="display:none">
@@ -149,6 +154,13 @@ const HTML = `<!doctype html><html><body>
   check('空白上传框挂上按钮', () => {
     assert.ok(emptyTile.querySelector('.dyc-imgpaste-btn'), '空白框没有按钮');
   });
+  check('标准上传框和加号计数资质格同时挂载，兼容扩展名与混合类型', () => {
+    for (const id of ['certificateTile', 'reportTile', 'labelTile']) {
+      assert.equal(doc.querySelectorAll('#' + id + ' .dyc-imgpaste-btn').length, 1, id);
+    }
+    assert.equal(doc.querySelector('#pdfTile .dyc-imgpaste-btn'), null, '纯 PDF');
+    assert.equal(doc.querySelector('#disabledTile .dyc-imgpaste-btn'), null, '禁用框');
+  });
   check('按钮是框的直接子元素（absolute 定位的包含块）', () => {
     assert.equal(emptyTile.querySelector('.dyc-imgpaste-btn').parentElement, emptyTile);
   });
@@ -171,6 +183,17 @@ const HTML = `<!doctype html><html><body>
     win.eval('void 0');                       // 占位:扫描由下一段滚动/变更触发
     const btn = emptyTile.querySelectorAll('.dyc-imgpaste-btn');
     assert.equal(btn.length, 1);
+  });
+
+  const dynamicTile = doc.createElement('div');
+  dynamicTile.id = 'dynamicTile';
+  dynamicTile.innerHTML = '<span>+</span><span>0/20</span><input type="file" accept=".webp">';
+  doc.getElementById('goodsEditScrollContainer').appendChild(dynamicTile);
+  await sleep(650);
+  check('后展开的资质格自动挂载，重扫保留所有原有空白格且不重复', () => {
+    for (const id of ['emptyTile', 'certificateTile', 'reportTile', 'labelTile', 'dynamicTile']) {
+      assert.equal(doc.querySelectorAll('#' + id + ' .dyc-imgpaste-btn').length, 1, id);
+    }
   });
 
   console.log('\n【二】点一下:读剪贴板 → 塞进 input → 平台出图');
@@ -212,6 +235,26 @@ const HTML = `<!doctype html><html><body>
   await sleep(800);
   check('出图后按钮自动摘掉', () => {
     assert.equal(emptyTile.querySelector('.dyc-imgpaste-btn'), null, '出图后按钮还在');
+  });
+
+  const reportTile = doc.getElementById('reportTile');
+  const reportInput = reportTile.querySelector('input');
+  let reportChanges = 0;
+  reportInput.addEventListener('change', () => {
+    reportChanges++;
+    setTimeout(() => {
+      const img = doc.createElement('img');
+      img.src = 'blob:report';
+      reportTile.appendChild(img);
+    }, 5);
+  });
+  reportTile.querySelector('.dyc-imgpaste-btn').dispatchEvent(new win.MouseEvent('click', { bubbles: true }));
+  await sleep(400);
+  check('资质格贴图只写入被点中的格子，且一次只提交一张', () => {
+    assert.equal(reportInput.__dycFiles.length, 1);
+    assert.equal(reportChanges, 1);
+    assert.equal(doc.querySelector('#certificateTile input').__dycFiles, undefined);
+    assert.equal(doc.querySelector('#labelTile input').__dycFiles, undefined);
   });
 
   console.log('\n【三】失败路径:剪贴板没图 / 通道全不通');

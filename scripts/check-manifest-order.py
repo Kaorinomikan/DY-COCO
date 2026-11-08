@@ -39,6 +39,7 @@ manifest.json 脚本顺序闸门
 import json
 import os
 import sys
+from page_infrastructure import check_infrastructure
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -137,6 +138,7 @@ FLAGS = 'src/content/flags.js'
 # chrome.* 对象,带上会当场抛错、整条注入作废。同理也没有入口脚本,不参与层级排序。
 MAIN_WORLD = {
     'src/content/wx-link-main.js',
+    'src/content/fabric-smart-fill-main.js',
 }
 
 LAYER_NAMES = {
@@ -179,7 +181,7 @@ def main():
         print('[错误] manifest.json 里没有 content_scripts')
         return 1
 
-    problems = []
+    problems = check_infrastructure(mf)
     print('===== manifest.json 脚本顺序校验 =====')
     print('%d 个 content_scripts 条目' % len(entries))
     print('')

@@ -328,6 +328,19 @@ async function testChangelogList() {
     assert.deepEqual(patches.slice(CL_PAGE), next, '新批次结果以 patch 回执');
   });
 
+  await test('重开命中列表缓存后仍可按需读取下一批', async () => {
+    const { ctx, events, fetchCalls, tags } = makeChangelogContext();
+    await runBuild(ctx, events);
+    const reopened = [];
+    const { job } = await runBuild(ctx, reopened, false);
+    assert.ok(job, '缓存重开也必须保留按需读取会话');
+    assert.equal(fetchCalls.length, CL_PAGE, '重开不提前读取后续版本');
+    const next = tags.slice(CL_PAGE, CL_PAGE * 2).map((t) => t.tag);
+    await ctx.clFetchInto(job, next);
+    assert.deepEqual(fetchCalls.slice(CL_PAGE), next);
+    assert.equal(reopened.filter((e) => e.type === 'patch').length, next.length);
+  });
+
   await test('重复请求已拉过的批次不再烧配额', async () => {
     const { ctx, events, fetchCalls, tags } = makeChangelogContext();
     const { job } = await runBuild(ctx, events);

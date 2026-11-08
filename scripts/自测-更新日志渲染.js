@@ -158,6 +158,7 @@ async function test(name, fn) {
       assert.equal(cardOf(ui, 'v26.11.05.1').getAttribute('data-cl-state'), 'loading');
       assert.match(cardOf(ui, 'v26.11.06.1').textContent, /缓存摘要/, '缓存卡应显示摘要');
       assert.match(cardOf(ui, 'v26.11.05.1').textContent, /读取中/);
+      assert.doesNotMatch(statusText(ui, kind), /读取中/);
       ui.win.close();
     });
 
@@ -196,9 +197,22 @@ async function test(name, fn) {
       await turns();
       assert.equal(cards(ui).length, 5, '首屏只应展开 5 张卡，实得 ' + cards(ui).length);
       assert.match(statusText(ui, kind), /已展开 5 \/ 共 10/);
+      assert.match(statusText(ui, kind), /5 个附日志/);
+      assert.doesNotMatch(statusText(ui, kind), /10 个附日志|读取中/);
+      port.emit({ type: 'progress', done: 1, total: 5 });
+      assert.match(statusText(ui, kind), /已展开 5/);
       const scroller = kind === 'panel'
         ? ui.q('[data-cl-list]').parentNode
         : ui.q('#cl-list').parentNode;
+      Object.defineProperty(scroller, 'clientHeight', { value: 400 });
+      Object.defineProperty(scroller, 'scrollHeight', { value: 1000 });
+      scroller.dispatchEvent(new ui.win.Event('scroll'));
+      scroller.scrollTop = 500;
+      scroller.dispatchEvent(new ui.win.Event('scroll'));
+      await turns();
+      assert.equal(cards(ui).length, 5, '未滑到底不提前读取');
+      assert.equal(port.fired.filter((m) => m.cmd === 'more').length, 0);
+      scroller.scrollTop = 600;
       scroller.dispatchEvent(new ui.win.Event('scroll'));
       await turns();
       assert.equal(cards(ui).length, 10, '滑到底应再展开一批到 10 张');

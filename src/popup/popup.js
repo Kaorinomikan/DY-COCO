@@ -43,13 +43,10 @@
  *   （anchor.douyin.com / liveservice.douyin.com）上的两个按钮全被拦死 ——
  *   用户报的「抓不到调试模式、没法反馈这个页面」就是这个。
  *
- * 2026-10-31：不再自己维护一份正则，改用 flags.js 的 dycDetectPlatform ——
- *   平台判定与「本页是否受支持」现在是**同一个判据**。两份正则必然漂移，
- *   而漂移的方向一旦是"平台表宽、这里是窄"，就会出现「弹窗已切到微信、
- *   按钮却说本页不支持」这种自相矛盾。
+ * 统一使用 flags.js 从 manifest 读取的支持范围，与调试开关和后台历史一致。
  */
 function onSupportedPage(url) {
-  return !!dycDetectPlatform(url);
+  return dycIsSupportedPage(url);
 }
 
 const note = document.getElementById('apply-note');

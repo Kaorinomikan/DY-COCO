@@ -141,7 +141,7 @@
    *     ② 图片编辑浮层上的工具条。
    *   它们被一并挂上按钮后把平台自己的浮层顶住了(用户原话「导致没法正常使用」)。
    * 所以挂载前必须过外形与语义四关:
-   *   · 含「上传图片」四个字(空态文案;工具条上不会有这句);
+   *   · 接受图片的 file input，不依赖空态文案;
    *   · 是方块:56~320,长宽比 0.5~2.2(工具条宽扁、克隆块很小);
    *   · 能点、不是半透明(克隆块常 pointer-events:none / opacity<1);
    *   · 不在拖拽控制器、也不在我们自己的浮层里。
@@ -209,12 +209,25 @@
     return true;
   }
 
+  /** accept 同时支持图片 MIME 和扩展名列表。 */
+  function acceptsImages(input) {
+    if (input.disabled) return false;
+    var accept = String(input.getAttribute('accept') || '').trim().toLowerCase();
+    if (!accept) return true;
+    return accept.split(',').some(function (part) {
+      var token = part.trim();
+      return /^image\//.test(token) || /^\.(png|jpe?g|jfif|gif|webp|bmp|avif|heic|heif|tiff?|svg|ico)$/.test(token);
+    });
+  }
+
   function collectTiles() {
     var out = [];
     var seen = [];
 
     function push(tile) {
       if (!tile || seen.indexOf(tile) >= 0) return;
+      var input = tile.querySelector('input[type="file"]');
+      if (input && !acceptsImages(input)) return;
       seen.push(tile);
       out.push(tile);
     }
@@ -222,9 +235,7 @@
     var inputs;
     try { inputs = document.querySelectorAll('input[type="file"]'); } catch (e) { inputs = []; }
     for (var i = 0; i < inputs.length; i++) {
-      var accept = String(inputs[i].getAttribute('accept') || '');
-      /* accept 为空也算(平台可能不写);明确写了非图片的跳过(视频/证件照等另有控件) */
-      if (accept && accept.indexOf('image') < 0) continue;
+      if (!acceptsImages(inputs[i])) continue;
       push(tileFromInput(inputs[i]));
     }
 
@@ -297,37 +308,10 @@
     }
   }
 
-  /**
-   * 该挂哪些框 —— 两级识别(2026-11-08 真机第四次后定)。
-   *
-   * 【为什么分两级】真机日志「候选 28 · 已挂 0」:页面上有上传框,但一个都不含
-   *   「上传图片」这四个字 —— 空态文案随类目/商品变(上传主图/添加图片/点击上传…),
-   *   写死一句等于自废。可反过来也不能完全不看文案:平台在表单里还有图片工具条,
-   *   那是几个图标按钮,挂上去又会顶住。
-   * ⇒ A 级(有上传类文案)优先;全页 A 级为 0 时,才退到 B 级(纯结构)。
-   *   这样「有标准空态」的页面绝不会被工具条污染,而文案变了的页面也还能用。
-   */
-  function hasHintText(tile) {
-    var t = (tile.textContent || '').replace(/\s+/g, '');
-    if (!t) return false;
-    return /(上传|添加|点击上传|拖拽|选择图片|替换图片)/.test(t);
-  }
-
+  /** 每个框独立判断，主图文案不能屏蔽同页只有「＋ / 0/20」的资质格。 */
   function collectQualified() {
     var tiles = collectTiles();
-    var strict = [];
-    var loose = [];
-    for (var i = 0; i < tiles.length; i++) {
-      var t = tiles[i];
-      if (!tileQualifies(t)) continue;
-      if (hasHintText(t)) strict.push(t);
-      else loose.push(t);
-    }
-    return {
-      all: tiles,
-      use: strict.length ? strict : loose,
-      tier: strict.length ? 'A' : 'B'
-    };
+    return { all: tiles, use: tiles.filter(tileQualifies), tier: '结构' };
   }
 
   /** 幂等重扫:新框挂上、已出图的框摘掉、被平台重渲染掉的补回来 */
@@ -793,7 +777,6 @@
       if (q && q.all.length && !document.querySelectorAll('[' + BTN_ATTR + ']').length) {
         explainRejects(q.all);
       }
-      if (q && q.tier === 'B') log('图片粘贴:本页空态文案不含上传字样,按结构识别');
     } else {
       if (observer) { observer.disconnect(); observer = null; }
       window.removeEventListener('scroll', onScroll, true);

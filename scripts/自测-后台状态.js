@@ -107,7 +107,7 @@ function makeStorage(initial = {}) {
 function makeChrome(storage, extra = {}) {
   return {
     storage: { local: storage, onChanged: storage.onChanged },
-    runtime: { lastError: null, getManifest: () => ({ version: '0.0.0-test' }) },
+    runtime: { lastError: null, getManifest: () => JSON.parse(fs.readFileSync(path.join(root, 'manifest.json'), 'utf8')) },
     tabs: {},
     ...extra
   };
@@ -207,6 +207,7 @@ function makeHistoryContext() {
   FakeDate.now = () => ++now;
   const chrome = makeChrome(storage);
   const ctx = makeContext({ chrome, Date: FakeDate, historyQueue: Promise.resolve(), HISTORY_STORE: 'dycPrivateHistory' });
+  vm.runInContext(flagsSource, ctx, { filename: 'flags.js' });
   vm.runInContext([
     extractFunction(swSource, 'mergeHistoryItems'),
     extractFunction(swSource, 'historyRequest')

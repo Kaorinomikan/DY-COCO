@@ -48,7 +48,7 @@
 // │ 发布会被直接中止。不需要靠人记。                                 │
 // └──────────────────────────────────────────────────────────────────┘
 // 全面整改：后台统一设置写入、私有历史与反馈来源截图，更新导入的开关定义。
-var DYC_BUILD = '26.11.08.2+sw32';
+var DYC_BUILD = '26.11.08.3+sw33';
 
 // classic worker，可以 importScripts（manifest 里没有设 type: module）
 importScripts('../shared/gitee.js', '../content/flags.js', '../shared/live-control-assets.js');
@@ -120,10 +120,8 @@ function historyRequest(type, items, sender) {
   try { url = new URL(sender && sender.tab && sender.tab.url || ''); } catch (_) {
     return Promise.reject(new Error('无法确定消息所属页面'));
   }
-  // 消息盒子历史按 origin + pathname 分页保存。白名单必须与 manifest 的
-  // content_scripts / host_permissions 对齐，否则页面里消息能显示、却存不进历史
-  // （用户看到的是「关掉页面就没了」）。2026-10-30 加微信小店域。
-  if (url.protocol !== 'https:' || !/^(?:[a-z0-9-]+\.)*jinritemai\.com$|^(?:anchor|liveservice)\.douyin\.com$|^(?:store|channels)\.weixin\.qq\.com$/.test(url.hostname)) {
+  // 历史按 origin + pathname 分页保存；只接受 manifest 实际支持的业务页面。
+  if (!dycIsSupportedPage(url.href)) {
     return Promise.reject(new Error('不支持的消息页面'));
   }
   var scope = url.origin + url.pathname;
@@ -1399,11 +1397,6 @@ function clPool(tasks, runN, worker, onTick, onItem) {
 }
 
 async function buildChangelog(fresh, emit) {
-  if (!fresh && clCache.data && Date.now() - clCache.at < CL_CACHE_TTL) {
-    emit({ type: 'done', data: clCache.data });
-    return;
-  }
-
   var list, items, cached;
   var reuse = !fresh && clCache.data && clCache.list
     && Date.now() - clCache.at < CL_CACHE_TTL;
@@ -1756,6 +1749,10 @@ async function injectAssetGroup(sender, assets, markerKey, label) {
   for (let i = 0; i < assets.js.length; i++) {
     const file = assets.js[i];
     try {
+      if (file === 'src/content/dialog.js' && await probeLoaded(tabId, '__DYC_DIALOG_LOADED__')) {
+        done++;
+        continue;
+      }
       await injectOneLiveFile(tabId, file);
       done++;
     } catch (e) {

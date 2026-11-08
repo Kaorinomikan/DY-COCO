@@ -121,7 +121,7 @@
       // （边拉边补）→ complete（收尾）。done 之后不能断开，否则补全的历史版
       // 永远进不来（与 panel.js 保持同一口径）。
       if (m.type === 'progress') {
-        elStatus.textContent = '正在补全历史版本日志…（' + m.done + '/' + m.total + '）';
+        refreshClStatus(elStatus);
         return;
       }
       if (m.type === 'done') {
@@ -154,10 +154,14 @@
     port.postMessage({ cmd: 'get', fresh: !!fresh });
     /* #132:滚动到底 → 再展开下一批。滚动容器是列表的父级(.cl-body)。 */
     var elScroll = elList.parentNode;
+    if (elScroll) elScroll.__dycClTop = elScroll.scrollTop;
     if (elScroll && !elScroll.__dycClScroll) {
       elScroll.__dycClScroll = true;
       elScroll.addEventListener('scroll', function () {
-        if (elScroll.scrollTop + elScroll.clientHeight >= elScroll.scrollHeight - 160) {
+        var top = elScroll.scrollTop;
+        var downward = top > elScroll.__dycClTop;
+        elScroll.__dycClTop = top;
+        if (downward && top + elScroll.clientHeight >= elScroll.scrollHeight - 1) {
           clLoadMore(elStatus, elList);
         }
       });
@@ -205,19 +209,17 @@
     return 'missing';
   }
 
-  /** 顶部统计行。#132 起按全量数据统计,并显示已展开数。 */
+  /** 只统计已展开版本的结果，未查看的版本不计入读取状态。 */
   function refreshClStatus(elStatus) {
-    var ok = 0, loading = 0, missing = 0, err = 0;
-    for (var i = 0; i < clAll.length; i++) {
+    var ok = 0, missing = 0, err = 0;
+    for (var i = 0; i < clShown; i++) {
       var s = clStateOf(clAll[i]);
       if (s === 'ok') ok++;
-      else if (s === 'loading') loading++;
       else if (s === 'error') err++;
-      else missing++;
+      else if (s === 'missing') missing++;
     }
     var parts = [];
     if (ok) parts.push(ok + ' 个附日志');
-    if (loading) parts.push(loading + ' 个读取中');
     if (missing) parts.push(missing + ' 个未附日志');
     if (err) parts.push(err + ' 个拉取失败');
     elStatus.className = 'cl-status';

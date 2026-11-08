@@ -24,7 +24,7 @@
  *     本期只出左下角标记 + 调试模式 + 诊断 + 消息盒子，**不含任何业务功能**
  *     （用户定：「先做这三个，其他不做，然后根据这个再开始加功能」）。
  *     在扫码登录页就能看到标记，本身就是「扩展已注入、域权限已生效」的证据。
- *     ⚠️ 本域是 SPA，路由切换不刷新，判定口径见下方 PROBE_PAGES 的说明。
+ *     本域是 SPA，公共入口按 manifest 支持范围保持在场。
  *
  * 调试模式的判定来源有两个，取或：
  *   1. URL 带 dyb_debug=1（弹窗开关会自动添加/移除该参数）
@@ -34,42 +34,8 @@
 (function loadProbe() {
   try {
     var url = location.href;
-    // 「本页是不是扩展的作用页」—— 决定要不要出左下角标记。
-    //
-    // 【2026-10-18 扩到罗盘（用户反馈「调试模式也对罗盘页面不生效」）】
-    //   原来这里是**硬编码两条域名正则**（商品列表页 + 中控台两个入口）。
-    //   罗盘那几页（直播明细 / 商品列表 / 商品卡列表 / 直播大屏）虽然也注入了
-    //   本文件，却因为不匹配这两条正则 ⇒ matched = false ⇒ **标记根本没建**，
-    //   于是「调试模式变橙」与「点标记弹面板」在罗盘页全都无从谈起。
-    //
-    //   现在改为**以 flags.js 的页面正则为唯一真源**（它第 0 位加载、本文件依赖它）：
-    //   只要当前页命中 PROBE_PAGES 里任一 key 就出标记。
-    //   PROBE_PAGES 刻意**不含 shopAll**（全域通配）—— anchor.js 目前只被注入到
-    //   少数几条明确条目里，列清楚比放宽更安全；以后往哪条条目加 anchor.js，
-    //   就在这张表里补上对应的 key。
-    //
-    //   拿不到 DYC_PAGE_PATTERNS 时（极端注入顺序异常）**退回原来的两条正则**，
-    //   行为与改动前完全一致，不会因为这一层新逻辑反而把老页面弄坏。
-    // ⚠️ 微信小店（2026-10-30）是上面那条「不含全域键」规则的**例外**：
-    //   那里整域只有一条 content_scripts，且 channels.weixin.qq.com 是 SPA ——
-    //   登录页 → 后台走前端路由、不刷新页面，而本文件只在加载时判一次 URL。
-    //   若只列 /shop、/index 两个具体键，用户在扫码登录页注入、登录后路由一变
-    //   就成了「非作用页」，标记与调试面板会一起消失（抖店的整页跳转掩盖了
-    //   这个差异）。故这里把域级键 wxAll 一并列入。
-    var PROBE_PAGES = ['list', 'liveCtrl', 'compassLive', 'compassTable', 'liveScreenPage', 'goodsEdit', 'wxShop', 'wxChannels', 'wxAll'];
-
-    var matched = false;
-    var pat = window.DYC_PAGE_PATTERNS;
-    if (pat) {
-      for (var pi = 0; pi < PROBE_PAGES.length; pi++) {
-        var re = pat[PROBE_PAGES[pi]];
-        if (re && re.test && re.test(url)) { matched = true; break; }
-      }
-    } else {
-      var isProductList = /^https:\/\/fxg\.jinritemai\.com\/ffa\/g\/list/.test(url);
-      var isLiveControl = /^https:\/\/(?:fxg\.jinritemai\.com\/ffa\/content-tool\/live\/control|buyin\.jinritemai\.com\/dashboard\/live\/control)/.test(url);
-      matched = isProductList || isLiveControl;
-    }
+    // 基础入口跟随实际注入范围，新增页面不再另列探针名单。
+    var matched = dycIsSupportedPage(url);
     var debugInUrl = /[?&]dyb_debug=1/.test(url);
 
     function applyBadge(debug) {

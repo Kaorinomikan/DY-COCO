@@ -337,6 +337,109 @@
 .dyc-imgpaste-btn:hover { background: #1664ff; border-color: #1664ff; color: #fff; }
 .dyc-imgpaste-btn:disabled { background: #eef3ff; border-color: #d6e2ff; color: #1664ff; opacity: 0.6; cursor: default; }
 
+/* ---- 商品编辑页 · 面料材质「智能填写」(2026-11-08) ----
+   自建输入框 + 按钮,放在原生框**下一行**(用户 16:02 定:拉通到和原生控件
+   同等长度、左对齐不留空位,输入框自动撑满、按钮贴右端)。
+   父容器是 flex 时贴成右邻(is-inline);是 block 时落下一行(is-below),
+   两种情况都不覆盖原生框右侧的下拉箭头,也不改平台容器结构。 */
+.dyc-fabric-box {
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif;
+  font-size: 13px;
+  line-height: 1;
+}
+/* 高度由子元素撑开(输入框/按钮 36px),不再写死 —— 有红字提示时这行会变高 */
+.dyc-fabric-box.is-inline { flex: 0 0 auto; margin-left: 10px; }
+/* 落下一行:宽度由脚本按原生控件实测宽写进行内样式(同等长度),左对齐不留空位 */
+.dyc-fabric-box.is-below { margin-top: 8px; }
+.dyc-fabric-box.is-below .dyc-fabric-field { flex: 1 1 auto; }
+.dyc-fabric-box.is-below .dyc-fabric-input { width: 100%; }
+.dyc-fabric-field { position: relative; flex: 0 0 auto; }
+.dyc-fabric-input {
+  box-sizing: border-box;
+  width: 240px;
+  height: 36px;
+  margin: 0;
+  /* 右侧留 26px 给「一键清空」的叉号,不压住输入文字 */
+  padding: 0 26px 0 10px;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  background: #fff;
+  color: #1f2329;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 34px;
+  outline: none;
+  transition: border-color 0.15s;
+}
+.dyc-fabric-input::placeholder { color: #8f959e; }
+.dyc-fabric-input:focus { border-color: #1664ff; }
+.dyc-fabric-btn {
+  box-sizing: border-box;
+  height: 36px;
+  margin: 0;
+  padding: 0 14px;
+  border: 1px solid #1664ff;
+  border-radius: 8px;
+  background: #1664ff;
+  color: #fff;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 34px;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.dyc-fabric-btn:hover { background: #0d4fd8; border-color: #0d4fd8; }
+.dyc-fabric-btn:disabled { opacity: 0.6; cursor: default; }
+
+/* 疑似笔误提示行(2026-11-08 用户定:下方小红字,**仍按你写的写入**)。
+   放在自建框里换行到第二行:三种定位方式都不用另算坐标。
+   固定 px、不随页面缩放。 */
+.dyc-fabric-box { flex-wrap: wrap; }
+/* 输入框右内侧的「一键清空」(2026-11-08 用户要求):18px 小圆叉,只在有内容时出现。
+   固定 px,不随页面缩放。 */
+.dyc-fabric-clear {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  box-sizing: border-box;
+  width: 18px;
+  height: 18px;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 50%;
+  background: #eef0f3;
+  color: #8f959e;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+.dyc-fabric-clear:hover { background: #dfe3e8; color: #1f2329; }
+
+.dyc-fabric-hint {
+  flex: 0 0 100%;
+  order: 9;
+  margin: 4px 0 0;
+  color: #c9353b;
+  font-size: 12px;
+  line-height: 16px;
+  text-align: right;
+}
+
+/* 小上传框(详情图那类 80px 格子)的紧凑版:24px 按钮会盖住中间的「+」。
+   仍是固定 px,不随页面缩放。 */
 .dyc-imgpaste-btn.is-compact {
   height: 20px;
   left: 4px;

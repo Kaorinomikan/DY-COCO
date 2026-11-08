@@ -15,6 +15,8 @@ GitHub 上架脚本 · API 通道
   ③ 标签完整 —— 商家可能从任意旧版本升级，缺标签就升不了那一档。
 
 实现要点：
+  · **单快照复用远端对象**：仅上传远端树里尚无的 blob，始终新建完整本地快照。
+    新版本标签跳过逐文件 CDN 清缓存，仅同名标签重推时保留清理。
   · **blob 按内容去重**：同一份内容只建一次 blob（GitHub 侧也按 sha 复用），
     所以 N 个提交共享大部分文件，实际 blob 调用数远小于「文件数 × 提交数」。
   · **tree 用 base_tree 增量**：每个提交只提交「相对父提交变化的文件」，
@@ -153,6 +155,23 @@ class GitHub:
         raise RuntimeError("GitHub API 重试耗尽：%s（%s）" % (method, last))
 
     # ---------- git data ----------
+
+    def reuse_remote_blobs(self, commit_sha):
+        """只复用远端树中已确认存在的对象；仍按本地清单新建完整快照。"""
+        if not commit_sha:
+            return
+        try:
+            commit = self._req("GET", self.base + "/git/commits/" + commit_sha)
+            tree = self._req("GET", self.base + "/git/trees/"
+                             + commit["tree"]["sha"] + "?recursive=1")
+            known = {entry["sha"]: entry["sha"] for entry in tree["tree"]
+                     if entry["type"] == "blob"}
+        except (RuntimeError, KeyError, TypeError) as e:
+            log("  [回退] 无法读取远端文件对象，改用完整上传：%s" % e)
+            return
+        # 截断响应也只复用确实返回的对象，其余照常上传，不据此裁剪文件。
+        self.blob_by_sha.update(known)
+        log("  已确认远端文件对象 %d 个，内容相同的文件免上传" % len(known))
 
     def create_blob(self, local_sha, content_bytes):
         """本地 blob sha → 远端 blob sha（内容去重）"""
@@ -482,6 +501,9 @@ def main():
     prev_tree = None
     prev_remote_commit = None
 
+    if args.single:
+        gh.reuse_remote_blobs(remote_main)
+
     for idx, c in enumerate(chain, 1):
         if args.single:
             # ★ 单提交模式：**完整树**（全部文件，不带 base_tree）。
@@ -490,12 +512,17 @@ def main():
             #   实测踩过：远端 main 的树里只有 1 个文件，
             #   标签下读 update-manifest.json 恒 404 ⇒ 商家更新直接失败。
             entries = []
+            uploaded = 0
             for path, mode, blob_sha in all_files_at(c["sha"]):
-                content = blob_content(blob_sha)
-                remote_blob = gh.create_blob(blob_sha, content)
+                remote_blob = gh.blob_by_sha.get(blob_sha)
+                if remote_blob is None:
+                    remote_blob = gh.create_blob(blob_sha, blob_content(blob_sha))
+                    uploaded += 1
                 entries.append({"path": path, "mode": mode, "type": "blob",
                                 "sha": remote_blob})
             tree = gh.create_tree(None, entries)
+            log("  完整快照 %d 个文件，上传 %d 个文件对象，其余复用"
+                % (len(entries), uploaded))
         else:
             out_files, del_files = changed_paths(c["sha"])
             entries = []
@@ -624,12 +651,13 @@ def main():
     #   实测 purge 接口也不立即生效。正常发布（版本号递增、标签永不重推）
     #   没这个问题（新标签 = 新 URL = 无缓存）；这里 purge 是尽力而为的加速，
     #   即使没刷干净，扩展端也有"CDN 内容长度不符 → 降级 API"的防御兜底。
-    if args.single:
+    if args.single and tag in remote_tags:
         log("\n[5.5/5] 清 jsDelivr CDN 缓存（尽力而为）")
         import json as _json
         try:
-            mf = _json.load(open(os.path.join(REPO_ROOT, "update-manifest.json"),
-                                 encoding="utf-8"))
+            with open(os.path.join(REPO_ROOT, "update-manifest.json"),
+                      encoding="utf-8") as manifest_file:
+                mf = _json.load(manifest_file)
             paths = [f["path"] for f in mf.get("files", [])]
             purged = 0
             for pp in paths:
@@ -644,6 +672,8 @@ def main():
                 % (purged, len(paths)))
         except Exception as e:
             log("  [跳过] 读不到 update-manifest.json：%s" % e)
+    elif args.single:
+        log("\n[5.5/5] 新版本标签，无旧版 CDN 缓存，跳过逐文件清理")
 
     # ---- 校验 ----
     log("\n校验")
