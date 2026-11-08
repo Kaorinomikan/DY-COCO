@@ -48,7 +48,7 @@
 // │ 发布会被直接中止。不需要靠人记。                                 │
 // └──────────────────────────────────────────────────────────────────┘
 // 全面整改：后台统一设置写入、私有历史与反馈来源截图，更新导入的开关定义。
-var DYC_BUILD = '26.11.08.1+sw31';
+var DYC_BUILD = '26.11.08.2+sw32';
 
 // classic worker，可以 importScripts（manifest 里没有设 type: module）
 importScripts('../shared/gitee.js', '../content/flags.js', '../shared/live-control-assets.js');
@@ -302,7 +302,9 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
 
   // 离屏文档专用消息(2026-10-24):后台自己会发出并收到它,这里必须**不响应**
   // 直接放行,否则会跟离屏文档的真实回执抢答。
-  if (msg.type === 'dyc:offscreenReadClipboard') return false;
+  // 2026-11-08 补图片那条:同一个坑再踩一次就是「每次读图都拿到未知消息」。
+  if (msg.type === 'dyc:offscreenReadClipboard'
+    || msg.type === 'dyc:offscreenReadClipboardImage') return false;
 
   if (['dyc:historyGet', 'dyc:historyMerge', 'dyc:historyClear'].indexOf(msg.type) >= 0) {
     historyRequest(msg.type, msg.items, sender).then(sendResponse, function (error) {
@@ -320,13 +322,38 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
     return true;
   }
 
-  /* ---- 中控台补注入（2026-11-05）----
-   * 从侧栏 SPA 切进 /live/control 时 document 不重载，中控台那条
-   * content_scripts 根本没有机会命中，页面里一个功能都没有。
-   * 由全域探子 src/live/live-agent.js 发这条消息，这里按与 manifest
-   * 同一份清单补注脚本与样式。 */
+  /* ---- 子页补注入（2026-11-05 建，2026-11-08 泛化为多分组）----
+   * 从百应主页/侧栏 SPA 切进 /live/control 或 /dashboard/shopwindow/* 时
+   * document 不重载，对应那条 content_scripts 根本没有机会命中，
+   * 页面里一个功能都没有。由全域探子 src/live/live-agent.js 分区发消息，
+   * 这里按与 manifest 同一份清单补注脚本与样式。 */
   if (msg.type === 'dyc:injectLiveControl') {
     injectLiveControl(sender).then(function (r) {
+      sendResponse(r);
+    }, function (e) {
+      sendResponse({ ok: false, error: (e && e.message) || '补注入失败' });
+    });
+    return true;
+  }
+  if (msg.type === 'dyc:injectShopwindow') {
+    injectAssetGroup(sender, DYC_SHOPWINDOW_ASSETS, '__DYC_SHOPWINDOW_LOADED__', '橱窗').then(function (r) {
+      sendResponse(r);
+    }, function (e) {
+      sendResponse({ ok: false, error: (e && e.message) || '补注入失败' });
+    });
+    return true;
+  }
+  /* 通用分组分支（2026-11-08 探子分区制推广到全部路径型注入组）：
+     探子统一发 {type:'dyc:injectGroup', group:'分组键'}，这里按注册表分发。
+     上面两个旧消息类型保留：防半旧页面（老探子）对上新后台时断链。 */
+  if (msg.type === 'dyc:injectGroup') {
+    var grp = (typeof DYC_INJECT_GROUPS !== 'undefined' && DYC_INJECT_GROUPS)
+      ? DYC_INJECT_GROUPS[msg.group] : null;
+    if (!grp) {
+      sendResponse({ ok: false, error: '未知补注入分组：' + String(msg.group || '') });
+      return true;
+    }
+    injectAssetGroup(sender, grp, grp.marker, grp.label).then(function (r) {
       sendResponse(r);
     }, function (e) {
       sendResponse({ ok: false, error: (e && e.message) || '补注入失败' });
@@ -337,6 +364,15 @@ chrome.runtime.onMessage.addListener(function (msg, sender, sendResponse) {
   // ---- 剪贴板代读(2026-10-24):内容脚本读剪贴板被页面权限拦,交离屏文档读 ----
   if (msg.type === 'dyc:readClipboard') {
     readClipboardViaOffscreen().then(function (r) {
+      sendResponse(r);
+    });
+    return true;
+  }
+
+  // ---- 剪贴板图片代读(2026-11-08,商品编辑页「图片剪贴板粘贴」)----
+  // 与文本那条同一条离屏通道;超时给足 8 秒 —— 大图转 dataURL 比读文本慢得多。
+  if (msg.type === 'dyc:readClipboardImage') {
+    readClipboardImageViaOffscreen().then(function (r) {
       sendResponse(r);
     });
     return true;
@@ -1081,6 +1117,34 @@ function readClipboardViaOffscreen() {
 }
 
 /**
+ * 剪贴板里的图片(2026-11-08)。
+ *
+ * 与 readClipboardViaOffscreen 是同一个离屏文档、同一套代读理由,区别只在:
+ *   · 回执是一条 dataURL(图片过不了 runtime 消息,Blob/File 不是可克隆对象)
+ *   · 超时放宽到 8 秒:大图 readAsDataURL 在国产老内核上明显更慢
+ *
+ * 失败一律回 {ok:false,error},由内容脚本决定提示文案 —— 后台不判断"该怎么降级"。
+ */
+function readClipboardImageViaOffscreen() {
+  return ensureOffscreen().then(function () {
+    return chromeCb(function (done) {
+      chrome.runtime.sendMessage({ type: 'dyc:offscreenReadClipboardImage' }, done);
+    }, 8000);
+  }).then(function (res) {
+    var r = res || {};
+    return {
+      ok: !!r.ok,
+      dataUrl: r.dataUrl || '',
+      mime: r.mime || '',
+      size: r.size || 0,
+      error: r.error || (r.ok ? '' : '剪贴板读取无回执')
+    };
+  }, function (e) {
+    return { ok: false, dataUrl: '', mime: '', size: 0, error: (e && e.message) || String(e) };
+  });
+}
+
+/**
  * 向指定标签注入反馈面板。新内核走 scripting，老内核回退 MV2 的 tabs.executeScript。
  *
  * 2026-10-13（反馈诊断包）：注入面板前先补一次 diag.js。
@@ -1560,28 +1624,31 @@ function dualCall(invoke, timeoutMs) {
 }
 
 /**
- * 探「中控台脚本是否已在场」。
+ * 探「某个脚本分组的在场标记是否已置」。
  *
  * 两条通道：新内核走 chrome.scripting 的 func；老内核（MV2 风格、仍保留
  * tabs.executeScript）走 code 片段 —— 两者都在扩展的 isolated world 里执行，
- * 读的是同一个 `window.__DYC_LIVE_CTRL_LOADED__`。
+ * 读的是同一个标记。func/code 都按 markerKey 现场生成（executeScript 的
+ * args 参数在老内核上不可靠，不能依赖它传参）。
  *
+ * @param {number} tabId
+ * @param {string} markerKey 如 '__DYC_LIVE_CTRL_LOADED__'
  * @returns {Promise<boolean>}
  */
-function probeLiveControlLoaded(tabId) {
+function probeLoaded(tabId, markerKey) {
   var target = { tabId: tabId, frameIds: [0] };
   if (chrome.scripting && chrome.scripting.executeScript) {
     return dualCall(function (done) {
       return chrome.scripting.executeScript({
         target: target,
-        func: function () { return !!window.__DYC_LIVE_CTRL_LOADED__; }
+        func: new Function('return !!window["' + markerKey + '"];')
       }, done);
     }, 6000).then(function (r) { return !!(r && r[0] && r[0].result); });
   }
   if (chrome.tabs && chrome.tabs.executeScript) {
     return dualCall(function (done) {
       return chrome.tabs.executeScript(tabId,
-        { code: 'window.__DYC_LIVE_CTRL_LOADED__===true' }, done);
+        { code: 'window["' + markerKey + '"]===true' }, done);
     }, 6000).then(function (r) { return !!(r && r[0]); });
   }
   return Promise.reject(new Error('本内核既无 chrome.scripting 也无 tabs.executeScript'));
@@ -1612,36 +1679,41 @@ function injectOneLiveFile(tabId, file) {
 }
 
 /**
- * 把中控台那套脚本补注入到当前标签页（2026-11-05，健壮性重写 2026-11-08）。
+ * 把某个脚本分组补注入到当前标签页（2026-11-05 建，2026-11-08 泛化 + 健壮性重写）。
  *
- * 为什么要补：content_scripts 只在导航时注入。中控台那条 matches 是
- * `…/live/control*`，而侧栏切页是 Garfish 微前端的 pushState —— document
- * 不重载，那条 matches 永远等不到导航。结果就是「先开别的页、再切进中控台」
- * 时所有功能都不出现，必须刷新一次。
+ * 为什么要补：content_scripts 只在导航时注入。中控台/橱窗那两条 matches 是
+ * `…/live/control*`、`…/dashboard/shopwindow/*`，而巨量百应后台是 SPA ——
+ * 页签切换是 pushState，document 不重载，matches 永远等不到导航。结果就是
+ * 「先开别的页、再切进子页」时所有功能都不出现，必须刷新一次。
  *
  * 为什么先探再注：原生注入与本函数都会往同一个 isolated world 里执行同一批
  * 文件。重复执行的代价不是「多余一次」，而是 ——
  *   · anchor.js / dialog.js / row-scan.js 有**顶层 const**，第二次执行整段
  *     抛 SyntaxError，那三个文件等于没跑；
  *   · 其余模块会叠出第二套 observer 与定时器，讲解/福袋直接双开。
- * 所以标记（src/live/live-control-flag.js）必须在场即跳过。
+ * 所以标记（live-control-flag.js / shopwindow-flag.js）必须在场即跳过。
  *
  * 2026-11-08 改了三处（用户复报同一现象）：
  *   ① 探针改 dualCall：只认回调会在这台内核上必超时，探不到就永不注入；
  *   ② 逐文件注入：一处失败不再连坐后面的 toolbar.js；
  *   ③ 注入后回探标记，把「装没装上」如实回报给页面侧探子，由它决定是否重试。
+ * 2026-11-08 又加一处分组化（用户再报：百应主页分页切橱窗也不生效）：
+ *   探子分区后，本函数按 (清单, 标记, 分区名) 参数化，中控台/橱窗共用同一套
+ *   「探标记 → 插样式 → 逐个注入 → 回探标记」流程，不再各写一份。
  *
  * @param {Object} sender 消息发送者，取 tabId
+ * @param {Object} assets 注入清单（DYC_LIVE_CONTROL_ASSETS / DYC_SHOPWINDOW_ASSETS）
+ * @param {string} markerKey 该分组的在场标记（window 属性名）
+ * @param {string} label 分区名（进错误信息，便于诊断区分）
  * @returns {Promise<{ok:boolean, skipped?:boolean, installed?:boolean,
  *                    count?:number, total?:number, failed?:string[], error?:string}>}
  */
-async function injectLiveControl(sender) {
+async function injectAssetGroup(sender, assets, markerKey, label) {
   const tabId = sender && sender.tab && sender.tab.id;
   if (tabId == null) return { ok: false, error: '拿不到标签页' };
 
-  const assets = (typeof DYC_LIVE_CONTROL_ASSETS !== 'undefined') ? DYC_LIVE_CONTROL_ASSETS : null;
   if (!assets || !Array.isArray(assets.js) || !assets.js.length) {
-    return { ok: false, error: '注入清单缺失' };
+    return { ok: false, error: label + '注入清单缺失' };
   }
 
   // 探标记：探到失败重试一次（偶发超时不等于通道不可用）
@@ -1649,7 +1721,7 @@ async function injectLiveControl(sender) {
   let probeErr = null;
   for (let i = 0; i < 2; i++) {
     try {
-      loaded = await probeLiveControlLoaded(tabId);
+      loaded = await probeLoaded(tabId, markerKey);
       probeErr = null;
       break;
     } catch (e) {
@@ -1690,7 +1762,7 @@ async function injectLiveControl(sender) {
       failed.push(file);
       if (!firstErr) firstErr = (e && e.message) || String(e) || '注入失败';
       /* 头两个就失败 ⇒ 不是「某个文件坏」，而是这条通道根本不通。
-         此时继续跑完 26 个只会让页面侧多等十几秒，直接收手。 */
+         此时继续跑完整个清单只会让页面侧多等十几秒，直接收手。 */
       if (done === 0 && failed.length >= 2) break;
     }
   }
@@ -1701,7 +1773,7 @@ async function injectLiveControl(sender) {
 
   // 回探：标记在 = 装了；标记不在 = 连 flags/标记文件都没跑起来，交给页面侧重试
   let installed = false;
-  try { installed = await probeLiveControlLoaded(tabId); } catch (e) { installed = false; }
+  try { installed = await probeLoaded(tabId, markerKey); } catch (e) { installed = false; }
 
   return {
     ok: true,
@@ -1710,6 +1782,12 @@ async function injectLiveControl(sender) {
     total: assets.js.length,
     failed: failed
   };
+}
+
+/** 中控台分组入口（消息分支与旧调用方沿用这个名字） */
+function injectLiveControl(sender) {
+  const assets = (typeof DYC_LIVE_CONTROL_ASSETS !== 'undefined') ? DYC_LIVE_CONTROL_ASSETS : null;
+  return injectAssetGroup(sender, assets, '__DYC_LIVE_CTRL_LOADED__', '中控台');
 }
 
 /**

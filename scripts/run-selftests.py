@@ -219,6 +219,25 @@ def release_receipt(root=None):
     return Path(root or ROOT) / '.tmp' / 'selftest-release-ok.json'
 
 
+DOC_ONLY = {
+    'README.md', 'RELEASE_NOTES.md', '使用手册.md', '开发日志.md', '开发待办.md',
+    'AGENTS.md', 'LICENSE',
+}
+DOC_PREFIXES = ('docs/', 'output/')
+
+
+def _is_doc_only(name):
+    """纯文档不参与「受测内容指纹」（2026-11-08，用户报「更新时间太长」）。
+
+    发布期几乎每次都要改 README / RELEASE_NOTES / 开发日志 / 待推送栏，
+    这些改动不改变任何运行时行为，却会让 69 个自测白跑一遍（约 65 秒），
+    而一次发布要串行触发 3~4 轮预演 —— 实测能占到整条发布链路的一半时间。
+    文案另有 check-product-copy 单独把关，所以这里只排除文档样式的内容；
+    src/、scripts/、manifest.json 一律仍在指纹内，代码一改旧凭据照旧失效。
+    """
+    return name in DOC_ONLY or name.startswith(DOC_PREFIXES)
+
+
 def release_fingerprint(root=None):
     """发布全量的受测内容指纹；取不到 Git 文件清单时返回 None（必须实跑）。"""
     base = Path(root or ROOT)
@@ -229,7 +248,7 @@ def release_fingerprint(root=None):
         if names.returncode != 0:
             return None
         paths = sorted({p for p in names.stdout.decode('utf-8', 'replace').split('\0')
-                        if p and not p.startswith('.tmp/')})
+                        if p and not p.startswith('.tmp/') and not _is_doc_only(p)})
         if not paths:
             return None
         digest = hashlib.sha256()

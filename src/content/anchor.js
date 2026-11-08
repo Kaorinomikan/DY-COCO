@@ -56,7 +56,7 @@
     //   若只列 /shop、/index 两个具体键，用户在扫码登录页注入、登录后路由一变
     //   就成了「非作用页」，标记与调试面板会一起消失（抖店的整页跳转掩盖了
     //   这个差异）。故这里把域级键 wxAll 一并列入。
-    var PROBE_PAGES = ['list', 'liveCtrl', 'compassLive', 'compassTable', 'liveScreenPage', 'wxShop', 'wxChannels', 'wxAll'];
+    var PROBE_PAGES = ['list', 'liveCtrl', 'compassLive', 'compassTable', 'liveScreenPage', 'goodsEdit', 'wxShop', 'wxChannels', 'wxAll'];
 
     var matched = false;
     var pat = window.DYC_PAGE_PATTERNS;

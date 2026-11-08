@@ -66,6 +66,18 @@ SHARED_TOOLS = {
     # 中控台脚本包的在场标记(2026-11-05):必须紧跟开关层、早于任何建 UI 的
     # 功能脚本 —— 后台补注入与原生注入撞车时,「先置标记、再干活」是唯一刹车。
     'src/live/live-control-flag.js',
+    # 橱窗脚本包的在场标记(2026-11-08):与 live-control-flag.js 同职责同位置 ——
+    # 紧跟开关层、早于 diag/anchor/dialog 等基础设施与任何建 UI 脚本,
+    # 是橱窗组补注入判重与「装没装上」的唯一可信判据。
+    'src/content/shopwindow-flag.js',
+    # 补注入分区制推广到全部路径型注入组(2026-11-08)后新增的六个在场标记:
+    # 与上面两个同职责同位置 —— 紧跟 flags.js、早于其余脚本。
+    'src/content/goods-list-flag.js',
+    'src/content/goods-create-flag.js',
+    'src/content/merchant-flag.js',
+    'src/content/compass-live-flag.js',
+    'src/content/compass-screen-flag.js',
+    'src/content/compass-product-flag.js',
     # 拖拽闸门(2026-11-05 补录):feed 拖拽期让路的公共判据,必须早于所有使用方
     # (name-wrap / copy-code),否则拖拽时观察者被每帧唤醒、补涂跟着每帧跑。
     'src/content/drag-gate.js',

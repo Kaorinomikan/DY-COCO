@@ -8,6 +8,9 @@
 #   bash publish.sh --dry-run      预演:跑完全部闸门但不备份、不推送、不清标记
 #                                  (自审标记可缺省;用来在正式推送前先验证一遍)
 #   FORCE_PUSH=1 bash publish.sh   用户已明确口令要求「就推」时,越过攒批门槛
+#   GITHUB_SYNC=0 bash publish.sh  只推 Gitee 主源,跳过推送末端的 GitHub 备用源同步
+#                                  (默认 GITHUB_SYNC=1:Gitee 推完自动同步 GitHub,
+#                                   一条命令双平台,用户 2026-11-08 定)
 #
 # 推送纪律（用户 2026-10-11 定）：
 #   · 不再需要用户人工验收 —— 由助手自己审核（代码审阅 + 本脚本的机械闸门），
@@ -63,6 +66,18 @@
 #      scripts/gitee-release.py 保留（历史能力），但已加硬闸门默认拒绝执行。
 #  10. 所以本脚本的终点是：主干与标签都已推送，且标签指向主干 HEAD。
 #      商家要装新版时的安装包分发方式，不再由本脚本承担。
+#  11. 【双平台一键推送 · 用户 2026-11-08 定】Gitee 推送并校验通过后，
+#      本脚本**自动**把同一提交同步到 GitHub 备用源
+#      （scripts/publish-github-api.py --single），不再需要手动跑第二条命令。
+#      · 仓库坐标从 src/shared/gitee.js 的 GH_OWNER / GH_REPO 自动读取
+#        （单一事实来源，改账号/仓名只改 gitee.js 那两行）；
+#      · DYC_FROM_MAIN_PUBLISH=1 传给 API 脚本：本轮全部闸门刚在同一提交上
+#        跑过，跳过它内置的 publish.sh --dry-run 重复预演（全量自测约 37 秒
+#        不必跑两遍）。手动补推时不带该变量，闸门照旧全跑；
+#      · GitHub 是**备用**更新源：Gitee 主源已上线后 GitHub 失败不判发布
+#        失败，只大声报警并给出补推命令，随后照常同步桌面测试档、重置清单；
+#      · GITHUB_SYNC=0 可显式跳过（跳过时打印显著提示，防止「以为推了
+#        双平台其实只推了一边」）。
 # ============================================================
 
 set -e
@@ -599,6 +614,7 @@ if [ "$DRY_RUN" = "1" ]; then
   echo "  版本号   :$LOCAL_VER"
   echo "  标签     :v$LOCAL_VER"
   echo "  提交     :$("$GIT" rev-parse --short HEAD)"
+  echo "  推送目标 :Gitee 主源 + GitHub 备用源（双平台一键，设计要点 11；跳过用 GITHUB_SYNC=0）"
   echo ""
   echo "正式推送请执行:SELF_REVIEW=1 bash publish.sh"
   exit 0
@@ -711,6 +727,43 @@ echo "提交：$HEAD_COMMIT"
 echo "标签：$TAG_VER -> $REMOTE_TAG_COMMIT"
 echo "备份：$BACKUP_BUNDLE"
 echo "版本号一致性通过：manifest、tag、远端 main 均对应本次提交"
+echo ""
+
+echo ""
+echo "----- GitHub 备用源同步（双平台一键推送 · 用户 2026-11-08 定）-----"
+# 仓库坐标从 src/shared/gitee.js 自动读取（单一事实来源；读不到时用默认值兜底）。
+GH_OWNER_DEFAULT="Kaorinomikan"
+GH_REPO_DEFAULT="DY-COCO"
+GH_SRC="$REPO/src/shared/gitee.js"
+if [ -f "$GH_SRC" ]; then
+  D_OWNER=$(sed -n "s/^.*var GH_OWNER = '\([^']*\)'.*/\1/p" "$GH_SRC" | head -1)
+  D_REPO=$(sed -n "s/^.*var GH_REPO = '\([^']*\)'.*/\1/p" "$GH_SRC" | head -1)
+  [ -n "$D_OWNER" ] && GH_OWNER_DEFAULT="$D_OWNER"
+  [ -n "$D_REPO" ] && GH_REPO_DEFAULT="$D_REPO"
+fi
+GH_OWNER="${GH_OWNER:-$GH_OWNER_DEFAULT}"
+GH_REPO="${GH_REPO:-$GH_REPO_DEFAULT}"
+
+if [ "${GITHUB_SYNC:-1}" != "1" ]; then
+  echo "[跳过] GITHUB_SYNC=0 —— 本次只推了 Gitee 主源，GitHub 备用源未同步。"
+  echo "       补推（闸门照常全跑，不得跳过）："
+  echo "         bash publish.sh --dry-run"
+  echo "         python scripts/publish-github-api.py --owner $GH_OWNER --repo $GH_REPO --single --tag $TAG_VER"
+else
+  # DYC_FROM_MAIN_PUBLISH=1：本轮全部闸门刚在同一提交上跑过，
+  # API 脚本据此跳过它内置的 publish.sh --dry-run 重复预演。
+  if DYC_FROM_MAIN_PUBLISH=1 "$PY" "$REPO/scripts/publish-github-api.py" \
+       --owner "$GH_OWNER" --repo "$GH_REPO" --single --tag "$TAG_VER"; then
+    echo "GitHub 备用源已同步（$GH_OWNER/$GH_REPO，标签 $TAG_VER）—— 双平台一致。"
+  else
+    echo ""
+    echo "[警告] GitHub 备用源同步失败 —— Gitee 主源已上线，本版本可用性不受影响，"
+    echo "       但备用更新源暂时落后（jsDelivr CDN 会继续给旧缓存）。"
+    echo "       请稍后补推（不带 DYC_FROM_MAIN_PUBLISH，闸门照常全跑）："
+    echo "         bash publish.sh --dry-run"
+    echo "         python scripts/publish-github-api.py --owner $GH_OWNER --repo $GH_REPO --single --tag $TAG_VER"
+  fi
+fi
 echo ""
 
 # 同步也属于完成条件；失败时不得清自审标记或重置待推送清单。

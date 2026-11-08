@@ -744,20 +744,32 @@ const {
   ok(marks.length === 8, '㊦① 3~10 每格一根刻度线（共 ' + marks.length + ' 根）');
   ok(sh.querySelectorAll('.mk.rec').length === 1, '㊦① 推荐值那根刻度单独标出（rec）');
   ok(/5 推荐/.test(sh.querySelector('.labs').textContent), '㊦① 刻度标出「5 推荐」');
-  /* 三个标签必须落在**真实位置**：3=0%、5=28.6%、10=100%。
-   * 旧版用 space-between 排，5 被摆到正中间，看着像在指 6.5 分钟。 */
+  /* 三个标签必须落在**真实位置**：3=0 端、5=2/7、10=1 端。
+   * 旧版用 space-between 排，5 被摆到正中间，看着像在指 6.5 分钟。
+   * 2026-11-08 起标签与刻度/圆钮共用 trackPos() 的 calc 式子，
+   * 不再是 `0% / 28.57% / 100%` —— 所以认「乘数（档位）」而不是字符串长相。 */
   const labs = Array.prototype.slice.call(sh.querySelectorAll('.labs span'));
-  ok(labs[0].style.left === '0%' && labs[2].style.left === '100%'
-    && labs[1].style.left === '28.57142857142857%',
-    '㊦① 标签按真实比例定位：' + labs.map(function (e) { return e.style.left; }).join(' / '));
+  const labL = labs.map(function (e) { return e.style.left; });
+  /* cssstyle 会把 `(100% - 36px) * 0.285714` 规范成 `0.285714 * (100% - 36px)`，
+   * 乘数前后缀都可能出现，只认数字本身。 */
+  const ratioOf = function (s) {
+    const m = /([\d.]+)\s*\*\s*\(/.exec(s) || /\*\s*([\d.]+)/.exec(s);
+    return m ? parseFloat(m[1]) : NaN;
+  };
+  const kr = labL.map(ratioOf);
+  ok(kr[0] === 0 && Math.abs(kr[1] - 2 / 7) < 1e-5 && kr[2] === 1,
+    '㊦① 标签按真实档位落位（0 / 2/7 / 1）：' + labL.join(' / '));
   /* ㊦① 尺寸与层级（用户 05:26「按钮又觉得做的太大了，刻度线你放在上面」） */
   const cssText = sh.querySelector('style').textContent;
   /* 2026-11-08：两条滑条的样式定义合并成 `.rail,.grail{...}` 这类成对选择器，
    * 所以这里不再绑死「选择器后紧跟 {」的写法，只在类名后允许逗号/伪类等前缀。
    * 断言约束的是**几何值**（轨道 8px、圆钮 18px），换了写法不该红。 */
+  /* 2026-11-08 晚：圆钮加 box-sizing:border-box，width 就是外径 22（含 2px 边框），
+   * 肉眼尺寸与改前一致，只是圆心不再被边框顶偏 2px。 */
+  const geom1 = bp.api.slideGeom();
   ok(/\.rail[^{]*\{[^}]*top:12px[^}]*height:8px/.test(cssText) &&
-     /\.thumb[^{]*\{[^}]*width:18px/.test(cssText),
-    '㊦① 轨道 8px / 圆钮 18px（比上一版 22px 收小）');
+     new RegExp('\\.thumb[^{]*\\{[^}]*width:' + geom1.thumb + 'px').test(cssText),
+    '㊦① 轨道 8px / 圆钮外径 ' + geom1.thumb + 'px');
   const railTop = +( /\.rail[^{]*\{[^}]*top:(\d+)px/.exec(cssText) || [0, 0])[1];
   const mkTop = +( /\.mk[^{]*\{[^}]*top:(\d+)px/.exec(cssText) || [0, 0])[1];
   ok(mkTop < railTop, '㊦① 刻度线在轨道**上方**（刻度 top ' + mkTop + 'px < 轨道 top ' + railTop + 'px）');
@@ -768,29 +780,43 @@ const {
    * 判定取放大态半径（hover/拖动 20px），它才是最容易出界的那一态。 */
   const tin = sh.querySelector('.tk > .in');
   ok(!!tin && !!tin.querySelector('.thumb') && tin.querySelectorAll('.mk').length === 8,
-    '㊦① 刻度与圆钮同在一个内缩域里（.tk > .in），左沿才跟轨道对齐');
-  const insetM = /\.in[^{]*\{[^}]*left:(\d+)px[^}]*right:(\d+)px/.exec(cssText);
-  const inset = insetM ? +insetM[1] : -1;
-  const rNorm = (+( /\.thumb[^{]*\{[^}]*width:(\d+)px/.exec(cssText) || [0, 0])[1]) / 2;
-  const rBig = (+( /\.tk:hover \.thumb[^{]*\{[^}]*width:(\d+)px/.exec(cssText) || [0, 0])[1]) / 2;
-  /* 2026-11-08 口径收紧：从「≥ 半径（相切）」改成「> 半径（留余量）」。
-   * 相切时圆钮外沿正好压在轨道端点上，加上光环看着就是凸出去一块 ——
-   * 用户这次报的「端末最尽头还有突出」正是这一态。 */
-  ok(inset > rBig && inset > rNorm && rBig > 0,
-    '㊦① 内缩 ' + inset + 'px 大于圆钮半径（常态 ' + rNorm + 'px / 放大 ' + rBig +
-    'px），拉到头也留 ' + (inset - rBig) + 'px 余量');
-  const thumbNow = parseFloat(tin.querySelector('.thumb').style.left);
+    '㊦① 刻度与圆钮同在一个定位域里（.tk > .in），坐标才一致');
+  /* 几何一律从 slideGeom() 取单一来源，不再从 CSS 文本抠数字 ——
+   * 缩进式子已经挪到 trackPos() 的 calc 里，CSS 里本来就没有 left:18px 可抠。 */
+  const inset = geom1.inset;
+  const rNorm = geom1.thumb / 2;
+  const rBig = geom1.thumbGrow / 2;
+  /* 2026-11-08 口径再收紧：余量要盖住「放大态半径 + 光环」，只按半径算
+   * 结果是圆钮本体在轨道内、光环压出去 —— 用户看到的「最左边突出」正是它。 */
+  ok(inset >= rBig + geom1.halo + 2 && rBig > 0,
+    '㊦① 内缩 ' + inset + 'px ≥ 放大态半径 ' + rBig + 'px + 光环 ' + geom1.halo +
+    'px + 2px（常态半径 ' + rNorm + 'px，两端各留 ' + (inset - rNorm) + 'px）');
   /* 不绑死 calc 的子句顺序：jsdom/cssstyle 会把 `A + k * (B)` 规范成
    * `A + k * (B)` 或 `A + k*(B)` 之类，顺序也不保证与源码一致。
    * 只认三个语义要件齐全：内缩起点、可变区间、以及 p 值本身。 */
   const fillW = sh.querySelector('.fill').style.width;
+  /* 轨道两端各缩 edge（2026-11-08 用户「让轨道两端也各缩进一截」），
+   * 填充条起点跟着从 0 挪到 edge，所以式中第一个常量是 inset − edge。 */
+  const fillStart = inset - geom1.edge;
   ok(/^calc\(/.test(fillW)
-    && fillW.indexOf(inset + 'px') === 5
+    && fillW.indexOf(fillStart + 'px') === 5
     && fillW.indexOf('(100% - ' + (inset * 2) + 'px)') > 0
     && /0\.2857/.test(fillW),
-    '㊦① 填充条从轨道最左端算到圆钮圆心（5 分钟内缩后仍对齐 28.6%，实测 ' + fillW + '）');
-  ok(Math.abs(thumbNow - 28.57142857142857) < 1e-6,
-    '㊦① 圆钮的 left 仍按内缩域百分比给（' + thumbNow + '%），圆心不会被二次偏移');
+    '㊦① 填充条从轨道左端（' + fillStart + 'px）算到圆钮圆心（对齐 2/7，实测 ' + fillW + '）');
+  /* 本次需求的几何核心：轨道端头必须与滑块外沿（放大态）重合 ——
+   * 差 1px 就会重新露出「一段空轨道」或「滑块探出去」两种观感之一。 */
+  const railSide = /\.rail[^{]*\{[^}]*left:(\d+)px;right:(\d+)px/.exec(cssText);
+  ok(inset - geom1.edge === geom1.thumbGrow / 2
+    && !!railSide && +railSide[1] === geom1.edge && +railSide[2] === geom1.edge,
+    '㊦① 轨道两端各缩 ' + geom1.edge + 'px，端头与滑块外沿（半径 ' +
+    (geom1.thumbGrow / 2) + 'px）重合：' + inset + ' − ' + geom1.edge + ' = ' +
+    (inset - geom1.edge));
+  /* 圆钮圆心与「5 推荐」标签必须落在同一个坐标上：
+   * 旧版靠「.in 内缩 + left:百分比」，真机上一头缩一头不缩就错位了；
+   * 现在两者都由 trackPos() 给，字符串应该完全相同。 */
+  const thumbLeft = tin.querySelector('.thumb').style.left;
+  ok(thumbLeft && thumbLeft.indexOf('calc(') === 0 && thumbLeft === labs[1].style.left,
+    '㊦① 圆钮圆心与「5 推荐」标签同一坐标（' + thumbLeft + '）');
 
   /* ㊦① 问号说明（用户：确认间隔 + 问号 → 每隔设定的时间自动打开抽屉检查一次福袋状态。） */
   const qh = sh.querySelector('.qh');
@@ -820,8 +846,10 @@ const {
   bp.api.setCheckMin(8);
   ok(bp.api.checkMin() === 8, '㊦② 改到 8 分钟能记住');
   bp.api.tick();                       // 模拟一拍刷新
-  const thumb8 = Math.round(parseFloat(sh.querySelector('.thumb').style.left));
-  ok(thumb8 === 71, '㊦② 刷新一拍后滑钮仍停在 8 分钟处（' + thumb8 + '%，不会弹回 28%）');
+  /* 滑钮位置现在写成 trackPos() 的 calc 乘数：8 分钟 = (8-3)/7 = 5/7 ≈ 0.714 */
+  const k8 = ratioOf(sh.querySelector('.thumb').style.left);
+  ok(Math.abs(k8 - 5 / 7) < 1e-4,
+    '㊦② 刷新一拍后滑钮仍停在 8 分钟处（乘数 ' + k8.toFixed(4) + ' ≈ 5/7，不会弹回 0）');
 
   /* ㊦③ 阻尼 + 吸附（2026-11-01 下午用户「要做一些阻尼感（吸附到刻度），滑着太顺滑了」）：
    * 拖动中 target 就吸到最近刻度，画面靠阻尼追过去 —— 磁吸咬合，不是硬跳 */

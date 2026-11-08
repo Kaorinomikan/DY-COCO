@@ -56,8 +56,12 @@ const { ok, boot, bootBagPage, setText, summary } = B;
   ok(gmarks.length === 11,
      '① 每 30 秒一根刻度，0~5 分钟共 11 根（实际 ' + gmarks.length + ' 根）');
   const gfirst = gmarks[0], glast = gmarks[gmarks.length - 1];
-  ok(!!gfirst && gfirst.style.left === '0%' && !!glast && glast.style.left === '100%',
-     '① 两端刻度压在轨道两端（0% / 100%）');
+  /* 刻度端点与圆钮圆心共用 trackPos() 坐标系：首尾不再压在轨道极点上，
+   * 而是和圆钮一样两端各缩 inset（2026-11-08「最左边突出」的回归点）。 */
+  const gInsetPx = bp.api.slideGeom().inset + 'px';
+  ok(!!gfirst && !!glast && gfirst.style.left.indexOf(gInsetPx) > -1 &&
+     glast.style.left.indexOf(gInsetPx) > -1,
+     '① 首尾刻度内缩 ' + gInsetPx + '（与圆钮圆心同一坐标系，不压轨道极点）');
 
   const glabs = sh.querySelector('.glabs');
   ok(/^0/.test((glabs ? glabs.textContent : '').trim()), '① 左端标「0」');
@@ -258,9 +262,28 @@ const { ok, boot, bootBagPage, setText, summary } = B;
    *   突出，不太对」）
    * ============================================================ */
   const geom = bp.api.slideGeom();
-  ok(geom.inset * 2 > geom.thumbGrow,
-     '⑥ 端点余量：内缩 ' + geom.inset + 'px 比放大态半径 ' + (geom.thumbGrow / 2) +
-     'px 大 ' + (geom.inset - geom.thumbGrow / 2) + 'px（端点不再顶到轨道尽头）');
+  /* 端点余量必须盖住「放大态半径 + 光环」：只按半径算的话圆钮本体在轨道内、
+   * 那圈 box-shadow 照样压到轨道外 —— 2026-11-08「最左边还是会突出」就是它。 */
+  const visualR = geom.thumbGrow / 2 + geom.halo;
+  ok(geom.inset >= visualR + 2,
+     '⑥ 端点余量：内缩 ' + geom.inset + 'px ≥ 视觉半径（' + geom.thumbGrow / 2 +
+     'px 圆钮 + ' + geom.halo + 'px 光环）= ' + visualR + 'px，另留 2px');
+  /* 左右同源：拖到最左/最右时圆钮位置都得是「两端各缩 inset」。
+   * jsdom 不做布局、量不到像素，就验这两个表达式本身 —— 旧版左端算出来
+   * 等于 0%（贴着轨道极点），右端却缩进了，一缩一不缩正是「只有最左边突出」。 */
+  const thumbEl = bp.api.panelSlider().querySelector('.thumb');
+  const insPx = geom.inset + 'px';
+  bp.api.setCheckMin(3);  const leftMin = thumbEl.style.left;
+  bp.api.setCheckMin(10); const leftMax = thumbEl.style.left;
+  ok(leftMin !== '0%' && leftMax !== '100%' &&
+     leftMin.indexOf(insPx) > -1 && leftMax.indexOf(insPx) > -1,
+     '⑥ 两端都由 ' + insPx + ' 内缩、左右同一条式子（最左 ' + leftMin + '）');
+  /* 两条滑条共用坐标系：间隔条的首尾刻度必须和主条圆钮的两个端点完全重合，
+   * 否则「同一套几何」只是看着像，端点处仍会各缩各的。 */
+  const gmAll = sh.querySelectorAll('.gmk');
+  ok(gmAll.length > 1 && gmAll[0].style.left === leftMin &&
+     gmAll[gmAll.length - 1].style.left === leftMax,
+     '⑥ 间隔条首尾刻度与主条圆钮端点表达式完全一致（同一坐标系）');
   /* 断言「两条滑条的尺寸一致」而不是「选择器必须写成成对形式」：
    * 前者是用户看得见的结果（样式齐不齐），后者是实现细节，
    * 以后真拆开写也不该红。 */
@@ -276,9 +299,13 @@ const { ok, boot, bootBagPage, setText, summary } = B;
      thumbW > 0 && thumbW === gthumbW,
      '⑥ 两条滑条尺寸完全一致（行高 ' + tkH + '/' + gtkH + '、轨道 ' + railH + '/' +
      grailH + '、圆钮 ' + thumbW + '/' + gthumbW + '）');
-  ok(railH === 8 && thumbW === 18 && gthumbW === 18,
-     '⑥ 发福袋间隔不再是小一号的 6px 轨道 / 16px 圆钮');
-  ok(css7.indexOf('height:24px') < 0,
+  ok(railH === 8 && thumbW === geom.thumb && gthumbW === geom.thumb,
+     '⑥ 发福袋间隔不再是小一号的轨道 / 圆钮（两条都是轨道 8、圆钮 ' +
+     geom.thumb + '）');
+  /* 旧版间隔条行高 24、主条 28；现在统一 28（上面已断言两者相等），
+   * 这里只钉「.gtk 自己的行高不再是 24」，不去全文搜 24px ——
+   * 圆钮放大态本来就是 24px，全文搜会把正常样式判成残留。 */
+  ok(!/\.gtk\{[^}]*height:24px/.test(css7),
      '⑥ 旧的 24px 缩小版行高已删除（样式不齐的根源）');
   ok(css7.indexOf('0 0 0 5px') < 0,
      '⑥ 悬停光环由 5px 收到 4px（端点处这块外扩是「突出」的主因）');

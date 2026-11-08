@@ -72,6 +72,16 @@ var DYC_PAGE_PATTERNS = {
   //   (hide-elements.js 的 pageMatch),与这里的先后顺序无关。
   shopWindow:
     /^https:\/\/buyin\.jinritemai\.com\/dashboard\/shopwindow\//,
+  // 抖店「商品发布 / 商品编辑」页(2026-11-08 新增,剪贴板粘贴与智能填写的作用页)
+  //   地址形态:fxg.jinritemai.com/ffa/g/create?product_id=…&cid=…&entrance=edit|new
+  //   —— **新建**与**编辑**是同一个路径,只靠 query 区分(entrance),故正则只认路径。
+  //   ⚠️ 必须排在 shopAll **之前**:diag.js 的 pageKind() 按声明顺序先匹配先返回,
+  //      排在后面的话本页永远只报「抖店其他页」,诊断报告里看不出用户在哪一页。
+  //   ⚠️ 本页**仍属 shopAll**(「隐藏页面元素」等全域开关照旧生效);
+  //      manifest 侧由单独一条 content_scripts 承载,并把本路径写进全域条目的
+  //      exclude_matches,避免 flags.js / hide-elements.js 被重复注入两次。
+  goodsEdit:
+    /^https:\/\/(?:[a-z0-9-]+\.)*jinritemai\.com\/ffa\/g\/create/,
   shopAll:
     /^https:\/\/(?:[a-z0-9-]+\.)*jinritemai\.com\/(?!ffa\/content-tool\/live\/control|dashboard\/live\/control)/,
   // 电商罗盘「直播明细」页(2026-10-15 反馈 #84 新增,方案乙):
@@ -917,6 +927,25 @@ var DYC_FLAGS_META = [
     note: '单次最多 30 条，一行一条。',
     default: true,
     pages: ['list']
+  },
+
+  /* ── 商品发布 / 编辑页 · 上传框图片粘贴(2026-11-08 用户新增需求)─────────────
+   * 作用页 = goodsEdit(/ffa/g/create,新建与编辑同路径)。
+   * 图片剪贴板粘贴:上传框内下方挂一枚按钮,一步贴入剪贴板图片,
+   *    不弹系统选择窗。只挂**空白**框 —— 有图的框平台已叠了编辑/删除。
+   * ★ 位置:排在表尾(2026-11-08 用户定:弹窗里**最新的排最下面**,
+   *   以后新加功能一律追加到 DYC_FLAGS_META 末尾,不要往中间插)。
+   * 注:面料材质「智能填写」暂时摘除不推送(2026-11-08 用户定);
+   *   代码与自测保留在摘除提交的历史里,恢复 = revert 该提交,
+   *   恢复时把注入自测的「表尾」断言推进到 fabricSmartFill。 */
+  {
+    key: 'goodsImagePaste',
+    group: 'shop',
+    label: '图片剪贴板粘贴',
+    desc: '上传框内加「粘贴图片」，一步贴入剪贴板图片。',
+    note: '仅空白框显示；无图或塞不进会提示。',
+    default: true,
+    pages: ['goodsEdit']
   }
 ];/* ==========================================================
  * 四、从元数据派生的常量(保持向后兼容)

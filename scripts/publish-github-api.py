@@ -33,6 +33,10 @@ Token 来源（按优先级）：
   python publish-github-api.py --owner <账号> --repo <仓库名> [--tag v26.11.01.2]
   python publish-github-api.py --owner <账号> --repo <仓库名> --dry-run
   python publish-github-api.py --owner <账号> --repo <仓库名> --history 30 --skip-tags
+
+双平台一键（用户 2026-11-08 定）：publish.sh 推送末端会自动调用本脚本
+（--single + DYC_FROM_MAIN_PUBLISH=1，跳过与本轮闸门重复的预演）。
+手动补推时不带该环境变量，publish.sh --dry-run 预演照旧全跑。
 """
 
 import argparse
@@ -362,7 +366,15 @@ def main():
     ap.add_argument("--homepage", default="")
     args = ap.parse_args()
 
-    if not run_main_preflight():
+    # DYC_FROM_MAIN_PUBLISH=1：由 publish.sh 推送末端调用（双平台一键推送，
+    # 用户 2026-11-08 定）。此时本轮全部闸门刚在**同一提交**上跑过
+    # （publish.sh --dry-run 与正式推的闸门集合完全一致，工作区已校验干净），
+    # 跳过下面的重复预演，全量自测约 37 秒不必跑两遍。
+    # 手动补推（不带该变量）时预演照旧全跑，闸门无缺口。
+    if os.environ.get("DYC_FROM_MAIN_PUBLISH", "").strip() == "1":
+        log("\n[0/5] 主发布通道预演：由 publish.sh 本轮闸门提供"
+            "（DYC_FROM_MAIN_PUBLISH=1，同一提交不重复预演）")
+    elif not run_main_preflight():
         return 1
 
     token = load_token()

@@ -13,6 +13,11 @@
  *   ② 手动取消渠道品后再重新勾主商品 —— **再补勾**：每次「未勾 → 已勾」
  *      都是一次报名意图。
  *   ③ 表头全选 —— **也联动**：汇总成一条消息，不逐行刷屏。
+ *      2026-11-08 重写：这张表是虚拟滚动，DOM 里只有视口那一屏（约 6 行）。
+ *      第一版只扫「当前 DOM」，于是超过一屏的商品永远等不到代点（用户报
+ *      「商品超过大概 6 个，下面商品都不会自动勾选渠道品」）。
+ *      现在点全选会一屏一屏滚完整张表、逐屏补勾，结束把滚动位置还原，
+ *      最后只发一条汇总消息。
  *
  * 【识别策略：认文案，不认 class】
  *   平台这套是 auxo/ecom 组件库，class 带哈希后缀（style_container__1TTrI 之类），
@@ -49,12 +54,26 @@
   var MAX_CLIMB = 15;               // 从勾选框往上找「行」的最大层数
   var MAX_ROW_TEXT = 800;           // 一行的文本上限，超过就说明爬过了头（到整表了）
   var MAX_ROW_BOXES = 12;           // 一行里的勾选框上限
-  var MAX_SWEEP_NODES = 3000;       // 全选扫描的节点上限
+  /* 全选扫描的节点上限：2026-11-08 从 3000 提到 12000。
+     3000 只够 6 行左右的普通表格（含页头/侧栏），再往下就没扫到 —— 与用户报的
+     「超过 6 个就不联动」正好重合；虚拟列表一屏只有几百个节点，这里给足余量。 */
+  var MAX_SWEEP_NODES = 12000;
   var SETTLE_MS = 60;               // 等平台把勾选态落定
   var VERIFY_MS = 120;              // 代点之后再回读一次状态，确认真的勾上了
   var LATE_MS = 260;                // 渠道品控件「勾了主品才渲染」时的补一次
   var SWEEP_SETTLE_MS = 180;        // 全选后等各行勾选态批量落定
   var SWEEP_RETRY_MS = 400;         // 第一次扫不到就再等一拍重扫一次
+  /* ---- 逐屏滚动（2026-11-08 新增，虚拟列表） ---- */
+  var SCROLL_ROOM_MIN = 40;         // 「内容高 − 可见高」超过这么多才算可滚容器
+  var SCROLL_SETTLE_MS = 300;       // 滚一屏后等虚拟列表重渲染
+  var SCROLL_IDLE_MS = 620;         // 滚不动时多等一拍再判定到底
+  var CLICK_GAP_MS = 70;            // 逐行代点的间隔（平台受控组件，点太快会被吞）
+  var STEP_RATIO = 0.55;            // 步长 = 可见高 × 0.55（留重叠，防行被跨过去）
+  var STEP_MIN = 240;
+  var STEP_MAX = 720;
+  var MAX_SWEEP_ROUNDS = 40;        // 最多滚多少屏（40 屏 ≈ 240 行）
+  var MAX_SWEEP_TICKS = 400;        // 最多代点多少行（安全阀）
+  var MAX_STALE_PER_SCREEN = 40;    // 单屏内允许「平台重渲染导致节点失效」的次数
 
   var enabled = false;
   var prevFlag = null;              // 首次读到的状态要落进来（否则第一次拨开关静默）
@@ -145,7 +164,12 @@
    * ========================================================== */
 
   function textLooksLikeAnchor(el) {
-    var t = tight(el && el.textContent);
+    /* 先按「原始文本」做两道便宜闸门，再化简：全表扫描节点数上万时，
+       tight() 会为每个容器拼一次整棵子树的文本，是这里最贵的一步。 */
+    var raw = el && el.textContent;
+    if (!raw || raw.length > LABEL_MAX_LEN * 3) return false;
+    if (raw.indexOf(ANCHOR_HEAD) < 0) return false;
+    var t = tight(raw);
     if (!t || t.length > LABEL_MAX_LEN) return false;
     if (t.indexOf(ANCHOR_HEAD) < 0) return false;
     return ANCHOR_TAIL.test(t);
@@ -413,53 +437,263 @@
     }, VERIFY_MS);
   }
 
-  /**
-   * 全选联动：把每一行的渠道品拉到与主品一致（勾上时补勾、取消时一并取消）。
-   * 平台批量落定需要时间，所以先等 180ms；一个都没动成就再等一拍重扫一次
-   * （重扫只处理还没一致的，已一致的不会重复点）。
+  /* ==========================================================
+   * 六·二、表头全选 · 逐屏滚动联动（2026-11-08 重写）
+   * ==========================================================
+   * 【为什么重写】用户报「商品超过大概 6 个时，点全选只有上面几个联动，下面的商品
+   *   都不会自动勾选渠道品」。原因：这张商品表是**虚拟滚动** —— DOM 里只有视口
+   *   那一屏（约 6 行），滚出去的行会被销毁重建。第一版只扫「当前 DOM 里的行」，
+   *   所以全选时只有第一屏被联动；下面的行压根不在页面里，永远等不到代点。
+   *
+   * 【现在的做法】沿用「批量复制链接」已在真机验证过的那条思路：
+   *   ① 先记下用户原来的滚动位置；
+   *   ② 从列表顶部开始，一屏一屏往下滚，每屏把「主品已勾、渠道品未勾」的行补上；
+   *   ③ 连续两屏滚不动 = 到底，收工；
+   *   ④ 把滚动位置还原，只发一条汇总消息。
+   *
+   * 【为什么必须主动滚，不能等用户自己滚】渠道品没勾上，这一行就等于没报上渠道品；
+   *   用户点完全选通常直接去提交，等不到他逐屏看一遍。
+   *
+   * 【安全阀】逐行代点间隔 70ms（平台是受控组件，点太快会被吞掉）；最多滚 40 屏、
+   *   代点 400 行；每行点完都回读状态，只报真的落定了的数量。
+   *   页面没有渠道品 / 列表本来不用滚 ⇒ 行为和第一版完全一致（不滚、不打扰）。
    */
-  function sweep(attempt) {
-    setTimeout(function () { sweepOnce(attempt); }, attempt === 0 ? SWEEP_SETTLE_MS : SWEEP_RETRY_MS);
+
+  function sleep(ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
   }
 
-  function sweepOnce(attempt) {
-    if (!enabled) return;
-    var hosts = collectChannelHosts();
-    if (!hosts.length) return;                    // 这页没有渠道品，静默
-    var tried = [];
-    for (var i = 0; i < hosts.length; i++) {
-      var host = hosts[i];
-      if (!host.isConnected) continue;
-      var row = rowOfHost(host);
-      if (!row) continue;
-      var main = mainBoxInRow(row, host);
-      if (!main) continue;
-      var want = stateOf(main);
-      if (stateOf(host) === want) continue;       // 这一行已经一致
-      if (fireClick(host)) tried.push({ host: host, want: want });
+  function scrollPos(t) {
+    if (!t) return 0;
+    try { return t.scrollTop || 0; } catch (e) { return 0; }
+  }
+
+  function scrollSet(t, v) {
+    if (!t) return;
+    try { t.scrollTop = v; } catch (e) { /* 老内核忽略 */ }
+  }
+
+  /** 商品行所在的可滚动容器：从行往上找「内容高 − 可见高 > 40」的祖先，最内层在前 */
+  function scrollTargets(row) {
+    var list = [];
+    var node = row ? row.parentElement : null;
+    var guard = 0;
+    while (node && node !== document.body && node !== document.documentElement && guard++ < 30) {
+      var room = 0;
+      try { room = node.scrollHeight - node.clientHeight; } catch (e) { room = 0; }
+      if (room > SCROLL_ROOM_MIN) list.push(node);
+      node = node.parentElement;
     }
-    if (!tried.length) {
-      // 一枚都没点：可能是各行勾选态还没落定，再等一拍重扫；仍为 0 就静默
-      if (attempt === 0) sweep(1);
-      return;
+    var tails = [document.body, document.documentElement];
+    for (var i = 0; i < tails.length; i++) {
+      var t = tails[i];
+      if (!t || list.indexOf(t) >= 0) continue;
+      var r = 0;
+      try { r = t.scrollHeight - t.clientHeight; } catch (e2) { r = 0; }
+      if (r > SCROLL_ROOM_MIN) list.push(t);
     }
-    setTimeout(function () {
-      var filled = 0, cleared = 0;
-      for (var k = 0; k < tried.length; k++) {
-        if (stateOf(tried[k].host) === tried[k].want) {
-          if (tried[k].want) filled++; else cleared++;
+    return list;
+  }
+
+  /** 滚动器：记住原位 / 回顶 / 滚一步 / 还原。都找不到可滚容器 ⇒ null（= 不用滚） */
+  function makeMover(row) {
+    var targets = scrollTargets(row);
+    if (!targets.length) return null;
+    var origin = [];
+    var viewH = 0;
+    var bestRoom = -1;
+    for (var i = 0; i < targets.length; i++) {
+      origin.push(scrollPos(targets[i]));
+      var room = 0;
+      try { room = targets[i].scrollHeight - targets[i].clientHeight; } catch (e) { room = 0; }
+      if (room > bestRoom) {
+        bestRoom = room;
+        viewH = targets[i].clientHeight || 0;
+      }
+    }
+    /* 步长必须按**最内层**（真正装商品行的容器）算：外层页面通常比列表高，
+       拿它算步长会一屏跨过中间的行，而虚拟滚动不会渲染被跨过的行 ⇒ 等于漏勾。
+       量不到最内层的高度（老内核/无布局）才退回「剩余空间最大」的那个。 */
+    var innerH = 0;
+    try { innerH = targets[0].clientHeight || 0; } catch (e2) { innerH = 0; }
+    if (innerH > 0) viewH = innerH;
+    /* 行高：用于保证每步至少重叠一行，绝不跨屏跳过 */
+    var rowH = 0;
+    try { rowH = row.getBoundingClientRect().height || 0; } catch (e3) { rowH = 0; }
+    return {
+      viewH: viewH,
+      rowH: rowH,
+      toTop: function () {
+        /* 只把真正承载列表的那一层回顶（第一个还能滚的）；整页跟着滚属于副作用，
+           所以一旦有目标回到 0 就停手 —— 收工时统一还原。 */
+        for (var k = 0; k < targets.length; k++) {
+          if (scrollPos(targets[k]) > 0) { scrollSet(targets[k], 0); return; }
         }
+      },
+      /** 滚一步。返回实际位移（0 = 到底） */
+      stepBy: function (len) {
+        for (var k = 0; k < targets.length; k++) {
+          var t = targets[k];
+          var before = scrollPos(t);
+          scrollSet(t, before + len);
+          var after = scrollPos(t);
+          if (Math.abs(after - before) >= 8) return after - before;
+        }
+        return 0;
+      },
+      restore: function () {
+        for (var k = 0; k < targets.length; k++) scrollSet(targets[k], origin[k]);
       }
-      if (filled + cleared > 0) {
-        if (filled && cleared) say('已联动同步渠道品', 'success', (filled + cleared) + ' 个');
-        else if (filled) say('已联动勾选渠道品', 'success', filled + ' 个');
-        else say('已联动取消渠道品', 'success', cleared + ' 个');
-        return;
+    };
+  }
+
+  /**
+   * 同步「当前这一屏」的渠道品。
+   * 逐行串行代点（点一行 → 等落定 → 再点下一行）：平台是受控组件，一次点六七个
+   * 会中途重渲染，后面的节点就废了（这正是「一屏内也偶尔少勾」的隐患）。
+   */
+  function syncScreen(stat) {
+    var staleCount = 0;                // 单屏内「节点被平台重渲染」的次数（每轮至少推进 1 行）
+
+    function pass() {
+      var hosts = collectChannelHosts();
+      var i = 0;
+
+      function next() {
+        while (i < hosts.length) {
+          if (!enabled) return Promise.resolve('done');   // 中途关开关：立刻停手
+          var host = hosts[i++];
+          /* 平台是受控组件：点一下就可能把整行/整屏重建，手里这枚就废了。
+             废了不回读、不硬点，直接重扫 —— 第一版一口气点完，后面的点击全
+             落在已销毁的节点上，这正是「只有前几个联动上」的另一个来源。 */
+          if (!host.isConnected) return Promise.resolve('stale');
+          var row = rowOfHost(host);
+          if (!row) continue;
+          var main = mainBoxInRow(row, host);
+          if (!main) continue;
+          var want = stateOf(main);
+          if (stateOf(host) === want) continue;                       // 这一行已经一致
+          if (stat.tried >= MAX_SWEEP_TICKS) return Promise.resolve('done');
+          if (!fireClick(host)) return Promise.resolve('done');
+          stat.tried++;
+          return sleep(CLICK_GAP_MS).then(function () {
+            if (stateOf(host) === want) {
+              if (want) stat.filled++; else stat.cleared++;
+            }
+            progress(stat);
+            return next();
+          });
+        }
+        return Promise.resolve('done');
       }
-      if (attempt === 0) { sweep(1); return; }    // 全没落定：再等一拍重扫一次
-      say('渠道品没同步成功，请手动处理', 'alert', '',
-        '表头全选后点到了渠道品勾选框，但状态没变成预期。请手动确认这些行。');
-    }, VERIFY_MS);
+
+      return next();
+    }
+
+    function loop() {
+      return pass().then(function (r) {
+        if (r === 'stale' && staleCount++ < MAX_STALE_PER_SCREEN && stat.tried < MAX_SWEEP_TICKS) {
+          return loop();
+        }
+        return r;
+      });
+    }
+
+    return loop();
+  }
+
+  /** 多屏时给一条进行中的状态（一屏内不打扰，保持第一版的安静）。
+   *  注意 running 态的 count 会被消息层丢掉（dialog.js「running 只显示转圈」），
+   *  所以这里不塞数字，进度用户看页面上的勾选框就行。 */
+  function progress(stat) {
+    if (!stat.scrolled || typeof setStatus !== 'function') return;
+    try {
+      setStatus('正在逐屏联动渠道品', 'running', { source: SOURCE });
+    } catch (e) { /* 忽略 */ }
+  }
+
+  /** 步长：按可见高的一半多滚动；已知行高时**至少压住一行**，绝不跨过没渲染的行 */
+  function stepLenFor(mover) {
+    var len = mover.viewH > 0 ? Math.round(mover.viewH * STEP_RATIO) : STEP_MIN;
+    if (mover.viewH > 0 && mover.rowH > 0) {
+      len = Math.min(len, Math.round(mover.viewH - mover.rowH));
+    }
+    return Math.min(STEP_MAX, Math.max(60, len));
+  }
+
+  function walkDown(stat, mover) {
+    var idle = 0;
+    var len = stepLenFor(mover);
+
+    function round() {
+      if (!enabled) return Promise.resolve();
+      return syncScreen(stat).then(function () {
+        if (stat.rounds++ >= MAX_SWEEP_ROUNDS || stat.tried >= MAX_SWEEP_TICKS) return;
+        var moved = mover.stepBy(len);
+        if (Math.abs(moved) >= 8) { stat.scrolled = true; idle = 0; } else idle++;
+        if (idle >= 2) return;                      // 连续两屏滚不动 = 到底
+        progress(stat);
+        return sleep(Math.abs(moved) >= 8 ? SCROLL_SETTLE_MS : SCROLL_IDLE_MS).then(round);
+      });
+    }
+
+    return round();
+  }
+
+  function sweepRun(attempt) {
+    var stat = { tried: 0, filled: 0, cleared: 0, rounds: 0, scrolled: false };
+    var hosts = collectChannelHosts();
+    if (!hosts.length) return Promise.resolve(stat);          // 这页没有渠道品，静默
+
+    var row = null;
+    for (var i = 0; i < hosts.length && !row; i++) row = rowOfHost(hosts[i]);
+    var mover = row ? makeMover(row) : null;
+    if (!mover) return syncScreen(stat).then(function () { return stat; });
+
+    mover.toTop();
+    return sleep(SCROLL_SETTLE_MS)
+      .then(function () { return walkDown(stat, mover); })
+      .then(function () {
+        mover.restore();                          // 用户的视图还给他，别因为联动被滚到别处
+        return sleep(120);
+      })
+      .then(function () { return stat; });
+  }
+
+  /** 全选联动入口：先等平台把各行勾选态批量落定（180ms），再开工 */
+  var sweeping = false;
+
+  function sweep(attempt) {
+    if (!enabled || sweeping) return;
+    var wait = attempt === 0 ? SWEEP_SETTLE_MS : SWEEP_RETRY_MS;
+    setTimeout(function () {
+      if (!enabled || sweeping) return;
+      sweeping = true;
+      sweepRun(attempt).then(function (stat) {
+        sweeping = false;
+        reportSweep(stat, attempt);
+      }, function () {
+        sweeping = false;
+      });
+    }, wait);
+  }
+
+  function reportSweep(stat, attempt) {
+    var done = stat.filled + stat.cleared;
+    if (!done) {
+      /* 只有「一屏内、一枚都没点」才重扫一次：那是平台还没把全选的勾选态写进 DOM。
+         多屏走完（scrolled）已经花了好几秒，状态早落定了 —— 这时 0 个就是真的没得点，
+         再走一遍纯粹是白滚一遍页面。点过但没落定同理只重扫一次。 */
+      if (attempt === 0 && (stat.tried > 0 || !stat.scrolled)) { sweep(1); return; }
+      if (stat.tried) {
+        say('渠道品没同步成功，请手动处理', 'alert', '',
+          '表头全选后点到了渠道品勾选框，但状态没变成预期。请手动确认这些行。');
+      }
+      return;                                     // 本来就不需要点（都一致）：不出声
+    }
+    if (stat.filled && stat.cleared) say('已联动同步渠道品', 'success', done + ' 个');
+    else if (stat.filled) say('已联动勾选渠道品', 'success', done + ' 个');
+    else say('已联动取消渠道品', 'success', done + ' 个');
   }
 
   /* ---- 事件：只认真实用户的点击 ---- */
@@ -529,7 +763,11 @@
     stateOf: stateOf,
     fireClick: fireClick,
     afterClick: afterClick,
-    sweepOnce: sweepOnce,
+    sweep: sweep,
+    sweepRun: sweepRun,
+    syncScreen: syncScreen,
+    makeMover: makeMover,
+    scrollTargets: scrollTargets,
     onDocumentClick: onDocumentClick
   };
 })();

@@ -306,3 +306,43 @@
 @media (prefers-reduced-motion: reduce) {
   .dyc-shopwinpaste-result, .dyc-shopwinpaste-result path { animation: none; }
 }
+/* ---- 商品发布 / 编辑页 · 上传框「粘贴图片」按钮(2026-11-08) ----
+   用户要求:在上传图片的窗口内部下方、不挡位置、简明易懂。
+   尺寸固定 px(AGENTS 第 15 条),不随页面缩放变大小;
+   absolute 定在框内底边,左右各留 6px —— 框内上方留给平台的「+ 上传图片」。 */
+.dyc-imgpaste-btn {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: 6px;
+  box-sizing: border-box;
+  height: 24px;
+  margin: 0;
+  padding: 0 4px;
+  border: 1px solid #d6e2ff;
+  border-radius: 6px;
+  background: #eef3ff;
+  color: #1664ff;
+  font-family: -apple-system, BlinkMacSystemFont, "Microsoft YaHei", sans-serif;
+  font-size: 12px;
+  line-height: 22px;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  z-index: 3;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.dyc-imgpaste-btn:hover { background: #1664ff; border-color: #1664ff; color: #fff; }
+.dyc-imgpaste-btn:disabled { background: #eef3ff; border-color: #d6e2ff; color: #1664ff; opacity: 0.6; cursor: default; }
+
+.dyc-imgpaste-btn.is-compact {
+  height: 20px;
+  left: 4px;
+  right: 4px;
+  bottom: 4px;
+  font-size: 11px;
+  line-height: 18px;
+  border-radius: 5px;
+}

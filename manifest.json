@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "可可助手",
-  "version": "26.11.08.1",
+  "version": "26.11.08.2",
   "description": "抖音抖店、微信小店、中控台小助手",
   "permissions": [
     "storage",
@@ -60,6 +60,7 @@
       ],
       "js": [
         "src/content/flags.js",
+        "src/content/goods-list-flag.js",
         "src/content/diag.js",
         "src/content/cursor-fix.js",
         "src/content/anchor.js",
@@ -129,6 +130,7 @@
       ],
       "js": [
         "src/content/flags.js",
+        "src/content/shopwindow-flag.js",
         "src/content/diag.js",
         "src/content/anchor.js",
         "src/content/dialog.js",
@@ -167,11 +169,33 @@
         "https://compass.jinritemai.com/shop/commodity/product-list*",
         "https://compass.jinritemai.com/shop/merchandise-traffic*",
         "https://*.jinritemai.com/ffa/merchant/*",
-        "https://*.jinritemai.com/dashboard/shopwindow/*"
+        "https://*.jinritemai.com/dashboard/shopwindow/*",
+        "https://*.jinritemai.com/ffa/g/create*"
       ],
       "js": [
         "src/content/flags.js",
         "src/live/hide-elements.js"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.jinritemai.com/ffa/g/create*"
+      ],
+      "js": [
+        "src/content/flags.js",
+        "src/content/goods-create-flag.js",
+        "src/content/diag.js",
+        "src/content/anchor.js",
+        "src/content/dialog.js",
+        "src/content/goods-image-paste.js",
+        "src/live/hide-elements.js",
+        "src/content/stock-net-probe.js",
+        "src/content/debug-panel.js"
+      ],
+      "css": [
+        "src/content/style.css",
+        "src/content/msgbox.css"
       ],
       "run_at": "document_idle"
     },
@@ -182,6 +206,7 @@
       ],
       "js": [
         "src/content/flags.js",
+        "src/content/compass-live-flag.js",
         "src/content/diag.js",
         "src/content/anchor.js",
         "src/content/dialog.js",
@@ -227,6 +252,7 @@
       ],
       "js": [
         "src/content/flags.js",
+        "src/content/compass-screen-flag.js",
         "src/content/diag.js",
         "src/content/dialog.js",
         "src/content/debug-panel.js",
@@ -248,6 +274,7 @@
       ],
       "js": [
         "src/content/flags.js",
+        "src/content/compass-product-flag.js",
         "src/content/diag.js",
         "src/content/anchor.js",
         "src/content/dialog.js",
@@ -267,6 +294,7 @@
       ],
       "js": [
         "src/content/flags.js",
+        "src/content/merchant-flag.js",
         "src/content/diag.js",
         "src/content/anchor.js",
         "src/content/dialog.js",

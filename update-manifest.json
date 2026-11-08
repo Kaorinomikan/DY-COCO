@@ -1,5 +1,5 @@
 {
-  "version": "26.11.08.1",
+  "version": "26.11.08.2",
   "algorithm": "sha256",
   "files": [
     {
@@ -19,23 +19,23 @@
     },
     {
       "path": "manifest.json",
-      "size": 9362,
-      "sha256": "b34b7735b0ba358b7bcc79a317199c14fa6a705a39d74637116562fde8e788f1"
+      "size": 10241,
+      "sha256": "29c08845e09b440b44a9396803fd8ee47356554e4d10b0d066a1016c4428e760"
     },
     {
       "path": "src/background/service-worker.js",
-      "size": 88738,
-      "sha256": "5d2a8c67042dd12a3435f487e5c28129f538daaff44fb24437b5bdacd9110a52"
+      "size": 92537,
+      "sha256": "564c63e4904813692cea12a7d244a79b552be73efb5ada488b5e5dd09113c140"
     },
     {
       "path": "src/content/anchor.js",
-      "size": 29007,
-      "sha256": "2d5bb27aad3a7aca08d12ff597c244c4c5d1b98cbe010ae6dc1280f374c0dc27"
+      "size": 29020,
+      "sha256": "33a2600a7ff0f21deaf16d5651c0b75c5c32af74f0ca3ce5436f9d23324684fa"
     },
     {
       "path": "src/content/campaign-channel-tick.js",
-      "size": 22679,
-      "sha256": "6d621024822da0619769f3e848cf8823153d26ca9f202f3205671c9155f0e16f"
+      "size": 33653,
+      "sha256": "538d44b1e410902ec8cdeb6453c5f8ceb7eb13552a7d623b834d5b473dde2fec"
     },
     {
       "path": "src/content/channel-offline-delete.js",
@@ -53,6 +53,21 @@
       "sha256": "f9dc99a0d06df9647258575ec3b1ba1ede67a1fc8d4c027cbd07dce5c5659476"
     },
     {
+      "path": "src/content/compass-live-flag.js",
+      "size": 361,
+      "sha256": "b1f9aa5fc01a1962d93cee34fd46468d9cdf519316fcc6b0731a671787da9ce8"
+    },
+    {
+      "path": "src/content/compass-product-flag.js",
+      "size": 358,
+      "sha256": "9ddef42650c1fbbf06ad604593ab209adbf6d084398bcfd9ab9366a8df46d957"
+    },
+    {
+      "path": "src/content/compass-screen-flag.js",
+      "size": 344,
+      "sha256": "049ddc653a168f01fd66b30b440f8bea1885c4797c17f15c4e362110ac53bce9"
+    },
+    {
       "path": "src/content/cursor-fix.js",
       "size": 35251,
       "sha256": "e33b85d741354f96bba2e09bb3de4c8124d17400533b12b4fe91e88bec8eb2e6"
@@ -64,8 +79,8 @@
     },
     {
       "path": "src/content/diag.js",
-      "size": 60663,
-      "sha256": "85e34033b3bf32767657a14b6e1494b603478da7a4d43e6381bae6b4c1c8eb2d"
+      "size": 62474,
+      "sha256": "a29c4926963b029779f18ea300552c56ea0b4d582e07295b2100e78485f447d5"
     },
     {
       "path": "src/content/dialog.js",
@@ -79,13 +94,28 @@
     },
     {
       "path": "src/content/flags.js",
-      "size": 85755,
-      "sha256": "57838eeaf562e18e7daa744b14642d9e48007a9c097bc52aff287586e3acc523"
+      "size": 87744,
+      "sha256": "ae6ddf4349e973ca3b0d3341022602af4305562f24993e96c53d7f45b6bac826"
     },
     {
       "path": "src/content/goods-batch-copy.js",
       "size": 61144,
       "sha256": "d1fe9bdc94f7948b63b2e3a9768dcde151c05886d59e345d2a9e185b8aa3dd7e"
+    },
+    {
+      "path": "src/content/goods-create-flag.js",
+      "size": 346,
+      "sha256": "f407d213b72eea5c22fa16f5474a25056a40be7b0eec345b481c16795b8d1c41"
+    },
+    {
+      "path": "src/content/goods-image-paste.js",
+      "size": 33660,
+      "sha256": "7fc805303c958bad25f6b6042466e7a80fb2aef11c96b7cf7a15d9f86143e1d2"
+    },
+    {
+      "path": "src/content/goods-list-flag.js",
+      "size": 785,
+      "sha256": "bdd1726878826973847db404f1b10db8b40089e11ce1354906e61d52ca710d16"
     },
     {
       "path": "src/content/inject-button.js",
@@ -101,6 +131,11 @@
       "path": "src/content/main.js",
       "size": 5823,
       "sha256": "e85572b900aeadb796fdf0e44b3afa471cd3266c900070213c340125d8ca96b5"
+    },
+    {
+      "path": "src/content/merchant-flag.js",
+      "size": 332,
+      "sha256": "d2fb26cfc5b58bb73d6b554afe93dd5df3a4363f4560868fc6461886ec07ba15"
     },
     {
       "path": "src/content/msgbox.css",
@@ -138,6 +173,11 @@
       "sha256": "f1cbfdd38b4e55c889fe46ec8ce06dffa56f769e83886313e97b5682f40e6555"
     },
     {
+      "path": "src/content/shopwindow-flag.js",
+      "size": 1396,
+      "sha256": "7c897de4319b7c11b5c7f006351ecdf14830e13fee87beb20f6f6f3c7005e517"
+    },
+    {
       "path": "src/content/stock-direct.js",
       "size": 10158,
       "sha256": "5bedf000f26d0ccc6c8c257341a9630040133ee8d4b79c17f652e29c7526300a"
@@ -154,8 +194,8 @@
     },
     {
       "path": "src/content/style.css",
-      "size": 8539,
-      "sha256": "5bc699a9e312c7dca52b3133b391b5e3eeac5b1ad340402120cf85f44b87ccd1"
+      "size": 9812,
+      "sha256": "605da73ef22243a6cb7a9abd671fcaf743e4ce672eaa44612ee276da1d67335f"
     },
     {
       "path": "src/content/wx-goods-title.js",
@@ -229,8 +269,8 @@
     },
     {
       "path": "src/live/live-agent.js",
-      "size": 6585,
-      "sha256": "bb5720a7ccbb0b0bc1f5fd3b1bd517192b95c6cbaba4929bd74ab4fe2e779d49"
+      "size": 11840,
+      "sha256": "7819108499471746168bd3166e958daf70c8b40f61405a281453a02fdea399be"
     },
     {
       "path": "src/live/live-control-flag.js",
@@ -264,8 +304,8 @@
     },
     {
       "path": "src/live/lucky-bag.js",
-      "size": 346206,
-      "sha256": "f21ab82be7039d82fb577a8b6428a887c97c5dd9b0a7997696ffd522999cb029"
+      "size": 349232,
+      "sha256": "4798fe5963265192030a83fa155a813c6827233a7ebd1ec7987a266e1f65415c"
     },
     {
       "path": "src/live/name-wrap.js",
@@ -299,8 +339,8 @@
     },
     {
       "path": "src/offscreen/clipboard.js",
-      "size": 1001,
-      "sha256": "c4319e68e810dcd11a62e3d7e2642006083edca3d7dee10bf8f761fb55c9b2a1"
+      "size": 3818,
+      "sha256": "5aafc49009f85b01a8bd79fa8e4731892c98e1431962059a3d2df5d0fe7d4df2"
     },
     {
       "path": "src/offscreen/host.html",
@@ -384,8 +424,8 @@
     },
     {
       "path": "src/shared/live-control-assets.js",
-      "size": 2132,
-      "sha256": "96ffab78e58705ca607173d0b908098a689ec08932170999bcf606f04356cad6"
+      "size": 7568,
+      "sha256": "fc7dc07336a3340e77d201baa9fdab768bcccf8d2efb70242abbb64558422838"
     },
     {
       "path": "src/update/update.css",

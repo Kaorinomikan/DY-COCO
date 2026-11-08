@@ -84,7 +84,22 @@ class FlowTests(unittest.TestCase):
         self.write('.gitee-url.bak', 'offline-test.git')
         self.write('pending', '待推送内容')
         self.write('scripts/计点.sh', '#!/bin/bash\n[ "$SCENARIO" = "points-fail" ] && exit 1\nprintf "5\\n"\n')
-        self.fake_py = self.write('fake-python', '#!/bin/bash\n[ "$SCENARIO" = "reset-fail" ] && exit 1\n: > "$CASE_ROOT/reset-called"\nprintf "已重置" > "$CASE_ROOT/pending"\n')
+        self.fake_py = self.write('fake-python', r'''#!/bin/bash
+case "$*" in
+  *reset-pending.py*)
+    # 只有真正的 reset-pending 调用才产生 reset-called 标记。
+    # （publish.sh 推送末端新增了 GitHub 同步这一 Python 调用，
+    #   不能让它误报「待推送清单已重置」。）
+    [ "$SCENARIO" = "reset-fail" ] && exit 1
+    : > "$CASE_ROOT/reset-called"
+    printf "已重置" > "$CASE_ROOT/pending" ;;
+  *publish-github-api.py*)
+    # 双平台一键推送：记录「GitHub 同步被调用」，github-fail 场景模拟失败。
+    : > "$CASE_ROOT/github-called"
+    [ "$SCENARIO" = "github-fail" ] && exit 1 ;;
+esac
+exit 0
+''')
         self.write('scripts/reset-pending.py', '# 仅作存在性占位，不执行\n')
         self.write('scripts/sync-coco-test.sh', '''#!/bin/bash
 : > "$CASE_ROOT/sync-called"
@@ -159,6 +174,37 @@ REMOTE=gitee
         self.assertFalse((self.path / '.self-review-ok').exists())
         self.assertTrue((self.path / 'reset-called').exists())
         self.assertFalse((self.path / 'remote-active').exists())
+
+    def test_publish_success_also_syncs_github(self):
+        # 双平台一键推送（用户 2026-11-08 定）：Gitee 校验通过后必须自动调
+        # publish-github-api.py，成功输出必须声明双平台一致。
+        self.assertEqual(self.publish('success'), 0, self.output)
+        self.assertTrue((self.path / 'github-called').exists(), self.output)
+        self.assertIn('GitHub 备用源已同步', self.output)
+        self.assertIn('双平台一致', self.output)
+        # git trace 仍只有 Gitee 的两条 push —— GitHub 走 API，不产生 git push。
+        pushes = [line for line in self.trace().splitlines() if ' push ' in line]
+        self.assertEqual(len(pushes), 2, self.trace())
+
+    def test_github_sync_failure_does_not_fail_publish(self):
+        # GitHub 是备用源：Gitee 主源已上线后同步失败不判发布失败 ——
+        # 照常清自审标记、重置待推送清单，但必须大声报警并给出补推命令。
+        self.assertEqual(self.publish('github-fail'), 0, self.output)
+        self.assertTrue((self.path / 'github-called').exists(), self.output)
+        self.assertIn('[警告] GitHub 备用源同步失败', self.output)
+        self.assertIn('补推', self.output)
+        self.assertFalse((self.path / '.self-review-ok').exists())
+        self.assertTrue((self.path / 'reset-called').exists())
+
+    def test_github_sync_can_be_skipped_explicitly(self):
+        # GITHUB_SYNC=0 显式跳过：不得调用 API 脚本，且必须打印显著提示，
+        # 防止「以为推了双平台其实只推了一边」。
+        self.env['GITHUB_SYNC'] = '0'
+        self.assertEqual(self.publish('success'), 0, self.output)
+        self.assertFalse((self.path / 'github-called').exists(), self.output)
+        self.assertIn('[跳过] GITHUB_SYNC=0', self.output)
+        self.assertFalse((self.path / '.self-review-ok').exists())
+        self.assertTrue((self.path / 'reset-called').exists())
 
     def test_publish_reuses_correct_existing_tag(self):
         self.assertEqual(self.publish('local-correct'), 0, self.output)

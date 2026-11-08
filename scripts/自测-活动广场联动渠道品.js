@@ -13,7 +13,12 @@
  *   ⑥ 该行没有渠道品（数量 0）→ 静默，不点、不报；
  *   ⑦ 侧栏「渠道品报名状态」这类同名文案不能把行认错；
  *   ⑧ 开关关掉 → 点了也不动；
- *   ⑨ 页面上没有「渠道品跟随主品报名」→ 什么都不做。
+ *   ⑨ 页面上没有「渠道品跟随主品报名」→ 什么都不做；
+ *   ⑩ 虚拟滚动（一屏 6 行、共 12 行）→ 全选要把**整张表**都联动上，且滚回原位；
+ *      2026-11-08 用户报「商品超过大概 6 个，下面商品都不会自动勾选渠道品」。
+ *   ⑪ 起始滚动位置不在顶部 → 联动结束要回到用户原来的位置；
+ *   ⑫ 一屏装得下全部行（不用滚）→ 行为不变（不滚、全部勾上）；
+ *   ⑬ 虚拟滚动下取消全选 → 整张表的渠道品一并取消。
  *
  * 用法：
  *   NODE_PATH=C:/Users/79412/.workbuddy/binaries/node/workspace/node_modules \
@@ -160,6 +165,142 @@ function click(env, id) {
   el.dispatchEvent(ev);
 }
 
+/* ------------------------------------------------------------
+ * 虚拟滚动假页面（2026-11-08 用户报「超过 6 个就失效」的现场还原）
+ * 真机：这张商品表是虚拟滚动 —— DOM 里只有视口那一屏（约 6 行），
+ * 滚出去的行被销毁重建；而且**每点一次勾选，平台会把整屏重渲染一遍**
+ * （这正是「一口气点完，后面的点击落空」的来源，必须一起还原）。
+ * 布局（clientHeight / scrollHeight）在 jsdom 里没有，用 defineProperty 补。
+ * ------------------------------------------------------------ */
+function makeVirtualPage(opts) {
+  const total = opts.total || 12;
+  const perScreen = Math.min(opts.perScreen || 6, total);
+  const rowH = 60;
+  const startAt = opts.startAt || 0;
+
+  const state = { main: [], ch: [] };
+  for (let i = 0; i < total; i++) { state.main.push(false); state.ch.push(false); }
+
+  const dom = new JSDOM('<!doctype html><html><body><div id="app"><div class="table">' +
+    '<div class="header-row" id="head">' +
+      '<span class="auxo-checkbox" id="allwrap"><input type="checkbox" id="all"></span>' +
+      '<span class="th">商品信息</span><span class="th">报名价</span>' +
+    '</div><div class="scroll-outer" id="outer"><div class="list" id="list"></div></div>' +
+    '</div></div></body></html>', {
+    runScripts: 'dangerously',
+    url: 'https://fxg.jinritemai.com/ffa/merchant/parent-campaign-detail?id=7390938114841329970'
+  });
+  const win = dom.window;
+  const doc = win.document;
+  const list = doc.getElementById('list');
+  const outer = doc.getElementById('outer');
+
+  /* 外层页面自己也高于可见区（真机常见：后台是「外层整页 + 内层列表」两层都能滚） */
+  if (opts.outerScroll) {
+    let ost = 0;
+    Object.defineProperty(outer, 'scrollTop', {
+      get: function () { return ost; },
+      set: function (v) { ost = Math.max(0, Math.min(900, Number(v) || 0)); },
+      configurable: true
+    });
+    Object.defineProperty(outer, 'clientHeight', { get: function () { return 600; }, configurable: true });
+    Object.defineProperty(outer, 'scrollHeight', { get: function () { return 1500; }, configurable: true });
+  }
+
+  const viewH = perScreen * rowH;
+  const contentH = total * rowH;
+  const maxScroll = Math.max(0, contentH - viewH);
+  let st = Math.min(startAt, maxScroll);
+
+  /* 平台重渲染：只重建列表内部（表头那枚「全选」不动 —— 真机也是粘在表头上的） */
+  function render() {
+    const start = maxScroll > 0
+      ? Math.min(Math.max(0, Math.floor(st / rowH)), Math.max(0, total - perScreen))
+      : 0;
+    const end = Math.min(total, start + perScreen);
+    let html = '';
+    for (let i = start; i < end; i++) {
+      html += '<div class="row" id="row-p' + i + '">' +
+        '<div class="cell-prod">' +
+          '<span class="auxo-checkbox" id="wrap-p' + i + '">' +
+            '<input type="checkbox" id="p' + i + '"' + (state.main[i] ? ' checked' : '') + '>' +
+          '</span>' +
+          '<div class="prod-name">商品 ' + i + ' 名称</div>' +
+          '<label class="auxo-checkbox" id="wrap-c' + i + '">' +
+            '<input type="checkbox" id="c' + i + '"' + (state.ch[i] ? ' checked' : '') + '>' +
+            '<span class="ch-text">渠道品跟随主品报名 (1)</span>' +
+          '</label>' +
+        '</div>' +
+        '<div class="cell-price">1999 元</div>' +
+        '</div>';
+    }
+    list.innerHTML = html;
+    for (let i = start; i < end; i++) {
+      const p = doc.getElementById('p' + i);
+      const c = doc.getElementById('c' + i);
+      if (p) p.addEventListener('click', function () { state.main[i] = p.checked; render(); });
+      if (c) c.addEventListener('click', function () { state.ch[i] = c.checked; render(); });
+    }
+  }
+
+  Object.defineProperty(list, 'scrollTop', {
+    get: function () { return st; },
+    set: function (v) { st = Math.max(0, Math.min(maxScroll, Number(v) || 0)); render(); },
+    configurable: true
+  });
+  Object.defineProperty(list, 'clientHeight', {
+    get: function () { return viewH; }, configurable: true
+  });
+  Object.defineProperty(list, 'scrollHeight', {
+    get: function () { return contentH; }, configurable: true
+  });
+
+  render();
+
+  /* 平台行为：点「全选」= 数据层把每一行都勾上/取消，再按可见窗口重渲染 */
+  const all = doc.getElementById('all');
+  all.addEventListener('click', function () {
+    const on = all.checked;
+    for (let i = 0; i < total; i++) state.main[i] = on;
+    render();
+  });
+
+  return { dom: dom, win: win, doc: doc, list: list, state: state };
+}
+
+/** 装虚拟滚动页 + 装模块 + 捕获消息 */
+async function bootVirtual(opts) {
+  const page = makeVirtualPage(opts);
+  const win = page.win;
+  const messages = [];
+  win.toast = function (text, type, o) {
+    messages.push({ text: text, type: type || 'info', source: (o && o.source) || '', count: (o && o.count) || '' });
+  };
+  win.setStatus = function (text, type, o) {
+    /* running 只是过程状态，不算一条消息（与真机 setStatus 同口径） */
+    if (type === 'running') return;
+    messages.push({ text: text, type: type || 'info', source: (o && o.source) || '', count: (o && o.count) || '' });
+  };
+  win.dycReadFlags = function () { return Promise.resolve({ campaignChannelTick: opts.flag !== false }); };
+  win.dycWatchFlags = function () {};
+  win.eval(CODE);
+  await sleep(30);
+  return {
+    dom: page.dom, win: win, doc: page.doc, list: page.list, state: page.state,
+    messages: messages, api: win.__DYC_CAMPAIGN_TICK__
+  };
+}
+
+/** 轮询等待（不许用固定 sleep 卡时间：并发机器上必翻车） */
+async function waitFor(fn, timeout) {
+  const deadline = Date.now() + (timeout || 15000);
+  while (Date.now() < deadline) {
+    if (fn()) return true;
+    await sleep(40);
+  }
+  return false;
+}
+
 (async function main() {
   console.log('===== 活动广场 · 勾主商品联动渠道品 =====');
 
@@ -278,6 +419,46 @@ function click(env, id) {
   );
   await sleep(320);
   ok(msgs.length === 0, '⑨ 没有渠道品文案的页面：完全静默');
+
+  /* ---- ⑩ 虚拟滚动：一屏 6 行、共 12 行 ---- */
+  env = await bootVirtual({ total: 12, perScreen: 6 });
+  click(env, 'all');
+  ok(await waitFor(() => env.messages.length >= 1, 15000), '⑩ 联动走完并报了结果（没有卡死）');
+  ok(env.state.ch.every(Boolean), '⑩ 12 行（虚拟滚动、一屏 6 行）全选后渠道品全部勾上');
+  ok(env.state.main.every(Boolean), '⑩ 主商品的勾选态没有被改坏');
+  ok(env.messages.length === 1, '⑩ 只发一条汇总消息（不逐屏刷屏）');
+  ok(env.messages[0] && env.messages[0].text === '已联动勾选渠道品', '⑩ 消息值 = 已联动勾选渠道品');
+  ok(env.messages[0] && env.messages[0].count === '12 个', '⑩ 消息结果数 = 12 个');
+  ok(env.list.scrollTop === 0, '⑩ 联动结束把滚动位置还原到原位');
+
+  /* ---- ⑬ 虚拟滚动下取消全选（同一次会话里接着点） ---- */
+  click(env, 'all');
+  ok(await waitFor(() => env.messages.length >= 2, 15000), '⑬ 取消全选也走完了');
+  ok(env.state.ch.every((v) => v === false), '⑬ 取消全选后整张表的渠道品一并取消');
+  ok(env.messages[1] && env.messages[1].text === '已联动取消渠道品', '⑬ 第二条消息 = 已联动取消渠道品');
+  ok(env.messages[1] && env.messages[1].count === '12 个', '⑬ 取消结果数 = 12 个');
+  ok(env.messages.length === 2, '⑬ 勾选与取消各一条（共两条）');
+
+  /* ---- ⑪ 起始滚动位置不在顶部 → 结束要回到原处 ---- */
+  env = await bootVirtual({ total: 12, perScreen: 6, startAt: 120 });
+  click(env, 'all');
+  await waitFor(() => env.messages.length >= 1, 15000);
+  ok(env.state.ch.every(Boolean), '⑪ 从列表中间起步时也能把整张表勾全');
+  ok(env.list.scrollTop === 120, '⑪ 结束后滚动位置回到用户原来的 120');
+
+  /* ---- ⑫ 一屏装得下全部行（不用滚）→ 行为不变 ---- */
+  env = await bootVirtual({ total: 12, perScreen: 12 });
+  click(env, 'all');
+  await waitFor(() => env.messages.length >= 1, 15000);
+  ok(env.state.ch.every(Boolean), '⑫ 一屏装得下 12 行时照样全部勾上（不滚）');
+  ok(env.list.scrollTop === 0, '⑫ 不用滚的页面滚动位置不受影响');
+
+  /* ---- ⑭ 外层页面比列表高 + 行数多：步长必须按列表算，不许跨过没渲染的行 ---- */
+  env = await bootVirtual({ total: 18, perScreen: 6, outerScroll: true });
+  click(env, 'all');
+  await waitFor(() => env.messages.length >= 1, 25000);
+  ok(env.state.ch.every(Boolean), '⑭ 18 行 + 外层 900px 也能滚时，一行都不漏');
+  ok(env.messages[0] && env.messages[0].count === '18 个', '⑭ 消息结果数 = 18 个');
 
   console.log('');
   console.log('通过 ' + pass + ' 项' + (failures.length ? '，失败 ' + failures.length + ' 项' : '，全部通过'));

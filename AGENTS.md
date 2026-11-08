@@ -145,17 +145,22 @@ Chromium 内核浏览器扩展（360 极速X / 夸克等），为抖店（抖音
    `开发日志.md` 按本批 git log 批量补记。
 5. 预演：`bash publish.sh --dry-run`；性能闸后必跑
    `python scripts/run-selftests.py --release-gate`（全量，同内容可复用凭据）。
-6. 正式推：`SELF_REVIEW=1 bash publish.sh`；GitHub API 通道在任何远端写入前
-   必须复用 `publish.sh --dry-run`，不得绕过全量自测及其余发布闸。
+6. 正式推：`SELF_REVIEW=1 bash publish.sh` —— **一条命令双平台**（用户
+   2026-11-08 定）：Gitee 推送并校验通过后，脚本末端自动同步 GitHub 备用源
+   （`publish-github-api.py --single`，带 `DYC_FROM_MAIN_PUBLISH=1` 跳过与本轮
+   闸门重复的预演）。GitHub 失败不判发布失败（主源已上线），大声报警 + 给补推
+   命令；`GITHUB_SYNC=0` 显式跳过。**手动补推 GitHub 时不得带该环境变量**，
+   必须先复用 `publish.sh --dry-run`，不得绕过全量自测及其余发布闸。
 7. 推送顺序：工作区与并行任务 → 自审 → 版本 → 文档与文案 → manifest 顺序 →
    实质更新 → SW 构建标记/更新清单/性能 → 全量自测 → 敏感词 → 攒批 →
-   备份/推送/校验。
+   备份/推送/校验 → GitHub 备用源同步 → 桌面测试档同步 → 重置清单。
 8. 按铁律 12 汇报「本轮更新点」+ 最新看板。
 
 **Git 环境**：本机 git 只有
 `C:/Users/79412/.workbuddy/binaries/PortableGit/versions/*/cmd/git.exe`
-（PATH 里没有裸 `git`）。Gitee 推送入口为 `publish.sh`（推完自动移除 remote）；
-GitHub 备用通道为 `scripts/publish-github-api.py`，必须先复用主通道预演。
+（PATH 里没有裸 `git`）。Gitee 推送入口为 `publish.sh`（推完自动移除 remote，
+并自动同步 GitHub 备用源 —— 双平台一键，见推送期第 6 条）；
+`scripts/publish-github-api.py` 现仅作手动补推用，必须先复用主通道预演。
 
 ---
 

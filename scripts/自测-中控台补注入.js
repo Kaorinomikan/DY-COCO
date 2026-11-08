@@ -74,8 +74,8 @@ console.log('B. 探子与 flags 的判定口径一致');
   vm.runInContext(flagsCode.slice(start, end), flagsCtx);
 
   const agentCode = read('src/live/live-agent.js');
-  const reMatch = /var\s+RE\s*=\s*(\/[\s\S]*?\/);/.exec(agentCode);
-  assert.ok(reMatch, '探子里找不到判定正则');
+  const reMatch = /var\s+RE_LIVE\s*=\s*(\/[\s\S]*?\/);/.exec(agentCode);
+  assert.ok(reMatch, '探子里找不到中控台分区判定正则 RE_LIVE');
   const agentRe = vm.runInContext('(' + reMatch[1] + ')', vm.createContext({}));
 
   const urls = [
@@ -98,6 +98,7 @@ console.log('B. 探子与 flags 的判定口径一致');
 /* ---------------- C. 探子行为 ---------------- */
 console.log('C. 探子行为');
 {
+  const NEUTRAL = 'https://buyin.jinritemai.com/dashboard?universal_page_params_id=x';  // 百应主页：任何分区都不命中
   const SHOP = 'https://buyin.jinritemai.com/dashboard/shopwindow/goods-list?x=1';
   const CTRL = 'https://buyin.jinritemai.com/dashboard/live/control';
 
@@ -120,7 +121,7 @@ console.log('C. 探子行为');
       chrome: {
         runtime: {
           sendMessage(msg, cb) {
-            asks.push({ type: msg && msg.type, at: clock.now });
+            asks.push({ type: msg && msg.type, group: msg && msg.group, at: clock.now });
             if (o.silent) return undefined;          // 模拟「后台永不回执」
             const r = typeof o.reply === 'function' ? o.reply(asks.length) : { ok: true, installed: false };
             if (cb) cb(r);
@@ -144,7 +145,7 @@ console.log('C. 探子行为');
 
   // ① 别页：不请求
   {
-    const s = boot(SHOP);
+    const s = boot(NEUTRAL);
     s.tick();
     assert.deepEqual(s.asks, [], '不在中控台时不许请求补注入');
     assert.equal(s.timeouts.length, 1, '应挂一个 1.5 秒兜底');
@@ -155,10 +156,11 @@ console.log('C. 探子行为');
 
   // ② 切进中控台：请求一次，退避期内不重复
   {
-    const s = boot(SHOP);
+    const s = boot(NEUTRAL);
     s.ctx.location.href = CTRL;
     s.tick();
-    assert.deepEqual(s.asks.map((a) => a.type), ['dyc:injectLiveControl'], '切进中控台应当请后台补一次');
+    assert.deepEqual(s.asks.map((a) => a.type), ['dyc:injectGroup'], '切进中控台应当请后台补一次');
+    assert.equal(s.asks[0].group, 'liveControl', '分组键必须指到中控台（注册表分发靠它）');
     s.advance(1000);
     s.tick();
     assert.equal(s.asks.length, 1, '退避期内不许重复请求（会把后台打爆）');
@@ -172,7 +174,7 @@ console.log('C. 探子行为');
   {
     const s = boot(CTRL);
     s.win.__DYC_LIVE_CTRL_LOADED__ = true;
-    s.ctx.location.href = SHOP;
+    s.ctx.location.href = NEUTRAL;
     s.tick();
     s.ctx.location.href = CTRL;
     s.tick();
@@ -183,12 +185,26 @@ console.log('C. 探子行为');
     ok('标记在场 → 来回切换也不请求');
   }
 
+  // ③a 分区隔离：中控台已装，切到橱窗只请橱窗的补注入（2026-11-08 分区制）
+  {
+    const s = boot(CTRL);
+    s.win.__DYC_LIVE_CTRL_LOADED__ = true;   // 中控台脚本已装
+    s.ctx.location.href = SHOP;
+    s.tick();
+    assert.deepEqual(s.asks.map((a) => a.type), ['dyc:injectGroup'],
+      '切到橱窗只该请补注入；中控台标记在场也不许再请中控台');
+    assert.equal(s.asks[0].group, 'shopwindow', '分组键必须指到橱窗');
+    assert.equal(s.win.__DYC_LIVE_INJECT_TRIES__, undefined,
+      '中控台分区不许被橱窗页触发');
+    ok('分区隔离：中控台在场不影响橱窗补注入，两区互不顶替');
+  }
+
   // ④ 首拍就在中控台、但没标记：不在首拍抢着注入，交给 1.5 秒兜底
   {
     const s = boot(CTRL);
     assert.deepEqual(s.asks, [], '首拍不许和原生注入抢');
     s.timeouts.forEach((fn) => fn());
-    assert.deepEqual(s.asks.map((a) => a.type), ['dyc:injectLiveControl'], '1.5 秒后仍无标记就要补一次兜底');
+    assert.deepEqual(s.asks.map((a) => a.type), ['dyc:injectGroup'], '1.5 秒后仍无标记就要补一次兜底');
     ok('首拍不抢注入，1.5 秒兜底补一次');
   }
 
@@ -196,7 +212,7 @@ console.log('C. 探子行为');
   //    旧实现失败后 wasIn 已置真、changed 已归假 ⇒ 之后每一拍都跳过，
   //    页面就停在「一个按钮都没有」，只能刷新 —— 正是用户复报的现象。
   {
-    const s = boot(SHOP, { reply: () => ({ ok: false, error: '探针失败：调用超时' }) });
+    const s = boot(NEUTRAL, { reply: () => ({ ok: false, error: '探针失败：调用超时' }) });
     s.ctx.location.href = CTRL;
     s.tick();
     assert.equal(s.asks.length, 1, '切进来应先请求一次');
@@ -212,7 +228,7 @@ console.log('C. 探子行为');
 
   // ⑥ 退避封顶：连续失败不能把间隔无限拉长，也不能无限密集
   {
-    const s = boot(SHOP, { reply: () => ({ ok: false, error: '不动' }) });
+    const s = boot(NEUTRAL, { reply: () => ({ ok: false, error: '不动' }) });
     s.ctx.location.href = CTRL;
     s.tick();
     let guard = 0;
@@ -230,7 +246,7 @@ console.log('C. 探子行为');
   //    （回执来自后台，标记才是页面里的事实；只看回执会出现「报告成功、按钮没有」）
   {
     let n = 0;
-    const s = boot(SHOP, {
+    const s = boot(NEUTRAL, {
       reply: () => {
         n++;
         if (n === 2) s.win.__DYC_LIVE_CTRL_LOADED__ = true;   // 第二次真的装上了
@@ -249,7 +265,7 @@ console.log('C. 探子行为');
 
   // ⑧ 后台永不回执：看门狗必须放开 asking，否则又是一个静音出口
   {
-    const s = boot(SHOP, { silent: true });
+    const s = boot(NEUTRAL, { silent: true });
     s.ctx.location.href = CTRL;
     s.tick();
     assert.equal(s.asks.length, 1, '应先发一次');
@@ -270,7 +286,11 @@ console.log('D. 后台接线');
   assert.ok(/function injectLiveControl/.test(sw), 'SW 没有注入实现');
   assert.ok(/__DYC_LIVE_CTRL_LOADED__/.test(sw), '注入前必须探标记，否则会重复注入');
   assert.ok(/insertCSS/.test(sw), '样式没补，浮动控件会「有节点没样子」');
-  ok('消息分支 / 清单 / 探标记 / 样式都在');
+  // 2026-11-08 分组化后：橱窗共用同一套流程，分支/清单/标记缺一不可
+  assert.ok(/dyc:injectShopwindow/.test(sw), 'SW 没有橱窗补注入分支');
+  assert.ok(/DYC_SHOPWINDOW_ASSETS/.test(sw), 'SW 没有引用橱窗清单');
+  assert.ok(/__DYC_SHOPWINDOW_LOADED__/.test(sw), '橱窗补注入必须探橱窗标记');
+  ok('消息分支 / 清单 / 探标记 / 样式都在（中控台 + 橱窗两组）');
 
   // ★ 双形态：只等回调会在本机内核上必超时（回调永不触发）⇒ 补注入永远不发生
   assert.ok(/function dualCall/.test(sw), '缺少「回调 + Promise」双形态封装');
@@ -280,16 +300,16 @@ console.log('D. 后台接线');
 
   // ★ 逐文件注入：整批调用时任一文件抛错，后面的文件（含 toolbar.js）全不执行
   assert.ok(/function injectOneLiveFile/.test(sw), '缺少单文件注入函数');
-  const body = sw.slice(sw.indexOf('async function injectLiveControl'), sw.indexOf('function openFeedbackPanel'));
+  const body = sw.slice(sw.indexOf('async function injectAssetGroup'), sw.indexOf('function openFeedbackPanel'));
   assert.ok(/injectOneLiveFile\(tabId, file\)/.test(body), '逐个文件注入没接进主流程');
   assert.equal(sw.indexOf('files: assets.js'), -1, '不许再一次整批注入（一处失败会连坐后面全部）');
   assert.ok(/failed\.push\(file\)/.test(body), '失败文件必须记账，否则「少哪几个」永远查不到');
   ok('逐文件注入，失败文件可枚举');
 
-  const probeAt = body.indexOf('probeLiveControlLoaded');
+  const probeAt = body.indexOf('probeLoaded');
   const cssAt = body.indexOf('insertCSS');
   const loopAt = body.indexOf('injectOneLiveFile(tabId, file)');
-  const recheckAt = body.lastIndexOf('probeLiveControlLoaded');
+  const recheckAt = body.lastIndexOf('probeLoaded');
   assert.ok(probeAt >= 0 && cssAt > probeAt, '插入样式必须排在探标记之后');
   assert.ok(loopAt > cssAt, '注入脚本必须排在插入样式之后（先有样式再建 DOM，避免闪一下没样式）');
   assert.ok(recheckAt > loopAt, '注入完必须回探标记，把「真装没装上」回报给页面侧');

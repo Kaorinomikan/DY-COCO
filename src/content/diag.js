@@ -512,6 +512,25 @@
     }, null);
   }
 
+  /* 补注入分区一览(2026-11-08 泛化后):live-agent 在页面上登记
+   * __DYC_SPA_ZONES__,这里逐分区输出「在不在/装没装/试几次/报什么错」。
+   * 探子没跑起来(全域条目被改/极老内核)时为空数组 —— 这本身就是诊断结论。 */
+  function collectSpaZones() {
+    return safe(function () {
+      var zones = window.__DYC_SPA_ZONES__;
+      if (!zones || !zones.length) return [];
+      var href = String(location.href || '');
+      return zones.map(function (z) {
+        var rec = { group: z.group, label: z.label };
+        rec.in = !!(z.re && z.re.test && z.re.test(href));
+        rec.installed = !!window[z.marker];
+        rec.askTries = Number(window[z.triesKey] || 0);
+        rec.askError = clamp(String(window[z.errKey] || ''), 120);
+        return rec;
+      });
+    }, []);
+  }
+
   function snapshot(extra) {
     var t0 = Date.now();
     return collectFlags().then(function (flags) {
@@ -539,7 +558,20 @@
              报告里带次数才能分清「一次都没试」与「试了几十次都不成」。 */
           askTries: Number(window.__DYC_LIVE_INJECT_TRIES__ || 0),
           askError: clamp(String(window.__DYC_LIVE_INJECT_ERROR__ || ''), 120)
-        }
+        },
+        /* 橱窗作用域与补注入凭据（2026-11-08）：与 liveScope 同构。
+         * 巨量百应主页分页切进 /dashboard/shopwindow/* 与中控台同一根因，
+         * 报告同样要能回答「探子装没装、脚本包装没装、补注入报了什么错」。 */
+        shopScope: {
+          in: /^https:\/\/buyin\.jinritemai\.com\/dashboard\/shopwindow\//.test(String(location.href || '')),
+          installed: !!window.__DYC_SHOPWINDOW_LOADED__,
+          agent: !!window.__DYC_LIVE_AGENT__,
+          askTries: Number(window.__DYC_SHOPWINDOW_INJECT_TRIES__ || 0),
+          askError: clamp(String(window.__DYC_SHOPWINDOW_INJECT_ERROR__ || ''), 120)
+        },
+        /* 全部补注入分区一览（2026-11-08 泛化）：商品列表/商品编辑/活动广场/
+         * 罗盘三组等新分区统一从这里看，不再逐个加 scope 字段。 */
+        spaZones: collectSpaZones()
       };
       if (extra && Array.isArray(extra.swErrors) && extra.swErrors.length) {
         snap.swErrors = extra.swErrors.slice(-MAX_ERRS).map(function (err) {
@@ -863,6 +895,7 @@
   // 外加两个特殊值:extensionPage(扩展自身页面)与 unknown/other。
   var KIND_CN = {
     list: '商品列表页',
+    goodsEdit: '商品编辑页',
     liveCtrl: '直播中控台',
     shopWindow: '橱窗商品管理页',
     shopAll: '抖店其他页',

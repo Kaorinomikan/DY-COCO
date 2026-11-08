@@ -464,15 +464,52 @@
   var CHECK_DEF = 5;
   var CHECK_REC = 5;
   /* 滑条左右各留的余量（2026-11-02 用户「按钮拉到最左边最右边会轻微出界」，
-   * 2026-11-08 用户再次指出「端末最尽头还有突出」）。
-   * 轨道撑满整宽，圆钮圆心只能在 [R, W-R] 里跑 —— R 要**大于**放大态半径，
-   * 端点才留得出余量：
-   *   · 2026-11-02 取 10 = 放大态半径 10 ⇒ 端点只是「相切」，圆钮外沿仍与
-   *     轨道端点齐平，再加上光环（box-shadow 外扩 3~4px）看着就是凸出去一块；
-   *   · 2026-11-08 改为 12 ⇒ 常态（半径 9）留 3px、放大态（半径 10）留 2px，
-   *     光环即使外扩也压不到面板边缘。
+   * 2026-11-08 用户再次指出「端末最尽头还有突出」，并且专门点明
+   * 「拉到右边不会，最左边就会」）。
+   * 圆钮圆心只能在 [inset, W-inset] 里跑，inset 要**盖住圆钮最外沿**：
+   * 放大态外径 24（含边框）⇒ 半径 12，光环再外扩 4 ⇒ 视觉半径 16。
+   *   · 11-02 取 10 = 只有一个半径 ⇒ 端点相切，光环一出来就凸一块；
+   *   · 11-08 白天改 12 ⇒ 光环仍越界 2px，本色仍看得见；
+   *   · 11-08 晚改 18 = 16 + 2px 余量 ⇒ 常态离端点 7px、放大态 6px，
+   *     光环外沿离端点还剩 2px，两端都收在轨道内。
+   *
+   * ⚠ 缩进**不能**只写在定位域 .in 的 left/right 上（2026-11-08 实测踩坑）：
+   *   真机截图里左端刻度压在轨道极点上、右端却缩进了一截 —— 正是
+   *   「只有最左边突出」的来源。现在 .in 撑满整宽，缩进统一由 trackPos()
+   *   的 calc 式子给（圆钮 / 刻度 / 填充条 / 拖动映射共用一条公式），
+   *   左右同源，不会再出现只缩一头。
    * 刻度、圆钮、拖动映射、填充条计算全用这一个常量（两条滑条共用）。 */
-  var SLIDE_INSET = 12;
+  var SLIDE_INSET = 18;
+
+  /* 轨道两端的留白（2026-11-08 用户：「让轨道两端也各缩进一截」）。
+   * 要的效果是**轨道端头正好落在滑块外沿上**，不再留出一段空轨道让人以为
+   * 滑块没拖到头。取「放大态半径 12」与 SLIDE_INSET 的差：
+   *   圆心最左 = 18，减去半径 12 = 6 ⇒ 拖到尽头（悬停 / 拖动都是放大态）
+   *   时滑块外沿与轨道端头重合；常态（半径 11）只比端头内缩 1px，看不出来。
+   * 改 SLIDE_INSET / 圆钮尺寸时这两个数要一起对：edge = inset − 放大半径。 */
+  var TRACK_EDGE = 6;
+
+  /** 轨道坐标：把 0~100 的百分比换算成「两端各内缩 SLIDE_INSET」的 calc 位置。
+   * 圆钮、刻度、填充条、拖动映射全走这一条式子 —— 几何只有一处定义，
+   * 也就不会再出现「左端没缩、右端缩了」这种一头有一头无的偏差。 */
+  function trackPos(pct) {
+    var p = Number(pct);
+    if (!isFinite(p)) p = 0;
+    p = Math.max(0, Math.min(100, p));
+    return 'calc(' + SLIDE_INSET + 'px + (100% - ' + (SLIDE_INSET * 2)
+      + 'px) * ' + (p / 100).toFixed(6) + ')';
+  }
+
+  /** 填充条宽度：起点在轨道左端（TRACK_EDGE），终点在圆钮圆心（trackPos），
+   * 所以是「(inset − edge) + 可变区间 × p」—— 轨道缩进后起点也跟着缩，
+   * 否则填充条会比轨道多出那 6px、压在面板底色上。 */
+  function fillWidth(pct) {
+    var p = Number(pct);
+    if (!isFinite(p)) p = 0;
+    p = Math.max(0, Math.min(100, p));
+    return 'calc(' + (SLIDE_INSET - TRACK_EDGE) + 'px + (100% - ' + (SLIDE_INSET * 2)
+      + 'px) * ' + (p / 100).toFixed(6) + ')';
+  }
   /* 「发福袋间隔」滑条（2026-11-05 用户）。
    * 用户原话：「当倒计时结束后，会自动数这个设定的时间，时间到了才会执行
    * 下一轮福袋，当然在这个前提下，依然遵守自动发福袋的流程」。
@@ -5352,16 +5389,18 @@
        * 缩小版（轨道 6 vs 8、圆钮 16 vs 18、刻度 4 vs 5、行高 24 vs 28），
        * 一眼看出不是一套，改尺寸也容易只改到一边。现在选择器成对写，尺寸只此一份。 */
       '.tk,.gtk{position:relative;height:28px;margin:12px 0 0;cursor:pointer;touch-action:none;outline:none}',
-      '.rail,.grail{position:absolute;left:0;right:0;top:12px;height:8px;border-radius:4px;background:#f0ede8;',
+      /* 轨道两端各缩 TRACK_EDGE：端头正好落在滑块外沿（放大态）上，
+       * 拖到尽头不会再看到一段空轨道 —— 也就不会误以为滑块没拖到位。 */
+      '.rail,.grail{position:absolute;left:' + TRACK_EDGE + 'px;right:' + TRACK_EDGE
+        + 'px;top:12px;height:8px;border-radius:4px;background:#f0ede8;',
       'box-shadow:inset 0 1px 2px rgba(31,35,41,.07);transition:background .12s,box-shadow .12s}',
-      /* 圆钮/刻度的定位域：轨道撑满整宽（.rail 是它自己的坐标系），
-       * 但圆钮圆心必须**内缩一个半径还有余**，否则端点的圆心压在轨道极点上、
-       * 圆钮连同光环会伸到轨道外（2026-11-02「最左最右轻微出界」→ 2026-11-08
-       * 「端末最尽头还有突出」）。inset 取 SLIDE_INSET（12），比放大态半径 10
-       * 还大 2px ⇒ p=0 / p=100 时圆钮外沿离轨道端点仍有 2px，光环压不到边上。
-       * 填充条仍从轨道最左端起（起点 0），宽度靠 calc 算到圆钮圆心。 */
-      '.in,.gin{position:absolute;left:' + SLIDE_INSET + 'px;right:' + SLIDE_INSET + 'px;top:0;bottom:0}',
-      '.fill,.gfill{position:absolute;left:0;top:12px;height:8px;border-radius:4px;',
+      /* 圆钮/刻度的定位域：**撑满整宽**，缩进不写在这里。
+       * 2026-11-08 实测：在真机上 .in 的 left 缩进没生效、只有 right 生效，
+       * 结果刻度与圆钮在左端一点余量都没有、拖到最左就顶着轨道极点突出
+       * （用户原话「拉到右边不会，最左边就会」）。现在左右缩进统一由
+       * trackPos() 的 calc 式子算，定位域只负责给它们一个同宽的坐标系。 */
+      '.in,.gin{position:absolute;left:0;right:0;top:0;bottom:0}',
+      '.fill,.gfill{position:absolute;left:' + TRACK_EDGE + 'px;top:12px;height:8px;border-radius:4px;',
       'background:linear-gradient(90deg,#ff5a33,#ff005c);box-shadow:inset 0 1px 0 rgba(255,255,255,.35);',
       'pointer-events:none;transition:background .12s}',
       /* 每 1 分钟一根细刻度；推荐值（5）那根加粗上色 —— 用户要的「刻度线」 */
@@ -5370,14 +5409,19 @@
       '.mk.rec{top:5px;width:2px;height:7px;background:#ff3a4a;opacity:.8}',
       /* 2026-11-01 晚:滑条观感与循环讲解面板对齐(同一套设计语言,红色系):
        *   实心芯点(::after)杜绝老内核「空心/透明」观感 + 常驻淡光环 +
-       *   顶部高光;悬停/拖动放大到 20px 的交互保留,光环随按压加深。
+       *   顶部高光;悬停/拖动放大 2px 的交互保留,光环随按压加深。
        * 2026-11-08：光环 5px → 4px —— 端点处它是「突出」的主要来源。 */
-      '.thumb,.gthumb{position:absolute;top:16px;left:0;width:18px;height:18px;margin:-9px 0 0 -9px;border-radius:50%;',
+      /* 2026-11-08 晚：加 box-sizing:border-box —— width 从此就是**外径**
+       * （含 2px 边框），margin 正好是半径，圆心严格落在 trackPos() 给出的点上。
+       * 之前是 content-box：写 18 实际占 22，margin 仍按 -9 算，圆心整体右偏
+       * 2px，"左右不对称、只有最左边突出"的另一半原因就在这里。外径保持
+       * 22 / 放大 24，肉眼尺寸与改前完全一致，只是位置对了。 */
+      '.thumb,.gthumb{position:absolute;top:16px;left:0;box-sizing:border-box;width:22px;height:22px;margin:-11px 0 0 -11px;border-radius:50%;',
       'background:#fff;border:2px solid #ff3a4a;box-shadow:0 2px 6px rgba(255,58,74,.32),0 0 0 3px rgba(255,58,74,.1);',
       'pointer-events:none;transition:width .12s,height .12s,margin .12s,border-color .12s,box-shadow .12s}',
       '.thumb::after,.gthumb::after{content:"";position:absolute;left:50%;top:50%;width:5px;height:5px;',
       'margin:-2.5px 0 0 -2.5px;border-radius:50%;background:#ff3a4a;transition:background .12s}',
-      '.tk:hover .thumb,.tk.on .thumb,.gtk:hover .gthumb,.gtk.on .gthumb{width:20px;height:20px;margin:-10px 0 0 -10px;',
+      '.tk:hover .thumb,.tk.on .thumb,.gtk:hover .gthumb,.gtk.on .gthumb{width:24px;height:24px;margin:-12px 0 0 -12px;',
       'box-shadow:0 2px 8px rgba(255,58,74,.42),0 0 0 4px rgba(255,58,74,.16)}',
       /* 标签与刻度严格对齐：.labs 也缩进同一个 SLIDE_INSET，否则「3」「10」
        * 会贴面板边缘、跟轨道上的刻度差一截。 */
@@ -5632,7 +5676,7 @@
       var marks = document.createElement('div');
       var mh = '';
       for (var mv = CHECK_MIN; mv <= CHECK_MAX; mv++) {
-        mh += '<div class="mk' + (mv === CHECK_REC ? ' rec' : '') + '" style="left:' + pctOf(mv) + '%"></div>';
+        mh += '<div class="mk' + (mv === CHECK_REC ? ' rec' : '') + '" style="left:' + trackPos(pctOf(mv)) + '"></div>';
       }
       marks.innerHTML = mh;                       // 一次写入，不逐个 appendChild
       /* 刻度与圆钮装进内缩域 .in（见 CSS 注释）：两者的 left:% 都相对 .in
@@ -5648,7 +5692,7 @@
       function mkLab(v, cls, txt) {
         var s = document.createElement('span');
         s.className = cls;
-        s.style.left = pctOf(v) + '%';
+        s.style.left = trackPos(pctOf(v));
         s.textContent = txt;
         labs.appendChild(s);
       }
@@ -5735,7 +5779,7 @@
       var gmarks = document.createElement('div');
       var gmh = '';
       for (var gsec = GAP_MIN; gsec <= GAP_MAX; gsec += GAP_STEP) {
-        gmh += '<div class="gmk" style="left:' + gapPctOf(gsec) + '%"></div>';
+        gmh += '<div class="gmk" style="left:' + trackPos(gapPctOf(gsec)) + '"></div>';
       }
       gmarks.innerHTML = gmh;
       var gtin = document.createElement('div'); gtin.className = 'gin';
@@ -5747,9 +5791,9 @@
 
       var glabs = document.createElement('div'); glabs.className = 'glabs';
       var gl0 = document.createElement('span'); gl0.className = 'f'; gl0.textContent = '0';
-      gl0.style.left = gapPctOf(GAP_MIN) + '%';
+      gl0.style.left = trackPos(gapPctOf(GAP_MIN));
       var gl1 = document.createElement('span'); gl1.className = 'l'; gl1.textContent = '5 分钟';
-      gl1.style.left = gapPctOf(GAP_MAX) + '%';
+      gl1.style.left = trackPos(gapPctOf(GAP_MAX));
       glabs.appendChild(gl0); glabs.appendChild(gl1);
       gw.appendChild(glabs);
       box.appendChild(gw);
@@ -5932,12 +5976,11 @@
     if (!pRefs) return;
     var p = pctOf(slide.cur);
     /* 填充条在轨道全宽坐标系里：起点固定轨道最左端，终点 = 圆钮圆心。
-     * 圆钮圆心在 .in 内的位置是 (100% - 2R) * p，绝对坐标再加一个 R，
-     * 所以宽度 = R + (100% - 2R) * (p/100)。p=0 时那 R 段被圆钮自己盖住，
-     * 看不出来；p=100 时正好停在右端点圆心。 */
-    pRefs.fill.style.width = 'calc(' + SLIDE_INSET + 'px + (100% - '
-      + (SLIDE_INSET * 2) + 'px) * ' + (p / 100) + ')';
-    pRefs.thumb.style.left = p + '%';
+     * 圆心位置由 trackPos() 给出（两端各内缩 SLIDE_INSET），所以宽度
+     * 就是「inset + (W - 2*inset) * p」。p=0 时那 inset 段被圆钮自己盖住，
+     * 看不出来；p=100 时正好停在右端圆心。 */
+    pRefs.fill.style.width = fillWidth(p);
+    pRefs.thumb.style.left = trackPos(p);
     if (pRefs.tk) pRefs.tk.setAttribute('aria-valuenow', String(Math.round(slide.cur)));
     /* 拖动中数字跟着走（用户截图里「6 分钟」那一行就是实时值）——
      * 不写这句的话，拖动全程只有滑钮在动、数字停在旧值。 */
@@ -6129,9 +6172,8 @@
     if (!pRefs || !pRefs.gfill) return;
     var p = gapPctOf(gapSlide.cur);
     /* 与确认间隔同一套坐标：填充条从轨道最左端起，宽度算到圆钮圆心 */
-    pRefs.gfill.style.width = 'calc(' + SLIDE_INSET + 'px + (100% - '
-      + (SLIDE_INSET * 2) + 'px) * ' + (p / 100) + ')';
-    pRefs.gthumb.style.left = p + '%';
+    pRefs.gfill.style.width = fillWidth(p);
+    pRefs.gthumb.style.left = trackPos(p);
     if (pRefs.gtk) pRefs.gtk.setAttribute('aria-valuenow', String(Math.round(gapSlide.cur)));
     /* 拖动中数字跟着走（松手时才写盘，与确认间隔同口径）。
      * 这里读 **target** 而不是 cur：cur 是动画中间态（可能是 135.4 秒），
@@ -6478,7 +6520,10 @@
     gapWait: function () { return gapWaitLeft(); },
     badgeText: badgeText,
     slideGeom: function () {
-      return { inset: SLIDE_INSET, thumb: 18, thumbGrow: 20, rail: 8 };
+      /* halo = 悬停/拖动时那圈 box-shadow 的外扩，端点余量必须连它一起算，
+       * 否则「圆钮本体在轨道内、光环却压出去」——2026-11-08 用户报的就是这个。
+       * edge = 轨道两端各缩多少：端头要与滑块外沿（放大态）重合。 */
+      return { inset: SLIDE_INSET, thumb: 22, thumbGrow: 24, halo: 4, rail: 8, edge: TRACK_EDGE };
     },
     lastRoundEndAt: function () { return lastRoundEndAt; },
     setRoundEndAtForTest: function (t) { lastRoundEndAt = Number(t) || 0; },
