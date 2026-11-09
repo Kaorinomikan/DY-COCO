@@ -221,3 +221,5 @@ function stopRowWatcher() {
     injectTimer = null;
   }
 }
+
+window.__DYC_ROW_SCAN_LOADED__ = true;

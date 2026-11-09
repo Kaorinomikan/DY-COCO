@@ -177,7 +177,7 @@
     .group-live { border-color: #165dff; }
     .group-shop { border-color: #ff7d00; }
     .group-wx { border-color: #07c160; }
-    .group-other { border-color: #c9cdd4; }
+    .group-other, .group-shared { border-color: #c9cdd4; }
     /* 2026-10-31 平台切换：不属于当前平台的分组整框隐掉。
        显式写 display:none —— 只靠 hidden 属性的话，将来谁给 .group
        加一条 display 规则，这一整组就会在错误的平台上冒出来。 */
@@ -201,7 +201,7 @@
     .group-live .group-head { color: #165dff; }
     .group-shop .group-head { color: #ff7d00; }
     .group-wx .group-head { color: #07c160; }
-    .group-other .group-head { color: #86909c; }
+    .group-other .group-head, .group-shared .group-head { color: #86909c; }
 
     .item {
       padding: 10px 0;

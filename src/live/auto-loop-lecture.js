@@ -3266,9 +3266,9 @@
    * ========================================================== */
 
   /** 一拍:只做「观察 + 到点判断」,动作在 doFastCycle 里加锁进行 */
-  function checkFastNow() {
+  function checkFastNow(liveRow) {
     var now = Date.now();
-    var live = findLiveRow();
+    var live = arguments.length ? liveRow : findLiveRow();
 
     if (!state.key) {
       if (live) commitProduct(rowKey(live), rowName(live), now);
@@ -3425,6 +3425,7 @@
     while (Date.now() < until) {
       await nap(250);
       if (aborted(mark)) return 'abort';
+      if (followCurrentLecture()) return 'abort';
       /* 误点成"取消讲解"会弹确认框 —— 点【取消】保住讲解卡,本轮按"没弹成"处理。
        * 平台文案会同时维护两套按钮时,这是唯一安全的退路。 */
       if (dismissCancelConfirm()) {
@@ -3450,6 +3451,7 @@
     var clicks = 0;
     while (Date.now() < deadline && clicks < 4) {
       if (aborted(mark)) return false;
+      if (followCurrentLecture()) return false;
       if (!btn) {
         var row = findRowByKey();
         if (!row) return false;
@@ -3467,6 +3469,7 @@
       while (Date.now() < until) {
         await nap(200);
         if (aborted(mark)) return false;
+        if (followCurrentLecture()) return false;
         var v = findRowByKey();
         if (v && isLecturing(v)) return true;
       }
@@ -3517,6 +3520,7 @@
 
   async function doFastCycle() {
     if (!state.on || state.busy || state.group !== 'sec') return;
+    if (followCurrentLecture()) return;
     var mark = abortSeq;
     state.busy = true;
     state.busyLabel = '定位中';
@@ -3570,8 +3574,14 @@
         return;
       }
 
+      if (followCurrentLecture()) return;
       var blind = pageHidden();
       var lecturing = isLecturing(row);
+      // 定位记忆只说明它在哪，不证明它仍是本次讲解；仅我方取消留下的欠账可续讲。
+      if (!lecturing && !state.owedResume && !state.cancelPending) {
+        stopByNoLecture('找回的商品已未讲解', '等待新的讲解');
+        return;
+      }
 
       /* ★ nap7 记账制(2026-11-01):「该不该补讲」不再用 selfCancelAt 时间窗口猜。
        *   旧机制死局:某轮进门看见「在讲」就把 selfCancelAt 清零(旧 2971 行),
@@ -3709,14 +3719,9 @@
       }
 
       if (!lecturing) {
-        /* ★ nap13(2026-11-01 用户定:「点预热也要继续循环,把商品拉回讲解位」):
-         *   前台不再因为「商品不在讲解」就停表。原来这里判 `!owesResume()` ⇒
-         *   stopByNoLecture,于是用户一点预热、商品离开讲解位,循环就停了还弹一条
-         *   「商品已停止讲解」—— 那不是用户要的,用户只是把商品挪到预热位。
-         *   「用户手动取消讲解」已由 onUserCancelClick(isTrusted) 即时停表,
-         *   能走到这里的都是:转预热 / 平台自停 / 我们自己的取消还没补上 ⇒ 都该补讲。 */
+        // 已过当前商品复核，只有我方取消留下的续讲任务能走到这里。
         noteDiag('秒档:商品不在讲解 ⇒ 补点讲解');
-        if (!(await clickLectureAndVerify(mark))) { softSkipFast('补讲未确认'); return; }
+        if (!(await clickLectureAndVerify(mark))) { if (!aborted(mark)) softSkipFast('补讲未确认'); return; }
         state.owedResume = 0;                // 补讲确认成功 ⇒ 销账
         finishFastCycle(row, name, 're');
         return;
@@ -3738,7 +3743,7 @@
       if (popped === 'dropped') {
         /* 那枚"弹卡"按钮其实是取消 ⇒ 商品已经空着,立刻补讲,不留空窗 */
         noteDiag('秒档:弹卡后讲解掉了 ⇒ 立刻补讲(走兜底)');
-        if (!(await clickLectureAndVerify(mark))) { softSkipFast('弹卡失败且补讲未确认'); return; }
+        if (!(await clickLectureAndVerify(mark))) { if (!aborted(mark)) softSkipFast('弹卡失败且补讲未确认'); return; }
         state.owedResume = 0;
         finishFastCycle(row, name, 're');
         return;
@@ -3780,7 +3785,7 @@
           return;
         }
         var other = findLiveRow();
-        if (other && rowKey(other) !== state.key) { skipFast('已切换讲解商品'); return; }
+        if (other && rowKey(other) !== state.key) { followCurrentLecture(); return; }
         var current = findRowByKey();
         if (!current) { skipFast('取消后未找到商品'); return; }
         var button = findLectureBtn(current);
@@ -3828,6 +3833,7 @@
       /* 换用统一的「点一次、盯翻转、必要时重点一次」:平台常常吞掉刚取消完的那一次点击,
        * 原来只点一次、等 3 秒,没翻转就判整轮失败。 */
       var ok = await clickLectureAndVerify(mark, resume);
+      if (aborted(mark)) return;
       if (!ok) { softSkipFast('续讲未确认'); return; }
       state.owedResume = 0;                  // 续讲确认成功 ⇒ 销账(nap7)
 
@@ -3858,11 +3864,12 @@
     if (wakeTimer) { clearTimeout(wakeTimer); wakeTimer = 0; }
     if (!state.on) return;
     if (state.busy) return;
+    var row = findLiveRow();
+    if (followCurrentLecture(row || findAnyLecturingRow())) return;
     /* 无限模式的守夜态单独走一条路:只读探针,不进两档的常规链路。
      * 放在分档之前 —— 守夜是**跨档**的状态,与秒/分无关。 */
     if (state.phase === 'vigil') { vigilTick(); return; }
-    if (state.group === 'sec') { checkFastNow(); return; }
-    var row = findLiveRow();
+    if (state.group === 'sec') { checkFastNow(row); return; }
     var now = Date.now();
 
     if (!row) {
@@ -4042,6 +4049,10 @@
     state.lastShotAt = now;
     state.missingSince = 0;
     state.lostStreak = 0;
+    state.owedResume = 0;
+    state.cancelPending = 0;
+    state.blindSettled = 0;
+    state.passive = 0;
     /* ★ 2026-10-27:换品了 ⇒ 旧商品的定位记忆必须作废。
      *   以前这里不清,新商品会带着上一件商品的 offset 当作第一档起点,
      *   结果是「飞到上一个商品那儿看一眼、再开始扫」—— 白花一档,画面还会明显跳一下。 */
@@ -4088,6 +4099,7 @@
     var wasFailing = state.fails >= FAIL_LIMIT;      // 之前是不是处于慢速重试
     state.fails = 0;
     state.retryAt = 0;
+    state.owedResume = 0;
     /* 2026-10-31:这一轮找品成功了,滚屏额度必须一起清零 ——
      * 否则跑过几轮之后 scanSeg 会累到上限 / scanDone 一直为真,
      * 从某一轮开始**永久不再滚屏**(用户看到的就是「动不动就放弃」)。 */
@@ -4112,6 +4124,7 @@
 
   async function doCycle(isSlowRetry) {
     if (state.busy) return;
+    if (followCurrentLecture()) return;
     /* 2026-10-26(#117):用户在滚/点 ⇒ 让路,顺延 1.2 秒,不发消息、不累计失败 */
     if (userBusy()) { state.retryAt = Date.now() + 1200; return; }
     var mark = abortSeq;                 // ★ 进链记号(关胶囊 / 关总闸 / 用户取消都会 +1)
@@ -4122,8 +4135,7 @@
     var searched = false;                // 本轮走没走「按 ID 搜索」(决定停表时怎么说原因)
     pendingSearch = null;                // 本轮有没有动过搜索框(动过就必须还原)
     try {
-      var row = findLiveRow();
-      var liveAtEntry = !!row;           // 进门时页面上**明明有**「讲解中」的行吗
+      var row = findLiveRow() || findRowByKey();
       /* 2026-10-31:进门先量一次列表总高 —— 结论阶段要用它区分
        * 「商品真被下架 / 移出」(总高变短 ≥100px)与「只是被虚拟列表回收了」(总高不变)。
        * 只在有行的时候量:一行都没渲染时 scrollHeight 没有意义。 */
@@ -4183,7 +4195,7 @@
                   row = back;
                   break;
                 }
-                noteDiag('讲解中回来了但不是本商品 ⇒ 继续重试搜索');
+                if (followCurrentLecture()) return;
               }
             }
             var bySearch = await locateBySearch(idOfKey(state.key), mark);
@@ -4273,9 +4285,9 @@
         return;
       }
 
-      /* ★ 进门时没有「讲解中」、靠滚动找回来的行 —— 必须先确认它**真的在讲**。
-       *   否则就是把用户已经取消的讲解又点开(既违背意图,又白滚一轮)。 */
-      if (!liveAtEntry && !isLecturing(row)) {
+      // 不论从哪里找回商品，动作前都重读当前讲解；记忆位置不是在讲的证据。
+      if (followCurrentLecture()) return;
+      if (!isLecturing(row)) {
         stopByNoLecture('找回的行不是「讲解中」⇒ 用户已取消', '那一行没有在讲解');
         return;
       }
@@ -4293,7 +4305,7 @@
       }
       if (popped === 'dropped') {
         noteDiag('分钟档:弹卡后讲解掉了 ⇒ 立刻补讲(走兜底)');
-        if (!(await clickLectureAndVerify(mark))) { failCycle('弹卡失败且补讲未确认'); return; }
+        if (!(await clickLectureAndVerify(mark))) { if (!aborted(mark)) failCycle('弹卡失败且补讲未确认'); return; }
         state.owedResume = 0;
         finishSlowCycle(row, name0, 're');
         return;
@@ -4317,6 +4329,7 @@
       // 第一次点击:取消讲解
       if (aborted(mark)) { noteDiag('续讲被中止(点击前)'); return; }
       fireClick(btn);
+      state.owedResume = Date.now();
       state.lastShotAt = Date.now();
       await sleep(GAP_MS);
       /* 已点过「取消讲解」但用户这会儿喊停 ⇒ 不再续讲,如实报一句(不偷偷点回去)。
@@ -4344,6 +4357,7 @@
       for (var w = 0; w < 14; w++) {
         await sleep(150);
         if (aborted(mark)) return;
+        if (followCurrentLecture()) return;
         var r2 = findRowByName(key);
         var b2 = r2 ? findLectureBtn(r2) : null;
         if (b2 && kindOf(b2) === 'start') { btn2 = b2; break; }
@@ -4357,6 +4371,7 @@
         return;
       }
       if (aborted(mark)) { noteDiag('续讲被中止(续讲点击前)'); return; }
+      if (followCurrentLecture()) return;
       fireClick(btn2);
 
       // 等状态翻转
@@ -4364,7 +4379,9 @@
       for (var i = 0; i < Math.ceil(VERIFY_MS / 200); i++) {
         await sleep(200);
         if (aborted(mark)) return;
-        if (findLiveRow()) { ok = true; break; }
+        if (followCurrentLecture()) return;
+        var verified = findRowByKey();
+        if (verified && isLecturing(verified)) { ok = true; break; }
       }
 
       if (!ok) { failCycle('续讲后没检测到讲解中'); return; }
@@ -4547,6 +4564,24 @@
     return markRow;
   }
 
+  /** 当前现场优先于旧定位、旧补讲账；换品后本轮退出，给新品完整计时间隔。 */
+  function followCurrentLecture(row) {
+    if (!arguments.length) row = findAnyLecturingRow() || findLiveRow();
+    if (!row || !isLecturing(row)) return false;
+    var key = rowKey(row), name = rowName(row);
+    if (!key && !name) return false;
+    if (state.phase === 'vigil' && state.passive) {
+      abortCycle();
+      adoptPassiveRow(row);
+      return true;
+    }
+    if (key === state.key || (!key && name === state.product)) return false;
+    abortCycle();
+    commitProduct(key, name, Date.now());
+    noteDiag('跟随当前讲解 ⇒ ' + shortName(name));
+    return true;
+  }
+
   /** 待命接上:把那条正在讲的商品认成新目标,回到正常倒计时。 */
   function adoptPassiveRow(row) {
     var now = Date.now();
@@ -4556,6 +4591,9 @@
     try { name = rowName(row) || ''; } catch (e) { name = ''; }
     if (key) state.key = key;
     if (name) state.product = name;
+    state.rowAnchor = null;
+    state.owedResume = 0;
+    state.cancelPending = 0;
     state.round += 1;
     state.cycles += 1;
     noteDiag('待命接上:' + (name || key || '未具名') + '(待命 ' + Math.round(held / 1000) + ' 秒)');
@@ -4601,6 +4639,7 @@
    */
   function vigilTick() {
     if (!state.on || state.phase !== 'vigil' || state.busy) return;
+    if (followCurrentLecture()) return;
     var now = Date.now();
     /* 待命跟随单独一条路:只扫"有没有品在讲",不补讲、不重定位。 */
     if (state.passive) { passiveTick(now); return; }
@@ -4641,6 +4680,7 @@
       }
       /* ② 真断了:当拍补讲,不等一个间隔 —— 这正是「接不上就断」的反面。 */
       if (label === 'start') {
+        if (!state.owedResume && !state.cancelPending) { enterVigil('等待新的讲解', true); return; }
         if (now < state.resumeAt) {
           noteDiag('守夜:补讲冷却中(' +
             Math.round((state.resumeAt - now) / 1000) + ' 秒),下一拍再试');
@@ -4659,6 +4699,8 @@
   /** L1:守夜期的一次补讲(只点一次讲解 + 观察窗,不滚不搜)。 */
   async function doVigilResume(firstBtn) {
     if (state.busy) return;
+    if (followCurrentLecture()) return;
+    if (!state.owedResume && !state.cancelPending) { enterVigil('等待新的讲解', true); return; }
     var mark = abortSeq;
     state.busy = true;
     state.busyLabel = '补讲中';
@@ -4727,10 +4769,14 @@
       noteDiag('守夜重定位:平台搜索一次(窗口内第 ' + state.relocLog.length + ' 次)');
       var r = await locateBySearch(id, mark);
       if (r === 'abort') return;
+      if (followCurrentLecture()) return;
       if (r && r.row) {
         var b = findLectureBtn(r.row);
         var label = b ? kindOf(b) : '';
-        if (label === 'start') resumeBtn = b;
+        if (label === 'start') {
+          if (state.owedResume || state.cancelPending) resumeBtn = b;
+          else enterVigil('等待新的讲解', true);
+        }
         else if (label === 'stop' || label === 'pop' || isLecturing(r.row)) stillLive = true;
       } else {
         noteDiag('守夜重定位没搜到目标');
@@ -4759,10 +4805,8 @@
    * 连续 3 次。现在只要确认「那一行确实不在讲解」就直接停,并说清是用户自己取消的。
    */
   function stopByNoLecture(why, shown) {
-    /* 无限模式:任何「没交接上」的出口都先转守夜,不停表(2026-11-05)。
-     * 注意「用户手动取消」不走这里 —— 那条由 onUserCancelClick(isTrusted) 直接停,
-     * 以及 checkNow 里 resetToWait 那条(行还在、讲解中没了)。所以这里整段转守夜是安全的。 */
-    if (state.infinite && enterVigil(shown || why || '没接上')) return;
+    // 已确认旧品不在讲解：无限模式只等新的讲解，不能把旧品重新点开。
+    if (state.infinite && enterVigil(shown || why || '没接上', true)) return;
     diagOnce('no-lecture', '没有在讲解的商品 ⇒ 停止计时｜' + (why || ''));
     var who = productName();          // 「谁在被执行」先取,reset 之后 state 就空了
     var tail = stopValue();           // 「已停止 · 共 N 轮」

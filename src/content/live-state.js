@@ -14,14 +14,15 @@
  *   「只认文案」。于是没开播时福袋判成 unknown、按在播处理、每 N 分钟开一次抽屉。
  *   本模块把这些判据收敛成**唯一真源**：别处只调用，不再自己扫页面。
  *
- * 三路信号（优先级从高到低）：
+ * 直播信号（优先级从高到低）：
  *   ① 「结束直播 / 下播 / 关播 / 结束本场直播」按钮 —— 中控台只在直播中出现，
  *      命中即在播。先做纯文本匹配、命中后才判可见（把重排次数压到命中数）。
  *   ② HH:MM:SS 计时器**递增** —— 在播。递减是开播倒计时，不算。
- *   ③ 「开始直播 / 未开播 / 直播已结束」类文案 —— 未开播。
+ *   ③ 平台商品行内明确的讲解中标记、取消讲解或弹出讲解卡控件 —— 在播。
+ *   ④ 「开始直播 / 未开播 / 直播已结束」类文案 —— 未开播。
  *      这一档是福袋模块原有的判据（2026-11-01），合并时**不能丢** ——
  *      丢了就等于「页面上明明写着未开播，判据却认不出」。
- *   ④ 播前引导横幅「开播前请使用直播计划」—— 未开播。这条横幅只在开播前出现，
+ *   ⑤ 播前引导横幅「开播前请使用直播计划」—— 未开播。这条横幅只在开播前出现，
  *      直播中不会撞上（2026-10-23 #108 已删掉「创建直播预告/创建直播计划」两个
  *      弱特定词，它们会误命中直播中的运营浮条）。
  *   都不中 ⇒ unknown。
@@ -183,6 +184,28 @@
     return false;
   }
 
+  /** 中控台有时不展示直播按钮/计时器；只认平台商品行内当前讲解的明确文案。 */
+  function hasLecturingProduct() {
+    var rows = [];
+    try {
+      if (typeof getAllProductRows === 'function') rows = getAllProductRows();
+      if (!rows || !rows.length) rows = document.querySelectorAll('[data-rbd-draggable-id]');
+    } catch (e) { return false; }
+    for (var i = 0; i < rows.length; i++) {
+      var row = rows[i];
+      if (!row.isConnected || insideExt(row)) continue;
+      var nodes = row.querySelectorAll('button, a, [role="button"], span, div');
+      for (var j = 0; j < nodes.length; j++) {
+        var el = nodes[j];
+        if (el.firstElementChild || insideExt(el)) continue;
+        var t = norm(el.textContent);
+        if (!/^(?:取消讲解|结束讲解|停止讲解|讲解中(?:…|\.{3})?|正在讲解|(?:重新)?(?:弹出|弹起)讲解卡(?:片)?)$/.test(t)) continue;
+        if (visible(el)) return true;
+      }
+    }
+    return false;
+  }
+
   /**
    * 找页面上形如 HH:MM:SS 的小计时器，并判断它是否在**递增**。
    * 返回 'up'（递增 ⇒ 在播）/ 'down'（递减 ⇒ 开播倒计时）/ null（没看到 / 只看到一次）。
@@ -280,6 +303,7 @@
   function once() {
     if (hasLiveButton()) return 'live';
     if (timerTrend() === 'up') return 'live';
+    if (hasLecturingProduct()) return 'live';
     if (hasOffText()) return 'prelive';
     if (hasPreLiveBanner()) return 'prelive';
     return 'unknown';

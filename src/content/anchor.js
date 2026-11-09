@@ -872,3 +872,5 @@ function findDeepestTitleText(el) {
   for (const t of texts) if (t.length > best.length) best = t;
   return best;
 }
+
+window.__DYC_ANCHOR_LOADED__ = true;

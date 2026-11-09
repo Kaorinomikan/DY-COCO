@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "可可助手",
-  "version": "26.11.08.3",
+  "version": "26.11.09.1",
   "description": "抖音抖店、微信小店、中控台小助手",
   "permissions": [
     "storage",
@@ -322,7 +322,9 @@
         "src/content/wx-goods-title.js",
         "src/content/wx-goods-tools.js",
         "src/content/stock-net-probe.js",
-        "src/content/debug-panel.js"
+        "src/content/goods-image-paste.js",
+        "src/content/debug-panel.js",
+        "src/content/wx-stock.js"
       ],
       "css": [
         "src/content/style.css",
@@ -336,7 +338,8 @@
         "https://channels.weixin.qq.com/*"
       ],
       "js": [
-        "src/content/wx-link-main.js"
+        "src/content/wx-link-main.js",
+        "src/content/wx-stock-main.js"
       ],
       "run_at": "document_start",
       "world": "MAIN",

@@ -82,10 +82,11 @@ check('每个分组都被认领（漏一个 = 那组永远不显示）', () => {
     assert.ok(owned.indexOf(g.id) !== -1, '分组「' + g.id + '」没有被任何平台认领');
   }
 });
-check('没有重复认领（同一组挂在两个平台下会两边都显示）', () => {
+check('仅通用组跨平台共享，单个平台内不重复分组', () => {
+  for (const p of PLATS) assert.equal(new Set(p.groups).size, p.groups.length, p.id);
   const owned = PLATS.reduce((acc, p) => acc.concat(p.groups), []);
   const dup = owned.filter((id, i) => owned.indexOf(id) !== i);
-  assert.equal(dup.length, 0, '重复认领：' + dup.join(','));
+  assert.equal(dup.join(','), 'shared', '跨平台共享组：' + dup.join(','));
 });
 check('认领的都是真实存在的分组（防拼写错误）', () => {
   const ids = GROUPS.map((g) => g.id);
@@ -95,9 +96,9 @@ check('认领的都是真实存在的分组（防拼写错误）', () => {
     }
   }
 });
-check('抖音 = 中控台 + 抖店 + 其他；微信 = 微信小店', () => {
-  assert.equal(Array.from(groupsOf('dy')).sort().join(','), 'live,other,shop');
-  assert.equal(Array.from(groupsOf('wx')).join(','), 'wx');
+check('抖音和微信各自保留专属分组，均可访问通用组', () => {
+  assert.equal(Array.from(groupsOf('dy')).sort().join(','), 'live,other,shared,shop');
+  assert.equal(Array.from(groupsOf('wx')).join(','), 'wx,shared');
 });
 check('未知平台 id 返回空数组（调用方据此回落，不会画出半个弹窗）', () => {
   assert.equal(Array.from(groupsOf('nope')).length, 0);

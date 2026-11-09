@@ -101,6 +101,8 @@ ENTRIES = {
 # 不把商品列表页那整套脚本注入到无关页面。
 # ⚠️ 只登记确实自启动的脚本;普通功能脚本仍必须挂在入口脚本之前。
 SELF_BOOTING = {
+    'src/content/wx-stock.js',  # 自订阅开关并注入微信商品行按钮
+
     'src/content/shop-header-name.js',  # 抖店全域的店名样式，自行订阅开关。
     'src/live/hide-elements.js',
     # 直播回放下载(2026-10-18):这两个回放页没有工具栏入口,也不需要
@@ -137,6 +139,8 @@ FLAGS = 'src/content/flags.js'
 # 它**不能**带 flags.js —— flags.js 依赖 chrome.storage,而 MAIN world 里没有
 # chrome.* 对象,带上会当场抛错、整条注入作废。同理也没有入口脚本,不参与层级排序。
 MAIN_WORLD = {
+    'src/content/wx-stock-main.js',  # 微信库存请求桥，document_start 采集页面鉴权头
+
     'src/content/wx-link-main.js',
     'src/content/fabric-smart-fill-main.js',
 }

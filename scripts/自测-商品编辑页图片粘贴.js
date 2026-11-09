@@ -503,6 +503,132 @@ const HTML = `<!doctype html><html><body>
     });
   }
 
+  console.log('\n【八】微信小店 micro-app / 同源 iframe 与 SPA 生命周期');
+  {
+    const wx = new JSDOM('<!doctype html><body><micro-app></micro-app></body>', {
+      url: 'https://store.weixin.qq.com/shop/goods/list', runScripts: 'outside-only'
+    });
+    const w = wx.window;
+    const d = w.document;
+    const msgs = [];
+    let watch;
+    let imageAvailable = true;
+    let delayRead = 5;
+    let transfers = 0;
+    w.eval(read('src/content/flags.js'));
+    w.dycReadFlags = () => Promise.resolve({ goodsImagePaste: true });
+    w.dycWatchFlags = (cb) => { watch = cb; };
+    w.isVisible = () => true;
+    w.debugLog = () => {};
+    w.setStatus = (value, kind, opts) => msgs.push({ value, kind, opts });
+    w.chrome = { runtime: { id: 'wx-test', lastError: null, sendMessage(m, cb) {
+      setTimeout(() => cb(imageAvailable
+        ? { ok: true, dataUrl: PNG, mime: 'image/png', size: 68 }
+        : { ok: false, error: '没有图片' }), delayRead);
+    } } };
+    w.DataTransfer = class {
+      constructor() { transfers++; this.files = []; this.items = { add: (f) => this.files.push(f) }; }
+    };
+    Object.defineProperty(w.HTMLInputElement.prototype, 'files', {
+      configurable: true, set(v) { this.__files = v; }, get() { return this.__files || []; }
+    });
+    const host = d.querySelector('micro-app');
+    w.eval(read(SRC_UNDER_TEST));
+    await sleep(60);
+    w.history.pushState({}, '', '/shop/goods/entry?productId=1');
+    const root = host.attachShadow({ mode: 'open' });
+    root.innerHTML = '<form><div id="wxTile"><input type="file" accept="image/*"></div>'
+      + '<div id="filled"><img src="blob:old"><input type="file" accept="image/*"></div>'
+      + '<div id="video"><input type="file" accept="video/*"></div>'
+      + '<div id="disabled"><input type="file" accept="image/*" disabled></div></form>';
+    await sleep(1550);
+    check('列表 SPA 进入编辑页、宿主延后 attachShadow 后自动识别，既有图/视频/禁用框不注入', () => {
+      assert.equal(root.querySelectorAll('.dyc-imgpaste-btn').length, 1);
+      assert.ok(root.querySelector('#wxTile .dyc-imgpaste-btn'));
+      assert.equal(d.querySelector('.dyc-imgpaste-btn'), null);
+    });
+    check('按钮样式进入对应 shadowRoot，且开关在两平台可见', () => {
+      assert.ok(root.querySelector('style[data-dyc-imgpaste-style]').textContent.includes('all:initial'));
+      const meta = w.DYC_FLAGS_META.find((m) => m.key === 'goodsImagePaste');
+      assert.equal(w.DYC_FLAGS_META.filter((m) => m.key === meta.key).length, 1);
+      assert.ok(w.DYC_PLATFORMS.every((p) => p.groups.includes(meta.group)));
+      assert.equal(meta.pages.join(','), 'goodsEdit,wxGoodsEdit');
+      const manifest = JSON.parse(read('manifest.json'));
+      const entries = manifest.content_scripts.filter((entry) => (entry.js || []).includes(SRC_UNDER_TEST));
+      assert.ok(entries.some((entry) => entry.matches.includes('https://store.weixin.qq.com/*')));
+    });
+    const tile = root.querySelector('#wxTile');
+    let changes = 0;
+    let nativeClicks = 0;
+    tile.addEventListener('click', () => { nativeClicks++; });
+    tile.querySelector('input').addEventListener('change', () => {
+      changes++;
+      assert.equal(tile.querySelector('input').files.length, 1);
+      const replacement = d.createElement('div');
+      replacement.textContent = '上传中';
+      tile.replaceWith(replacement);
+      setTimeout(() => { replacement.innerHTML = '<img src="blob:wx-uploaded">'; }, 1400);
+    });
+    tile.querySelector('button').click();
+    await sleep(2400);
+    check('shadow 内上传框重渲染后仍等到出图，只上传一张、不触发原生选文件', () => {
+      assert.equal(changes, 1);
+      assert.equal(transfers, 1);
+      assert.equal(nativeClicks, 0);
+      assert.equal(msgs.filter((m) => m.kind === 'success').length, 1);
+      assert.equal(msgs.filter((m) => m.kind === 'alert').length, 0);
+    });
+    const dynamic = d.createElement('div');
+    dynamic.innerHTML = '<input type="file" accept=".png,.jpg">';
+    root.querySelector('form').appendChild(dynamic);
+    const frame = d.createElement('iframe');
+    root.appendChild(frame);
+    // jsdom 不加载 shadow 中的 iframe，使用同源顶层 frame 验证跨文档遍历。
+    d.body.appendChild(frame);
+    frame.contentDocument.body.innerHTML = '<div id="frameTile"><input type="file" accept="image/*"></div>';
+    await sleep(850);
+    check('shadow 内动态新增框及同源 iframe 自动挂载，重复扫描不重复按钮', () => {
+      assert.equal(dynamic.querySelectorAll('button').length, 1);
+      assert.ok(frame.contentDocument.querySelector('#frameTile button'));
+      assert.ok(frame.contentDocument.querySelector('style[data-dyc-imgpaste-style]'));
+    });
+    imageAvailable = false;
+    dynamic.querySelector('button').click();
+    await sleep(200);
+    check('剪贴板无图只报一条未入框，保留原框且恢复按钮', () => {
+      assert.equal(transfers, 1);
+      assert.equal(msgs.filter((m) => m.kind === 'alert').length, 1);
+      assert.equal(msgs.at(-1).opts.count, '未入框');
+      assert.equal(dynamic.querySelector('button').disabled, false);
+    });
+    imageAvailable = true;
+    delayRead = 120;
+    dynamic.querySelector('button').click();
+    watch({ goodsImagePaste: false });
+    await sleep(250);
+    check('读取途中关闭开关，shadow/iframe 按钮和样式移除，迟到图片不上传', () => {
+      assert.equal(root.querySelector('button'), null);
+      assert.equal(frame.contentDocument.querySelector('button'), null);
+      assert.equal(root.querySelector('style[data-dyc-imgpaste-style]'), null);
+      assert.equal(transfers, 1);
+    });
+    watch({ goodsImagePaste: true });
+    await sleep(1050); // 等挂载引起的变更扫描结束，再验证纯路由切换。
+    w.history.pushState({}, '', '/shop/goods/list');
+    await sleep(1500);
+    check('离开编辑路由清理跨根按钮', () => {
+      assert.equal(root.querySelector('button'), null);
+      assert.equal(frame.contentDocument.querySelector('button'), null);
+    });
+    w.history.pushState({}, '', '/shop/goods/entry?productId=2');
+    await sleep(1500);
+    check('SPA 返回编辑页自动恢复，离开后不残留重复按钮', () => {
+      assert.equal(dynamic.querySelectorAll('button').length, 1);
+      assert.equal(frame.contentDocument.querySelectorAll('button').length, 1);
+    });
+    w.close();
+  }
+
   console.log('\n────────────────────────────────────────');
   console.log('  通过 ' + pass + ' / 失败 ' + fail);
   if (fail) {

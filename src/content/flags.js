@@ -197,6 +197,8 @@ var DYC_PAGE_PATTERNS = {
    * ========================================================== */
   wxGoodsList:
     /^https:\/\/store\.weixin\.qq\.com\/shop\/goods\/list/,
+  wxGoodsEdit:
+    /^https:\/\/store\.weixin\.qq\.com\/shop\/goods\/entry(?:[/?#]|$)/,
   wxShop:
     /^https:\/\/store\.weixin\.qq\.com\//,
   wxChannels:
@@ -215,7 +217,8 @@ var DYC_FLAG_GROUPS = [
   { id: 'live', title: '中控台' },
   { id: 'shop', title: '抖店' },
   { id: 'wx', title: '微信小店' },   // 2026-10-31 新增:微信侧第一个业务功能落地
-  { id: 'other', title: '其他' }
+  { id: 'other', title: '其他' },
+  { id: 'shared', title: '通用' }
 ];
 
 /* ==========================================================
@@ -252,13 +255,13 @@ var DYC_PLATFORMS = [
     label: '抖音',
     // 「其他」归抖音侧：里面的直播回放 / 大屏跳转 / 明细跳转都只作用于抖音页面，
     // 微信态下拉出来点不动，只会让人以为坏了（2026-10-31 用户认可该分法）。
-    groups: ['live', 'shop', 'other'],
+    groups: ['live', 'shop', 'other', 'shared'],
     urlRe: DYC_PLAT_DY_URL_RE
   },
   {
     id: 'wx',
     label: '微信',
-    groups: ['wx'],
+    groups: ['wx', 'shared'],
     urlRe: DYC_PAGE_PATTERNS.wxAll
   }
 ];
@@ -786,18 +789,15 @@ var DYC_FLAGS_META = [
   /* ── 抖店 · 活动广场联动渠道品(2026-10-25 新增,计划中功能 #1) ──────────
    * 用户原话:「当我勾选活动广场的主商品的时候,你帮我自动勾选渠道品也参加活动。」
    * 页面每行的「渠道品跟随主品报名 (N)」要跟主商品勾选框一起勾,逐行手点太烦。
-   * 当前口径:
-   *   ① 勾选与取消主商品都同步渠道品;
-   *   ② 手动取消渠道品后重新勾主商品 ⇒ 再补勾;
-   *   ③ 表头全选与取消全选也联动已渲染行,汇总成一条消息。
+   * 当前口径：只由独立按钮补勾已选商品；主品单选、全选与取消均不触发。
    * 来源词「活动广场」(见脚本 SOURCE),label 含该词(第 21 条口径)。
    */
   {
     key: 'campaignChannelTick',
     group: 'shop',
-    label: '活动广场联动渠道品',
-    desc: '活动报名时，让渠道品勾选状态跟随主商品。',
-    note: '勾选、取消及全选都会联动。',
+    label: '活动广场渠道品勾选',
+    desc: '活动报名页提供按钮，补勾已选商品的适用渠道品。',
+    note: '选好商品后点击按钮，仅补勾，不取消。',
     default: true,
     pages: ['campaignSignup']
   },
@@ -969,12 +969,12 @@ var DYC_FLAGS_META = [
    *   以后新加功能一律追加到 DYC_FLAGS_META 末尾,不要往中间插)。 */
   {
     key: 'goodsImagePaste',
-    group: 'shop',
+    group: 'shared',
     label: '图片剪贴板粘贴',
     desc: '上传框内加「粘贴图片」，一步贴入剪贴板图片。',
     note: '仅空白框显示；无图或塞不进会提示。',
     default: true,
-    pages: ['goodsEdit']
+    pages: ['goodsEdit', 'wxGoodsEdit']
   },
   {
     key: 'fabricSmartFill',
@@ -984,6 +984,15 @@ var DYC_FLAGS_META = [
     note: '合计须 100%；平台没有的名字按原样新建。',
     default: true,
     pages: ['goodsEdit']
+  },
+  {
+    key: 'wxClearStock',
+    group: 'wx',
+    label: '商品库存清零',
+    desc: '商品行加清空库存按钮，将全部规格库存更新为 0。',
+    note: '直接提交并回读确认；平台要求额外确认时停止。',
+    default: true,
+    pages: ['wxGoodsList']
   }
 ];/* ==========================================================
  * 四、从元数据派生的常量(保持向后兼容)

@@ -907,6 +907,7 @@
     // DYC_PAGE_PATTERNS 一一对应，报出来是为了让诊断报告里能一眼分清
     // 「用户当时在哪一类微信页面」—— 以后加功能时这是第一手线索。
     wxGoodsList: '微信小店商品列表',
+    wxGoodsEdit: '微信小店商品编辑',
     wxShop: '微信小店后台',
     wxChannels: '视频号助手',
     wxAll: '微信小店其他页',

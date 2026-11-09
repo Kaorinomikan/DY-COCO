@@ -78,7 +78,13 @@ async function boot(opt) {
     dataSku: null,        // 覆盖组件数据里的 SKU 编码列表
     bridge: false,        // true = 把 wx-link-main.js eval 进同一 window（模拟 MAIN world 桥）
     bridgeEarly: false,   // true = 桥在 tools **之前**注入（模拟 manifest 的 document_start 直注）
-    apiShareUrl: ''       // 非空 = 给 window.fetch 打桩，模拟「主动查微信商品接口」这条
+    apiShareUrl: '',      // 非空 = 给 window.fetch 打桩，模拟「主动查微信商品接口」这条
+    panelDelay: 0,
+    closeDelay: 0,
+    panelInShadow: false,
+    observeFlash: false,
+    emptyBridge: false,
+    ignoreEscape: false
   }, opt);
 
   let errorBridge = null;    // 桥脚本自身的异常（独立记，便于区分是哪边炸的）
@@ -131,8 +137,33 @@ async function boot(opt) {
     return box;
   }
   sr.querySelectorAll('.share').forEach((el) => {
-    el.addEventListener('click', () => { openPanel(); });
+    el.addEventListener('click', () => {
+      const open = () => {
+        const box = openPanel();
+        const mask = doc.createElement('div');
+        mask.className = 'share-mask';
+        mask.style.cssText = 'position:fixed;inset:0;opacity:.4!important';
+        if (o.panelInShadow) sr.appendChild(box);
+        box.parentNode.appendChild(mask);
+        panels.push({ box, mask });
+        if (o.observeFlash) {
+          const sample = () => {
+            if (!box.isConnected) return;
+            for (const node of [box, mask]) {
+              if (win.getComputedStyle(node).opacity !== '0') flashes.push(node.className);
+            }
+            win.setTimeout(sample, 10);
+          };
+          // 下一轮任务和每轮关闭动画都采样；MutationObserver 有机会在绘制前完成。
+          win.setTimeout(sample, 0);
+        }
+      };
+      if (o.panelDelay) win.setTimeout(open, o.panelDelay);
+      else open();
+    });
   });
+  const flashes = [];
+  const panels = [];
 
   // 模拟「规格/编码」弹层：点它插入一个浮层，标题「商家SKU编码」，
   // 每条 SKU 两行（规格描述 + 括号包着的编码）—— 与真机截图一致。
@@ -201,7 +232,14 @@ async function boot(opt) {
   // 派发 Escape 关面板（功能用的是这套收尾）
   doc.addEventListener('keydown', (ev) => {
     if (ev.key !== 'Escape') return;
-    doc.querySelectorAll('.share-popover').forEach((n) => n.remove());
+    if (o.ignoreEscape) return;
+    const close = () => {
+      for (const root of [doc, sr]) {
+        root.querySelectorAll('.share-popover,.share-mask').forEach((n) => n.remove());
+      }
+    };
+    if (o.closeDelay) win.setTimeout(close, o.closeDelay);
+    else close();
     doc.querySelectorAll('.sku-popover').forEach((n) => n.remove());
   });
 
@@ -242,6 +280,14 @@ async function boot(opt) {
   }
 
   let error = null;
+  if (o.emptyBridge) {
+    win.addEventListener('message', (e) => {
+      const d = e.data;
+      if (d && d.source === 'DYC_WX_LINK_REQ') {
+        win.postMessage({ source: 'DYC_WX_LINK_RES', rid: d.rid }, '*');
+      }
+    });
+  }
   try { win.eval(CODE); } catch (e) { error = e; }
   await sleep(80);
 
@@ -254,7 +300,7 @@ async function boot(opt) {
     await sleep(150);         // 等 ready 的 postMessage 走完
   }
 
-  return { dom, win, doc, sr, copied, toasts, error, errorBridge, opens, getWatchCb: () => watchCb };
+  return { dom, win, doc, sr, copied, toasts, error, errorBridge, opens, flashes, panels, getWatchCb: () => watchCb };
 }
 
 function btns(sr) {
@@ -386,6 +432,72 @@ function rowOf(sr, i) {
       console.log('  ✗ 点一下自动开面板、读链接、关面板、写剪贴板');
     }
   })();
+
+  console.log('\n【五·一】分享面板首帧、延迟出现及关闭动画全程不可见');
+  for (const panelInShadow of [false, true]) {
+    const V = await boot({ emptyBridge: true, observeFlash: true, panelInShadow,
+      panelDelay: panelInShadow ? 1050 : 0, closeDelay: 260 });
+    try {
+      const unrelated = V.doc.createElement('input');
+      unrelated.value = 'https://store.weixin.qq.com/shop/a/OTHER000';
+      V.doc.body.appendChild(unrelated);
+      const btn = rowOf(V.sr, 0).querySelectorAll('[data-dyc-wx-btn]')[1];
+      btn.click();
+      assert.ok(await waitFor(() => btn.textContent === '已复制', 8000), '复制未完成');
+      await sleep(320);
+      assert.equal(V.copied.at(-1), LINK);
+      assert.equal(V.flashes.length, 0, '面板或遮罩可见采样 ' + V.flashes.length + ' 次');
+      assert.equal(V.doc.querySelector('.share-popover,.share-mask'), null);
+      assert.equal(V.sr.querySelector('.share-popover,.share-mask'), null);
+      const { box, mask } = V.panels[0];
+      assert.equal(box.getAttribute('data-dyc-veil'), null, '隐身标记未清理');
+      assert.equal(box.style.getPropertyValue('pointer-events'), '', '交互样式未还原');
+      assert.equal(mask.style.getPropertyValue('opacity'), '0.4', '遮罩原样式未还原');
+      assert.equal(mask.style.getPropertyPriority('opacity'), 'important', '原样式优先级丢失');
+      pass++; console.log('  ✓ ' + (panelInShadow ? 'Shadow 延迟面板' : '文档面板') + '全程隐藏且关闭');
+    } catch (e) {
+      fail++; failures.push('无闪屏复制 —— ' + e.message);
+      console.log('  ✗ 无闪屏复制：' + e.message);
+    } finally { V.win.close(); }
+  }
+
+  console.log('\n【五·一·异常】超时、取消及关闭失败均收尾，不改剪贴板');
+  for (const scenario of ['timeout', 'cancel', 'close-failed', 'existing-dialog']) {
+    const V = await boot({ emptyBridge: true, observeFlash: true,
+      panelLink: scenario === 'timeout' ? '' : LINK, ignoreEscape: scenario === 'close-failed' });
+    try {
+      if (scenario === 'existing-dialog') {
+        const existing = V.doc.createElement('div');
+        existing.setAttribute('role', 'dialog');
+        existing.textContent = '用户手动打开的弹窗';
+        V.doc.body.appendChild(existing);
+      }
+      const btn = rowOf(V.sr, 0).querySelectorAll('[data-dyc-wx-btn]')[1];
+      btn.click();
+      if (scenario === 'cancel') {
+        assert.ok(await waitFor(() => V.panels.length, 3000, 10), '面板未出现');
+        V.getWatchCb()({ wxRowCopy: false });
+      }
+      assert.ok(await waitFor(() => !btn.disabled, 6000, 25), '按钮未解除忙碌');
+      assert.equal(V.copied.length, 0, '异常时不应改剪贴板');
+      if (scenario === 'close-failed') {
+        assert.ok(V.toasts.some(t => t.text === '分享面板未关闭，请手动关闭后重试'), '缺少手动关闭提示');
+        assert.equal(V.doc.querySelector('[data-dyc-veil]'), null, '留下不可见遮挡');
+        assert.notEqual(V.win.getComputedStyle(V.panels[0].box).opacity, '0', '关闭失败必须恢复手动操作');
+        assert.equal(V.toasts.filter(t => t.opts.source === '商品链接').length, 1, '结果消息重复');
+      } else if (scenario === 'existing-dialog') {
+        assert.equal(V.panels.length, 0, '已有弹窗时不应再开分享');
+        assert.equal(V.doc.querySelector('[role="dialog"]').textContent, '用户手动打开的弹窗');
+      } else {
+        assert.equal(V.doc.querySelector('.share-popover,.share-mask'), null);
+        assert.equal(V.flashes.length, 0, '异常收尾出现闪动');
+      }
+      pass++; console.log('  ✓ ' + scenario + ' 恢复页面且不复制');
+    } catch (e) {
+      fail++; failures.push('分享异常收尾 ' + scenario + ' —— ' + e.message);
+      console.log('  ✗ ' + scenario + '：' + e.message);
+    } finally { V.win.close(); }
+  }
 
   console.log('\n【五·二】真一键：从页面数据直接读（不点面板）');
   const F = await boot({ withData: true });

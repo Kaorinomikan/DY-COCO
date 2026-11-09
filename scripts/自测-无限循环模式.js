@@ -226,13 +226,14 @@ async function toVigil(f) {
   check(f.clicks() === beforeClicks, '虚惊一场时不点任何按钮(点一下反而打断正在进行的讲解)');
   check(f.api.state.nextAt > f.now(), '回计时后重新给出完整间隔');
 
-  /* ---------- ④-2 探针看到「讲解」:当拍补讲 ---------- */
+  /* ---------- ④-2 我方取消欠一次补讲：探针看到「讲解」才允许续回 ---------- */
   const g = await ready({ dybAutoLoopSeconds: 15, dybAutoLoopGroup: 'sec', dybAutoLoopEnabled: false }, true);
   await toVigil(g);
   const c0 = g.clicks();
   const r0 = g.api.state.round;
   g.mount(true);
   g.row.dataset.live = '0'; g.button.textContent = '讲解';
+  g.api.state.owedResume = g.now();
   g.advance(31000);
   g.api.vigilTick();
   for (let i = 0; i < 40; i++) await Promise.resolve();
@@ -259,6 +260,7 @@ async function toVigil(f) {
   await toVigil(h);
   h.mount(true);
   h.row.dataset.live = '0'; h.button.textContent = '讲解';
+  h.api.state.owedResume = h.now();
   h.w.__clickHook = () => {};                        // 点了界面不翻(平台没响应)
   h.advance(31000);
   /* 直接驱动一次补讲:这一路要连点 4 次、每次等满 5 秒观察窗,

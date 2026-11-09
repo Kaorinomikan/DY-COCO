@@ -1,5 +1,5 @@
 {
-  "version": "26.11.08.3",
+  "version": "26.11.09.1",
   "algorithm": "sha256",
   "files": [
     {
@@ -19,23 +19,23 @@
     },
     {
       "path": "manifest.json",
-      "size": 12816,
-      "sha256": "86578a7e53cd5f1c6fb882c7f7aeee39c1214e4a70d45ad21e3fa26e61279f6a"
+      "size": 12935,
+      "sha256": "37c1dfc7ce2d87fc7251c44ff6775a615dfe12d97dc04ac1a8399ee7fa54542e"
     },
     {
       "path": "src/background/service-worker.js",
-      "size": 92220,
-      "sha256": "21517dc4adc1b144bbbec5bdb5436a7858c670881f870cea5198d234d92861e6"
+      "size": 92490,
+      "sha256": "bc1a6b706b79afd2d1dbb1c41ed9b68d0f50b9986660d7837b0d7b1f416c92d8"
     },
     {
       "path": "src/content/anchor.js",
-      "size": 26547,
-      "sha256": "cae729753012598b34c06a5370411b4c84f0b264d84dce3ef87bd95ed7e14099"
+      "size": 26585,
+      "sha256": "9d528bd6aeb309923d9009390bc671ccb3521a39894368406a92ba6219f0acc8"
     },
     {
       "path": "src/content/campaign-channel-tick.js",
-      "size": 33653,
-      "sha256": "538d44b1e410902ec8cdeb6453c5f8ceb7eb13552a7d623b834d5b473dde2fec"
+      "size": 24607,
+      "sha256": "17a30820459e8ecba2ee1a7bbe178ce843810c545c3e59504d0114f1fed29218"
     },
     {
       "path": "src/content/channel-offline-delete.js",
@@ -79,8 +79,8 @@
     },
     {
       "path": "src/content/diag.js",
-      "size": 62566,
-      "sha256": "31fcfc0a2b822f95e2f9c5be3a1016a98dd3b57bf869239367c255f7f8bdf7ab"
+      "size": 62611,
+      "sha256": "0815d0fc701317e956eb895519464af631ed2715095e0d828fecae1f42869b02"
     },
     {
       "path": "src/content/dialog.js",
@@ -104,8 +104,8 @@
     },
     {
       "path": "src/content/flags.js",
-      "size": 89396,
-      "sha256": "eb012f6bb40e96ac4e8a8affd0d8ec6f4d36b3546a1ddd11d042a5a34c4a3cd2"
+      "size": 89750,
+      "sha256": "83feeb2fee45cbd51872754b5fe5e0124d18528a2ab35265c0615f42865f1ee5"
     },
     {
       "path": "src/content/goods-batch-copy.js",
@@ -119,8 +119,8 @@
     },
     {
       "path": "src/content/goods-image-paste.js",
-      "size": 32837,
-      "sha256": "2026660b183ea3935309c1bd235f1145163f444b862e3c8c9c29775f2a49136d"
+      "size": 37154,
+      "sha256": "33063957d52dc92d425d1357079e6527890d6cfecae7a971dcb899b78e8c0ac0"
     },
     {
       "path": "src/content/goods-list-flag.js",
@@ -134,8 +134,8 @@
     },
     {
       "path": "src/content/live-state.js",
-      "size": 14725,
-      "sha256": "89abd6207f4e56e0b891d1af023968948e1f7e2f89a6eb3d336c71065795e1a0"
+      "size": 15879,
+      "sha256": "07cdc533096e61d5e1f5aad6f9a1e656c38e237c4eec5bf2da690d1c435d46f9"
     },
     {
       "path": "src/content/main.js",
@@ -164,8 +164,8 @@
     },
     {
       "path": "src/content/row-scan.js",
-      "size": 6514,
-      "sha256": "f4fee85088770cb5196224f606b4696a88c854fd960b664f2202b04371cc4e89"
+      "size": 6555,
+      "sha256": "5c79ff18cef11afec005a10d136d017df1d6074c40f8e4ceafcab64a8beac585"
     },
     {
       "path": "src/content/shop-header-name.js",
@@ -214,13 +214,23 @@
     },
     {
       "path": "src/content/wx-goods-tools.js",
-      "size": 69179,
-      "sha256": "f82b7f052124b1670c09cb1aec423df0c4e41c62be9a70ab9dfc6e220530af63"
+      "size": 72705,
+      "sha256": "821d04587d7a853a8a5d7518f6617ccbcb2d448869250e13a26955cde089ebc3"
     },
     {
       "path": "src/content/wx-link-main.js",
       "size": 31692,
       "sha256": "47e4eba42a120e674c156937f805e2a3b9eb10c60560e99acb41c2eee213e9c7"
+    },
+    {
+      "path": "src/content/wx-stock-main.js",
+      "size": 3975,
+      "sha256": "c247ba9d27feda1f40ac58488440bd6eeb4c63ce8140cb0ae6a42e60fb4ef96d"
+    },
+    {
+      "path": "src/content/wx-stock.js",
+      "size": 14919,
+      "sha256": "2af11c4faad14d3f5fc850a52630d306636e761282517922add58f18d01fb0f2"
     },
     {
       "path": "src/feedback/feedback.html",
@@ -239,8 +249,8 @@
     },
     {
       "path": "src/live/auto-loop-lecture.js",
-      "size": 270398,
-      "sha256": "31589706907c2bacefc1f8ad01538794fa244cb02fcb63dd74d7548cafe1fb9b"
+      "size": 271783,
+      "sha256": "dfd635e087a596a6e59febca59b228b1409335100cbb67a302af24785204cf26"
     },
     {
       "path": "src/live/auto-refresh.js",
@@ -369,8 +379,8 @@
     },
     {
       "path": "src/popup/popup.html",
-      "size": 26235,
-      "sha256": "9fd62ad211ab1e126bf1e508b1486145f6b4c6d629a78244a85e007b334129e9"
+      "size": 26278,
+      "sha256": "a8f77b9ba017785178561d03d16c276500c961f54a3f917b2a0ce94d08358973"
     },
     {
       "path": "src/popup/popup.js",

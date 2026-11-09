@@ -1,30 +1,4 @@
-/**
- * 自测 · 活动广场「勾主商品联动渠道品」（jsdom）
- * ============================================================
- * 用户 2026-10-25 拍板的三条口径，这套自测逐条盯着：
- *
- *   ① 勾上主商品 → 同行渠道品跟着勾上，**只发一条**三段式消息；
- *   ② 取消主商品 → 同行渠道品**一并取消**，同样只发一条消息；
- *   ②b 取消主商品但渠道品本来就没勾 → 不点、不出声；
- *   ③ 表头「全选」→ 已勾主品的行一次性补齐；「取消全选」→ 一并取消，各一条消息；
- *   ③b 手动取消渠道品（主品仍勾着）→ 不动、不出声，不自动补回；
- *   ④ 渠道品已勾好 → 不重复点（不制造多余请求）；
- *   ⑤ 点的是渠道品自己 → 不动（不是主品）；
- *   ⑥ 该行没有渠道品（数量 0）→ 静默，不点、不报；
- *   ⑦ 侧栏「渠道品报名状态」这类同名文案不能把行认错；
- *   ⑧ 开关关掉 → 点了也不动；
- *   ⑨ 页面上没有「渠道品跟随主品报名」→ 什么都不做；
- *   ⑩ 虚拟滚动（一屏 6 行、共 12 行）→ 全选要把**整张表**都联动上，且滚回原位；
- *      2026-11-08 用户报「商品超过大概 6 个，下面商品都不会自动勾选渠道品」。
- *   ⑪ 起始滚动位置不在顶部 → 联动结束要回到用户原来的位置；
- *   ⑫ 一屏装得下全部行（不用滚）→ 行为不变（不滚、全部勾上）；
- *   ⑬ 虚拟滚动下取消全选 → 整张表的渠道品一并取消。
- *
- * 用法：
- *   NODE_PATH=C:/Users/79412/.workbuddy/binaries/node/workspace/node_modules \
- *     node scripts/自测-活动广场联动渠道品.js
- * 退出码 0 = 全绿；1 = 有用例失败。
- */
+/** 活动广场独立渠道品按钮：触发边界、虚拟列表、最新状态回读、去重计数及生命周期回归。 */
 'use strict';
 
 const fs = require('fs');
@@ -59,7 +33,7 @@ function makePage(opts) {
     { id: 'p2', name: '【小予予专属】高腰阔腿牛仔裤', chId: 'c2', count: 2 }
   ];
 
-  let html = '<div id="app"><div class="table">' +
+  let html = '<div id="app"><div id="tools"><button>Excel报名</button><button id="batch">批量修改工具(0)</button></div><div class="table">' +
     '<div class="header-row" id="head">' +
       '<span class="auxo-checkbox" id="allwrap"><input type="checkbox" id="all"></span>' +
       '<span class="th">商品信息</span>' +
@@ -181,7 +155,7 @@ function makeVirtualPage(opts) {
   const state = { main: [], ch: [] };
   for (let i = 0; i < total; i++) { state.main.push(false); state.ch.push(false); }
 
-  const dom = new JSDOM('<!doctype html><html><body><div id="app"><div class="table">' +
+  const dom = new JSDOM('<!doctype html><html><body><div id="app"><div id="tools"><button>Excel报名</button><button id="batch">批量修改工具(0)</button></div><div class="table">' +
     '<div class="header-row" id="head">' +
       '<span class="auxo-checkbox" id="allwrap"><input type="checkbox" id="all"></span>' +
       '<span class="th">商品信息</span><span class="th">报名价</span>' +
@@ -239,7 +213,7 @@ function makeVirtualPage(opts) {
       const p = doc.getElementById('p' + i);
       const c = doc.getElementById('c' + i);
       if (p) p.addEventListener('click', function () { state.main[i] = p.checked; render(); });
-      if (c) c.addEventListener('click', function () { state.ch[i] = c.checked; render(); });
+      if (c) c.addEventListener('click', function () { if (!opts.rejectPersist) state.ch[i] = c.checked; render(); });
     }
   }
 
@@ -301,169 +275,106 @@ async function waitFor(fn, timeout) {
   return false;
 }
 
+function button(env) {
+  const host = env.doc.querySelector('[data-dyc-campaign-tick]');
+  return host && host.shadowRoot.querySelector('button');
+}
+async function run(env) {
+  const before = env.messages.length;
+  button(env).click();
+  ok(await waitFor(() => env.messages.length > before), '操作完成并给出结果');
+  return env.messages[env.messages.length - 1];
+}
 (async function main() {
-  console.log('===== 活动广场 · 勾主商品联动渠道品 =====');
-
-  /* ---- ① 勾主商品 → 渠道品跟着勾上，一条消息 ---- */
   let env = await boot({ withSidebar: true });
-  ok(env.api && env.api.isEnabled(), '① 开关默认开启，模块已挂上监听');
-  click(env, 'p1');
-  await sleep(320);
-  ok(env.doc.getElementById('c1').checked === true, '① 勾主商品后，同行渠道品被勾上');
-  ok(env.clicks.c1 === 1, '① 渠道品只被点了一次（没有重复代点）');
-  ok(env.messages.length === 1, '① 只发一条消息');
-  ok(env.messages[0] && env.messages[0].text === '已联动勾选渠道品', '① 消息值 = 已联动勾选渠道品');
-  ok(env.messages[0] && env.messages[0].source === '活动广场', '① 消息带来源词「活动广场」（三段式）');
-  ok(env.messages[0] && env.messages[0].count === '1 个', '① 消息结果数 = 1 个');
+  ok(button(env) && button(env).textContent.includes('渠道品'), '工具栏挂载独立按钮');
+  ok(env.doc.getElementById('batch').nextElementSibling.shadowRoot, '按钮紧随批量修改工具');
+  click(env, 'all');
+  await sleep(350);
+  ok(env.clicks.c1 === 0 && env.clicks.c2 === 0 && env.messages.length === 0, '全选不触发渠道品');
+  click(env, 'all'); click(env, 'p1');
+  await sleep(350);
+  ok(env.clicks.c1 === 0, '单选主品不触发渠道品');
+  let msg = await run(env);
+  ok(env.doc.getElementById('c1').checked && !env.doc.getElementById('c2').checked, '仅补勾选中的主商品');
+  ok(env.clicks.sideCh === 0, '不误点侧栏同名控件');
+  ok(msg.source === '活动广场' && parseInt(msg.count.replace(/[^0-9]/g,'')) === 1, '三段式结果按实际补勾行数计数，不按渠道品数量累计');
+  env.doc.getElementById('p1').checked = false;
+  env.doc.getElementById('p2').checked = true;
+  env.doc.getElementById('c2').disabled = true;
+  env.messages.length = 0;
+  msg = await run(env);
+  ok(env.doc.getElementById('c1').checked, '未选商品已勾渠道品不被取消');
+  ok(env.clicks.c2 === 0 && msg.type === 'alert', '禁用渠道品跳过并提示');
+  env.dom.window.close();
 
-  /* ---- ④ 渠道品已经勾好 → 不重复点 ---- */
   env = await boot({});
   env.doc.getElementById('c1').checked = true;
-  click(env, 'p1');
-  await sleep(320);
-  ok(env.clicks.c1 === 0, '④ 渠道品已勾好时不再点它');
-  ok(env.messages.length === 0, '④ 没有动作就不出声');
-
-  /* ---- ② 取消主商品 → 渠道品一并取消 ---- */
-  env = await boot({});
-  env.doc.getElementById('p1').checked = true;
-  env.doc.getElementById('c1').checked = true;
-  click(env, 'p1');                    // 取消主品
-  await sleep(320);
-  ok(env.doc.getElementById('c1').checked === false, '② 取消主商品后渠道品被一并取消');
-  ok(env.clicks.c1 === 1, '② 渠道品只被点了一次');
-  ok(env.messages.length === 1, '② 只发一条消息');
-  ok(env.messages[0] && env.messages[0].text === '已联动取消渠道品', '② 消息值 = 已联动取消渠道品');
-  ok(env.messages[0] && env.messages[0].count === '1 个', '② 消息结果数 = 1 个');
-
-  /* ---- ②b 取消主商品但渠道品本来没勾 → 静默 ---- */
-  env = await boot({});
-  env.doc.getElementById('p1').checked = true;
-  click(env, 'p1');                    // 取消主品（渠道品本来未勾）
-  await sleep(320);
-  ok(env.clicks.c1 === 0, '②b 渠道品本来未勾时不去点它');
-  ok(env.messages.length === 0, '②b 状态已一致，不出声');
-
-  /* ---- ⑤ 点的是渠道品自己 ---- */
-  env = await boot({});
-  click(env, 'c1');
-  await sleep(320);
-  ok(env.clicks.c1 === 1, '⑤ 点渠道品自己只算用户那一次点击');
-  ok(env.messages.length === 0, '⑤ 点渠道品自己不出声');
-
-  /* ---- ③ 表头全选 → 一次性补齐 ---- */
-  env = await boot({});
   click(env, 'all');
-  await sleep(700);
-  ok(env.doc.getElementById('c1').checked === true && env.doc.getElementById('c2').checked === true,
-    '③ 全选后两行的渠道品都被勾上');
-  ok(env.messages.length === 1, '③ 全选只发一条消息（不逐行刷屏）');
-  ok(env.messages[0] && env.messages[0].count === '2 个', '③ 消息结果数 = 2 个');
+  msg = await run(env);
+  ok(env.clicks.c1 === 0 && env.clicks.c2 === 1, '已勾好的框不重复点，重叠控件不重复统计');
+  ok(msg.count.includes('1'), '只计本次新增一项');
+  click(env,'all');
+  await sleep(300);
+  ok(env.doc.getElementById('c1').checked && env.doc.getElementById('c2').checked, '取消全选也不自动取消渠道品');
+  env.messages.length=0;
+  msg=await run(env);
+  ok(msg.count.includes('0'), '未选商品时明确反馈补勾0项');
+  env.doc.querySelector('[data-dyc-campaign-tick]').remove();
+  ok(await waitFor(() => !!button(env)), '平台重渲染移除按钮后自动补回');
+  env.watch()({ campaignChannelTick:false });
+  ok(!button(env) && !env.api.isEnabled(), '关闭开关立即移除按钮');
+  env.watch()({ campaignChannelTick:true });
+  ok(!!button(env), '重新开启立即挂载按钮');
+  env.dom.window.close();
 
-  /* ---- ③b 取消全选 → 各行渠道品一并取消 ---- */
-  env = await boot({});
-  click(env, 'all');                   // 全选 → 各行渠道品被补勾
-  await sleep(700);
-  click(env, 'all');                   // 再点一次 = 取消全选
-  await sleep(700);
-  ok(env.doc.getElementById('c1').checked === false && env.doc.getElementById('c2').checked === false,
-    '③b 取消全选后两行渠道品都被取消');
-  ok(env.messages.length === 2, '③b 勾选与取消各一条消息（共两条）');
-  ok(env.messages[1] && env.messages[1].text === '已联动取消渠道品', '③b 第二条是「已联动取消渠道品」');
-  ok(env.messages[1] && env.messages[1].count === '2 个', '③b 取消结果数 = 2 个');
+  env=await boot({ flag:false });
+  ok(!button(env), '初始关闭开关不注入按钮');
+  env.dom.window.close();
 
-  /* ---- ③b' 手动取消渠道品（主品仍勾着）→ 不动、不自动补回 ---- */
-  env = await boot({});
-  env.doc.getElementById('p1').checked = true;
-  env.doc.getElementById('c1').checked = true;
-  click(env, 'c1');                    // 用户手动取消渠道品
-  await sleep(320);
-  ok(env.doc.getElementById('c1').checked === false, '③b\' 手动取消后保持取消（不自动补回）');
-  ok(env.messages.length === 0, '③b\' 用户自己动渠道品时不出声');
-
-  /* ---- ⑥ 该行没有渠道品（数量 0）→ 静默 ---- */
-  env = await boot({});
-  click(env, 'p3');
-  await sleep(320);
-  ok(env.messages.length === 0, '⑥ 无渠道品的行：不报错、不出声');
-  ok(env.clicks.c1 === 0 && env.clicks.c2 === 0, '⑥ 无渠道品的行：不误点别人家的渠道品');
-
-  /* ---- ⑦ 侧栏同名文案不干扰 ---- */
-  env = await boot({ withSidebar: true });
-  click(env, 'p1');
-  await sleep(320);
-  ok(env.doc.getElementById('c1').checked === true, '⑦ 侧栏「渠道品报名状态」存在时仍认对行');
-  ok(env.clicks.sideCh === 0, '⑦ 侧栏那枚勾选框没被误点');
-
-  /* ---- ⑧ 开关关掉 ---- */
-  env = await boot({ flag: false });
-  ok(env.api.isEnabled() === false, '⑧ 开关关掉时监听未挂');
-  click(env, 'p1');
-  await sleep(320);
-  ok(env.clicks.c1 === 0 && env.messages.length === 0, '⑧ 关掉后点了也不动、不出声');
-
-  /* ---- ⑨ 页面上根本没有「渠道品跟随主品报名」 ---- */
-  const dom = new JSDOM('<!doctype html><html><body><div class="row">' +
-    '<input type="checkbox" id="lonely"><span>普通页面</span></div></body></html>',
-    { runScripts: 'dangerously', url: 'https://fxg.jinritemai.com/ffa/merchant/parent-campaign-detail' });
-  const w = dom.window;
-  const msgs = [];
-  w.toast = function (t) { msgs.push(t); };
-  w.setStatus = function (t) { msgs.push(t); };
-  w.dycReadFlags = function () { return Promise.resolve({ campaignChannelTick: true }); };
-  w.dycWatchFlags = function () {};
-  w.eval(CODE);
-  await sleep(30);
-  dom.window.document.getElementById('lonely').dispatchEvent(
-    new w.MouseEvent('click', { bubbles: true })
-  );
-  await sleep(320);
-  ok(msgs.length === 0, '⑨ 没有渠道品文案的页面：完全静默');
-
-  /* ---- ⑩ 虚拟滚动：一屏 6 行、共 12 行 ---- */
-  env = await bootVirtual({ total: 12, perScreen: 6 });
-  click(env, 'all');
-  ok(await waitFor(() => env.messages.length >= 1, 15000), '⑩ 联动走完并报了结果（没有卡死）');
-  ok(env.state.ch.every(Boolean), '⑩ 12 行（虚拟滚动、一屏 6 行）全选后渠道品全部勾上');
-  ok(env.state.main.every(Boolean), '⑩ 主商品的勾选态没有被改坏');
-  ok(env.messages.length === 1, '⑩ 只发一条汇总消息（不逐屏刷屏）');
-  ok(env.messages[0] && env.messages[0].text === '已联动勾选渠道品', '⑩ 消息值 = 已联动勾选渠道品');
-  ok(env.messages[0] && env.messages[0].count === '12 个', '⑩ 消息结果数 = 12 个');
-  ok(env.list.scrollTop === 0, '⑩ 联动结束把滚动位置还原到原位');
-
-  /* ---- ⑬ 虚拟滚动下取消全选（同一次会话里接着点） ---- */
-  click(env, 'all');
-  ok(await waitFor(() => env.messages.length >= 2, 15000), '⑬ 取消全选也走完了');
-  ok(env.state.ch.every((v) => v === false), '⑬ 取消全选后整张表的渠道品一并取消');
-  ok(env.messages[1] && env.messages[1].text === '已联动取消渠道品', '⑬ 第二条消息 = 已联动取消渠道品');
-  ok(env.messages[1] && env.messages[1].count === '12 个', '⑬ 取消结果数 = 12 个');
-  ok(env.messages.length === 2, '⑬ 勾选与取消各一条（共两条）');
-
-  /* ---- ⑪ 起始滚动位置不在顶部 → 结束要回到原处 ---- */
-  env = await bootVirtual({ total: 12, perScreen: 6, startAt: 120 });
-  click(env, 'all');
-  await waitFor(() => env.messages.length >= 1, 15000);
-  ok(env.state.ch.every(Boolean), '⑪ 从列表中间起步时也能把整张表勾全');
-  ok(env.list.scrollTop === 120, '⑪ 结束后滚动位置回到用户原来的 120');
-
-  /* ---- ⑫ 一屏装得下全部行（不用滚）→ 行为不变 ---- */
-  env = await bootVirtual({ total: 12, perScreen: 12 });
-  click(env, 'all');
-  await waitFor(() => env.messages.length >= 1, 15000);
-  ok(env.state.ch.every(Boolean), '⑫ 一屏装得下 12 行时照样全部勾上（不滚）');
-  ok(env.list.scrollTop === 0, '⑫ 不用滚的页面滚动位置不受影响');
-
-  /* ---- ⑭ 外层页面比列表高 + 行数多：步长必须按列表算，不许跨过没渲染的行 ---- */
-  env = await bootVirtual({ total: 18, perScreen: 6, outerScroll: true });
-  click(env, 'all');
-  await waitFor(() => env.messages.length >= 1, 25000);
-  ok(env.state.ch.every(Boolean), '⑭ 18 行 + 外层 900px 也能滚时，一行都不漏');
-  ok(env.messages[0] && env.messages[0].count === '18 个', '⑭ 消息结果数 = 18 个');
-
-  console.log('');
-  console.log('通过 ' + pass + ' 项' + (failures.length ? '，失败 ' + failures.length + ' 项' : '，全部通过'));
-  if (failures.length) {
-    failures.forEach(function (f) { console.log('   ✗ ' + f); });
-    process.exit(1);
+  for (const options of [
+    {total:12,perScreen:6},
+    {total:12,perScreen:6,startAt:120},
+    {total:12,perScreen:12},
+    {total:18,perScreen:6,outerScroll:true}
+  ]) {
+    env=await bootVirtual(options);
+    click(env,'all');
+    await sleep(300);
+    ok(env.state.ch.every(v => !v), '虚拟列表全选不自动勾渠道品');
+    const origin=env.list.scrollTop;
+    button(env).click(); button(env).click();
+    ok(button(env).disabled, '运行中禁用按钮，连点不重复执行');
+    ok(await waitFor(() => env.messages.length>0,25000), '虚拟列表扫描完成');
+    ok(env.state.ch.every(Boolean), '跨屏及平台重建后全部补勾成功');
+    ok(env.messages.length===1 && env.messages[0].count === '补勾 '+options.total+' 项', '重叠屏与重建节点不重复计数');
+    ok(env.list.scrollTop===origin && env.state.main.every(Boolean), '恢复原滚动位置，保留主品勾选状态');
+    env.dom.window.close();
   }
+
+  env=await bootVirtual({total:12,perScreen:6,startAt:120});
+  env.state.main[0]=env.state.main[7]=env.state.main[11]=true;
+  env.state.ch[4]=true;
+  env.list.scrollTop=120;
+  msg=await run(env);
+  ok(msg.count==='补勾 3 项' && [0,4,7,11].every(i=>env.state.ch[i]), '跨屏仅补勾手选的三件，保留未选商品已有渠道品');
+  ok(env.state.ch.filter(Boolean).length===4, '其余未选商品不受影响');
+  env.dom.window.close();
+
+  env=await bootVirtual({total:2,perScreen:2,rejectPersist:true});
+  click(env,'all');
+  msg=await run(env);
+  ok(env.state.ch.every(v => !v) && msg.type==='alert' && msg.count==='补勾 0 项', '回归：旧节点已勾、新节点未保存时不虚报成功');
+  ok(!button(env).disabled, '失败后恢复按钮');
+  env.dom.window.close();
+
+  env=await bootVirtual({total:12,perScreen:6,startAt:120});
+  click(env,'all');
+  button(env).click();
+  env.api.stop();
+  await sleep(500);
+  ok(env.state.ch.every(v => !v) && env.list.scrollTop===120, '执行中关闭开关停止后续动作且还原滚动位置');
+  env.dom.window.close();
+  console.log('通过 '+pass+' 项，失败 '+failures.length+' 项');
+  if(failures.length) process.exit(1);
 })();

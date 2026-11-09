@@ -48,7 +48,7 @@
 // │ 发布会被直接中止。不需要靠人记。                                 │
 // └──────────────────────────────────────────────────────────────────┘
 // 全面整改：后台统一设置写入、私有历史与反馈来源截图，更新导入的开关定义。
-var DYC_BUILD = '26.11.08.3+sw33';
+var DYC_BUILD = '26.11.09.1+sw34';
 
 // classic worker，可以 importScripts（manifest 里没有设 type: module）
 importScripts('../shared/gitee.js', '../content/flags.js', '../shared/live-control-assets.js');
@@ -1621,8 +1621,8 @@ function dualCall(invoke, timeoutMs) {
  *
  * 两条通道：新内核走 chrome.scripting 的 func；老内核（MV2 风格、仍保留
  * tabs.executeScript）走 code 片段 —— 两者都在扩展的 isolated world 里执行，
- * 读的是同一个标记。func/code 都按 markerKey 现场生成（executeScript 的
- * args 参数在老内核上不可靠，不能依赖它传参）。
+ * 读的是同一个标记。MV3 禁止 new Function，使用静态函数与 args 传参；
+ * 旧内核仍走原有 tabs.executeScript 的 code 通道。
  *
  * @param {number} tabId
  * @param {string} markerKey 如 '__DYC_LIVE_CTRL_LOADED__'
@@ -1634,7 +1634,8 @@ function probeLoaded(tabId, markerKey) {
     return dualCall(function (done) {
       return chrome.scripting.executeScript({
         target: target,
-        func: new Function('return !!window["' + markerKey + '"];')
+        func: function (key) { return !!window[key]; },
+        args: [markerKey]
       }, done);
     }, 6000).then(function (r) { return !!(r && r[0] && r[0].result); });
   }
@@ -1746,10 +1747,16 @@ async function injectAssetGroup(sender, assets, markerKey, label) {
   const failed = [];
   let done = 0;
   let firstErr = null;
+  // 跨分组复用带顶层 const/let 的底座，避免切页时重声明。
+  const sharedMarkers = {
+    'src/content/anchor.js': '__DYC_ANCHOR_LOADED__',
+    'src/content/dialog.js': '__DYC_DIALOG_LOADED__',
+    'src/content/row-scan.js': '__DYC_ROW_SCAN_LOADED__'
+  };
   for (let i = 0; i < assets.js.length; i++) {
     const file = assets.js[i];
     try {
-      if (file === 'src/content/dialog.js' && await probeLoaded(tabId, '__DYC_DIALOG_LOADED__')) {
+      if (sharedMarkers[file] && await probeLoaded(tabId, sharedMarkers[file])) {
         done++;
         continue;
       }

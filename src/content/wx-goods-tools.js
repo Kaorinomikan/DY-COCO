@@ -65,8 +65,7 @@
  *     L3 行内明文 —— 行内元素的文本 / title / href / data-* 里若出现
  *        `/shop/a/` 链接（万一平台哪天把它铺到列表上）。零点击。
  *
- *     L4 兜底：模拟点开分享面板，读**可见**浮层里的明文链接，再关面板。
- *        面板会闪一下，提示里如实写「读的分享面板」。
+ *     L4 兜底：绘制前隐藏本次分享浮层，读链接后等关闭完成再恢复样式。
  *
  *   已废弃两条：
  *     · 「扫页面里隐藏的 input」—— 分享面板是全局单例，里面留着上一次分享的
@@ -148,10 +147,10 @@
   // 判可见时要把这类节点当可见处理，否则读不到里面的链接。
   var VEIL_ATTR = 'data-dyc-veil';
   var VEIL_SEL = [
-    'body > *',
     '[class*="mask"]', '[class*="Mask"]', '[class*="overlay"]', '[class*="Overlay"]',
     '[class*="modal"]', '[class*="Modal"]', '[class*="popup"]', '[class*="Popup"]',
-    '[class*="dialog"]', '[class*="Dialog"]', '[role="dialog"]', '[role="menu"]'
+    '[class*="dialog"]', '[class*="Dialog"]', '[role="dialog"]', '[role="menu"]',
+    '[class*="popover"]', '[class*="Popover"]'
   ].join(',');
 
   var NAME_CLASS = 'goods_title_1';
@@ -173,6 +172,7 @@
   var lastHref = '';
   var prevOn = null;
   var busy = false;          // 读面板期间上锁,防连点
+  var activeLinkCancel = null;
   var codeCache = {};        // 商品 ID → { h: 货号, t: 时间戳 }
   var CODE_TTL = 10 * 60 * 1000;
 
@@ -949,8 +949,8 @@
    * 面板里同时有「微信短链 #微信小店://…」与「网页链接 https://…/shop/a/…」，
    * 前者不匹配本正则，天然被排除。
    */
-  function scanLinkOnce() {
-    var roots = collectRoots();
+  function scanLinkOnce(layers) {
+    var roots = layers.map(function (item) { return item.el; });
     var found = [];
     function add(v) {
       var m = String(v || '').match(SHOP_SHORT_RE);
@@ -959,6 +959,8 @@
     }
     for (var i = 0; i < roots.length; i++) {
       var r = roots[i];
+      if (!r.isConnected || !isShown(r)) continue;
+      add(r.textContent);
       // ① input / textarea 的 value —— "复制链接"最常见的实现
       var fields;
       try { fields = r.querySelectorAll('input,textarea'); } catch (e) { fields = []; }
@@ -1380,10 +1382,19 @@
     if (busy) return;
     busy = true;
     btn.disabled = true;
+    btn.textContent = '获取中';
+    var cancelled = false;
+    var cancelFallback = null;
+    activeLinkCancel = function () {
+      cancelled = true;
+      if (cancelFallback) cancelFallback();
+      else release();
+    };
 
     function release() {
       busy = false;
       btn.disabled = false;
+      activeLinkCancel = null;
     }
 
     var goodsId = '';
@@ -1405,6 +1416,8 @@
 
     // ③ 主世界桥：接口取样映射优先，退页面 Vue 内存（都不点面板）
     askBridge(goodsId, name, function (res) {
+      if (cancelled) return;
+      if (!enabled() || !isGoodsListPage() || !tr.isConnected) { release(); return; }
       lastBridgeDiag = (res && res.diag) || null;
       lastBridgeAt = Date.now();
       var via = safeBridgeLink(res && res.link);
@@ -1414,7 +1427,7 @@
         return;
       }
       // ④ 兜底：模拟点开分享面板，读可见浮层里的明文链接
-      fallbackByPanel(tr, btn, release, info);
+      cancelFallback = fallbackByPanel(tr, btn, release, info);
     });
   }
 
@@ -1425,21 +1438,9 @@
    * 没有 clipboardWrite，平台写入 → 我读出 → 我再写入，链路上多两次剪贴板
    * 切换，还会把用户原有剪贴板洗掉。扒文本一次读到位，也无副作用。
    */
-  /**
-   * 把这次自动点开的面板「隐身」。
-   *
-   * 为什么还要开面板：微信的 `product` 接口对请求做了 biz magic 签名校验
-   * （实测转发一律 403 `{"respStatusCode":200004,"msg":"biz magic invalid"}`），
-   * 只有页面自己点的「分享」能触发。既然躲不掉，就让它**看不见** ——
-   * 点击后 900ms 内新出现的固定/绝对定位、面积 ≥ 视口 15% 的浮层，
-   * 立刻 `opacity:0`，收尾时还原。用户端完全无感。
-   *
-   * 只碰大块浮层：小面积的不动（避免误伤页面的 toast / 气泡）。
-   */
-  function veilScan(veiled) {
-    var vw = window.innerWidth || 0;
-    var vh = window.innerHeight || 0;
-    if (!vw || !vh) return;
+  // 点击前安装观察器；DOM 变更的微任务先于绘制，避免定时轮询漏出首帧。
+  // 只处理浮层语义节点，不碰 body 子节点或整页应用壳；原本可见的浮层保持原样。
+  function veilScan(veiled, existing) {
     var roots = collectRoots();
     for (var i = 0; i < roots.length; i++) {
       var nodes;
@@ -1448,14 +1449,17 @@
         var el = nodes[j];
         if (isExtNode(el)) continue;
         if (el.getAttribute(VEIL_ATTR)) continue;
-        var r;
-        try { r = el.getBoundingClientRect(); } catch (e2) { continue; }
-        if (!r || r.width * r.height < vw * vh * 0.15) continue;
-        var cs = csOf(el);
-        if (!cs || (cs.position !== 'fixed' && cs.position !== 'absolute')) continue;
+        if (existing.indexOf(el) >= 0 || !isShown(el)) continue;
+        var prev = {};
+        ['opacity', 'transition', 'animation', 'pointer-events'].forEach(function (key) {
+          prev[key] = [el.style.getPropertyValue(key), el.style.getPropertyPriority(key)];
+        });
         el.setAttribute(VEIL_ATTR, '1');
-        veiled.push({ el: el, prev: el.style.opacity || '' });
-        try { el.style.setProperty('opacity', '0', 'important'); } catch (e3) { /* 设不上就算了 */ }
+        veiled.push({ el: el, prev: prev });
+        el.style.setProperty('transition', 'none', 'important');
+        el.style.setProperty('animation', 'none', 'important');
+        el.style.setProperty('opacity', '0', 'important');
+        el.style.setProperty('pointer-events', 'none', 'important');
       }
     }
   }
@@ -1488,55 +1492,119 @@
     var waiting = true;
 
     var veiled = [];
-    var veilTimer = null;
+    var veilObservers = [];
+    var veilRoots = [];
+    var existing = [];
+    var closeTimer = null;
+    var focusBefore = tr.ownerDocument.activeElement;
+    var scrollBefore = collectRoots().filter(function (r) { return r.nodeType === 9; }).map(function (doc) {
+      var el = doc.scrollingElement || doc.documentElement;
+      return { el: el, top: el.scrollTop, left: el.scrollLeft };
+    });
+
+    function watchVeil() {
+      var roots = collectRoots();
+      for (var i = 0; i < roots.length; i++) {
+        if (veilRoots.indexOf(roots[i]) >= 0) continue;
+        var ob = new MutationObserver(watchVeil);
+        ob.observe(roots[i], { childList: true, subtree: true, attributes: true,
+          attributeFilter: ['class', 'style', 'hidden', 'open'] });
+        veilRoots.push(roots[i]);
+        veilObservers.push(ob);
+      }
+      veilScan(veiled, existing);
+    }
 
     function unveil() {
-      if (veilTimer) { clearInterval(veilTimer); veilTimer = null; }
+      veilObservers.forEach(function (ob) { ob.disconnect(); });
+      if (closeTimer) { clearInterval(closeTimer); closeTimer = null; }
       for (var i = 0; i < veiled.length; i++) {
         try {
-          veiled[i].el.style.opacity = veiled[i].prev;
+          var item = veiled[i];
+          Object.keys(item.prev).forEach(function (key) {
+            var value = item.prev[key];
+            if (value[0]) item.el.style.setProperty(key, value[0], value[1]);
+            else item.el.style.removeProperty(key);
+          });
           veiled[i].el.removeAttribute(VEIL_ATTR);
         } catch (e) { /* 节点已销毁 */ }
       }
       veiled = [];
     }
 
-    function finish(result) {
+    var cancelled = false;
+    function finish(result, cancel) {
+      if (cancel) cancelled = true;
       if (!waiting) return;
       waiting = false;
       panelWait = null;
       if (timer) { clearInterval(timer); timer = null; }
-      unveil();
-      release();
-      if (!result) {
-        flash(btn, '取不到', true, '复制链接');
-        say('没取到商品链接，请点「分享」手动复制', 'warning', { source: '商品链接' });
-        bridgeNote('面板 2.4 秒内没读到链接；' + bridgeDiagText(lastBridgeDiag));
-        return;
-      }
-      deliverLink(btn, result, 'panel', info);
+      // Escape 只是发出关闭请求；退出动画期间仍保持隐藏，确认消失才恢复样式。
+      var closeStart = Date.now();
+      var retried = false;
+      closeLayer();
+      closeTimer = setInterval(function () {
+        var open = veiled.some(function (item) { return item.el.isConnected && isShown(item.el); });
+        if (open && !retried && Date.now() - closeStart >= 160) {
+          retried = true;
+          // 只点本次浮层中有明确关闭语义的按钮，不点遮罩和页面其他位置。
+          try {
+            for (var i = 0; i < veiled.length; i++) {
+              var close = veiled[i].el.querySelector('[aria-label="关闭"],[aria-label="Close"],[aria-label="close"],.weui-desktop-dialog__close');
+              if (close) { close.click(); break; }
+            }
+          } catch (e) { /* 平台关闭失败仍走有界收尾 */ }
+          closeLayer();
+        }
+        var elapsed = Date.now() - closeStart;
+        if (elapsed < 120 || (!veiled.length && elapsed < 2400) || (open && elapsed < 1200)) return;
+        unveil();
+        release();
+        if (focusBefore && focusBefore.isConnected) {
+          try { focusBefore.focus({ preventScroll: true }); } catch (e) { /* 不支持则不抢焦点 */ }
+        }
+        scrollBefore.forEach(function (s) { s.el.scrollTop = s.top; s.el.scrollLeft = s.left; });
+        if (cancelled || !enabled() || !isGoodsListPage()) return;
+        if (open) {
+          flash(btn, '请手动关闭', true, '复制链接');
+          say('分享面板未关闭，请手动关闭后重试', 'warning', { source: '商品链接' });
+          bridgeNote('分享面板关闭超时，已恢复页面供手动关闭');
+        } else if (!result) {
+          flash(btn, '取不到', true, '复制链接');
+          say('没取到商品链接，请点「分享」手动复制', 'warning', { source: '商品链接' });
+          bridgeNote('面板 2.4 秒内没读到链接；' + bridgeDiagText(lastBridgeDiag));
+        } else deliverLink(btn, result, 'panel', info);
+      }, 25);
     }
 
     // 面板一打开，页面自己就会去请求商品分享素材接口。桥抓到那条响应后
     // 会直接推送过来 —— 收到就立刻关面板、立刻复制，不必等 DOM 扫描轮询。
-    // 这是把「面板亮 2.4 秒」压成「闪一下」的关键。
+    // 收到后开始关闭，隐藏处理一直保留到浮层退出完成。
     panelWait = {
       goodsId: goodsId || '',
       onHit: function (link) {
         if (!waiting) return;
-        closeLayer();
         finish(link);
       }
     };
 
     try {
+      collectRoots().forEach(function (root) {
+        var nodes = root.querySelectorAll(VEIL_SEL);
+        for (var i = 0; i < nodes.length; i++) {
+          if (isShown(nodes[i])) existing.push(nodes[i]);
+        }
+      });
+      if (existing.some(function (el) { return el.getAttribute('role') === 'dialog' && !isExtNode(el); })) {
+        panelWait = null;
+        release();
+        flash(btn, '请先关闭弹窗', true, '复制链接');
+        say('请先关闭已打开的弹窗再复制链接', 'warning', { source: '商品链接' });
+        return;
+      }
+      watchVeil();
       shareEl.click();
-      // 点完立刻开始隐身（50ms 一轮，持续 900ms —— 面板渲染通常在 100~300ms）
-      var veilStart = Date.now();
-      veilTimer = setInterval(function () {
-        if (Date.now() - veilStart > 900) { clearInterval(veilTimer); veilTimer = null; return; }
-        try { veilScan(veiled); } catch (err) { /* 藏不住也不影响复制 */ }
-      }, 50);
+      watchVeil();
     } catch (e) {
       panelWait = null;
       waiting = false;
@@ -1551,12 +1619,13 @@
     // 就超时了（用户反馈「第一次必定失败」就是它）。桥命中时根本不进这里。
     timer = setInterval(function () {
       tries++;
-      var link = scanLinkOnce();
+      if (!enabled() || !isGoodsListPage() || !tr.isConnected) { finish('', true); return; }
+      var link = scanLinkOnce(veiled);
       if (link || tries >= 24) {
-        closeLayer();
         finish(link);
       }
     }, 100);
+    return function () { finish('', true); };
   }
 
   /* ---------- 插入 ---------- */
@@ -1610,7 +1679,7 @@
     bindClick(btnCode, function () { onCopyCode(tr, btnCode); });
 
     var btnLink = makeBtn('复制链接', 62);
-    btnLink.title = '一键复制商品链接（优先直接读，读不到才短暂打开分享面板）';
+    btnLink.title = '一键复制商品链接（优先直接读取，必要时在隐藏的分享面板中获取）';
     bindClick(btnLink, function () { onCopyLink(tr, btnLink); });
 
     wrap.appendChild(btnCode);
@@ -1704,6 +1773,7 @@
   }
 
   function start() {
+    lastHref = location.href;
     // 一进列表页就把接口取样 hook 装进页面：必须早于商品列表接口返回，
     // 否则第一次点「复制链接」只能走面板。装不上也不影响后续流程。
     ensureBridge();
@@ -1712,11 +1782,12 @@
   }
 
   function stop() {
+    if (activeLinkCancel) activeLinkCancel();
+    else busy = false;
     dropObservers();
     if (tailTimer !== null) { clearTimeout(tailTimer); tailTimer = null; }
     pending = false;
     tbody = null;
-    busy = false;
     restoreAll();
   }
 
@@ -1729,6 +1800,7 @@
     var href = '';
     try { href = location.href; } catch (e) { return; }
     if (href !== lastHref) {
+      if (activeLinkCancel) activeLinkCancel();
       lastHref = href;
       tbody = null;
       if (isGoodsListPage()) start();

@@ -49,6 +49,67 @@
   var scanTimer = 0;
   var scrollTimer = 0;
   var busyTile = null;
+  var roots = [document];
+  var rootTimer = 0;
+  var lastHref = '';
+  var SHADOW_STYLE = 'data-dyc-imgpaste-style';
+  var shadowCss = '.dyc-imgpaste-btn{all:initial;position:absolute;left:6px;right:6px;bottom:6px;box-sizing:border-box;height:24px;margin:0;padding:0 4px;border:1px solid #d6e2ff;border-radius:6px;background:#eef3ff;color:#1664ff;font:12px/22px "Microsoft YaHei",sans-serif;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;z-index:3}'
+    + '.dyc-imgpaste-btn:hover{background:#1664ff;border-color:#1664ff;color:#fff}'
+    + '.dyc-imgpaste-btn:disabled{opacity:.6;cursor:default}'
+    + '.dyc-imgpaste-btn.is-compact{height:20px;left:4px;right:4px;bottom:4px;font-size:11px;line-height:18px;border-radius:5px}';
+
+  // 微信商品表单在 micro-app 内；同源 iframe 也可能承载图片编辑区域。
+  function collectRoots() {
+    var found = [document];
+    for (var i = 0; i < found.length && i < 32; i++) {
+      var hosts = found[i].querySelectorAll('micro-app, iframe');
+      for (var j = 0; j < hosts.length && found.length < 32; j++) {
+        var root = hosts[j].shadowRoot;
+        try {
+          if (hosts[j].tagName === 'IFRAME') root = hosts[j].contentDocument;
+        } catch (e) { root = null; }
+        if (root && found.indexOf(root) < 0) found.push(root);
+      }
+    }
+    return found;
+  }
+
+  function queryRoots(selector) {
+    var out = [];
+    roots.forEach(function (root) {
+      out = out.concat(Array.prototype.slice.call(root.querySelectorAll(selector)));
+    });
+    return out;
+  }
+
+  function refreshRoots() {
+    var scoped = inScope();
+    // 丢弃旧 root 前先移除其中的控件，SPA 退回列表时 shadowRoot 可能仍保留。
+    if (!scoped) {
+      unmountAll();
+      queryRoots('style[' + SHADOW_STYLE + ']').forEach(function (style) { style.remove(); });
+    }
+    var next = scoped ? collectRoots() : [document];
+    var changed = next.length !== roots.length || next.some(function (root, i) { return root !== roots[i]; });
+    if (!changed && observer) return false;
+    if (observer) observer.disconnect();
+    roots = next;
+    observer = new MutationObserver(function () { scheduleScan(400); });
+    roots.forEach(function (root) {
+      observer.observe(root, { childList: true, subtree: true, attributes: true,
+        attributeFilter: ['src', 'accept', 'disabled'] });
+    });
+    return true;
+  }
+
+  function ensureStyle(tile) {
+    var root = tile.getRootNode();
+    if (root === document || root.querySelector('style[' + SHADOW_STYLE + ']')) return;
+    var style = tile.ownerDocument.createElement('style');
+    style.setAttribute(SHADOW_STYLE, '1');
+    style.textContent = shadowCss;
+    (root.head || root).appendChild(style);
+  }
 
   function log(msg) {
     try { if (typeof debugLog === 'function') debugLog(msg); } catch (e) { /* 日志不影响主流程 */ }
@@ -68,7 +129,8 @@
 
   function inScope() {
     var p = window.DYC_PAGE_PATTERNS;
-    return !!(p && p.goodsEdit && p.goodsEdit.test(location.href));
+    return !!(p && ((p.goodsEdit && p.goodsEdit.test(location.href))
+      || (p.wxGoodsEdit && p.wxGoodsEdit.test(location.href))));
   }
 
   /* ==========================================================
@@ -98,6 +160,18 @@
     return false;
   }
 
+  function inputForTile(tile) {
+    var input = tile.querySelector('input[type="file"]');
+    if (input) return input;
+    var p = window.DYC_PAGE_PATTERNS;
+    if (!p || !p.wxGoodsEdit || !p.wxGoodsEdit.test(location.href)
+      || !tile.matches('.picture_add_content')) return null;
+    // 微信的隐藏 input 是加号方块的兄弟；只能取同一上传组件内唯一的 input。
+    var group = tile.closest('.weui-desktop-new-upload__wrp');
+    var inputs = group && group.querySelectorAll('input[type="file"]');
+    return inputs && inputs.length === 1 ? inputs[0] : null;
+  }
+
   /**
    * 从 file input 向上找「看得见的小方块」。
    * 判据:宽度 48~420、高度 48~420、面积 > 2000。上传框在本页是 118×118 级别的方块,
@@ -106,6 +180,12 @@
    * 绝不用 body/html 当包含块:那会让按钮变成贴在页面角落的浮层。
    */
   function tileFromInput(input) {
+    var group = input.closest('.weui-desktop-new-upload__wrp');
+    var p = window.DYC_PAGE_PATTERNS;
+    if (group && p && p.wxGoodsEdit && p.wxGoodsEdit.test(location.href)) {
+      var add = group.querySelector('.picture_add_content');
+      return add && inputForTile(add) === input ? add : null;
+    }
     var first = input.parentElement;
     var node = first;
     var guard = 0;
@@ -177,7 +257,7 @@
 
   function tileQualifies(tile) {
     if (!tile || tile.nodeType !== 1) return false;
-    if (!document.contains(tile)) return false;
+    if (!tile.isConnected) return false;
     if (!visible(tile)) return false;
     if (inFloatingChrome(tile)) return false;
     if (hasImage(tile)) return false;
@@ -186,7 +266,7 @@
        空态文案不再当门槛(见 hasUploadHint 注释),只在没有 file input 时
        拿它当「这是上传区」的旁证。 */
     var hasInput = false;
-    try { hasInput = !!tile.querySelector('input[type="file"]'); } catch (e) { hasInput = false; }
+    try { hasInput = !!inputForTile(tile); } catch (e) { hasInput = false; }
     if (!hasInput && !hasUploadHint(tile)) return false;
 
     var r = boxOf(tile);
@@ -226,14 +306,14 @@
 
     function push(tile) {
       if (!tile || seen.indexOf(tile) >= 0) return;
-      var input = tile.querySelector('input[type="file"]');
+      var input = inputForTile(tile);
       if (input && !acceptsImages(input)) return;
       seen.push(tile);
       out.push(tile);
     }
 
     var inputs;
-    try { inputs = document.querySelectorAll('input[type="file"]'); } catch (e) { inputs = []; }
+    try { inputs = queryRoots('input[type="file"]'); } catch (e) { inputs = []; }
     for (var i = 0; i < inputs.length; i++) {
       if (!acceptsImages(inputs[i])) continue;
       push(tileFromInput(inputs[i]));
@@ -283,6 +363,7 @@
     if (!tileQualifies(tile)) return;
 
     var btn = makeButton(tile);
+    ensureStyle(tile);
     /* 定在框内下方:absolute + 底边贴合(样式见 style.css .dyc-imgpaste-btn)。
        包含块需要 relative —— 平台这块多数是 position:static,才补一个;
        已是别的定位就不动它,避免把平台的绝对定位子元素带歪。 */
@@ -300,7 +381,7 @@
   }
 
   function unmountAll() {
-    var btns = document.querySelectorAll('[' + BTN_ATTR + ']');
+    var btns = queryRoots('[' + BTN_ATTR + ']');
     for (var i = 0; i < btns.length; i++) {
       var tile = btns[i].parentElement;
       if (btns[i].parentNode) btns[i].parentNode.removeChild(btns[i]);
@@ -316,15 +397,17 @@
 
   /** 幂等重扫:新框挂上、已出图的框摘掉、被平台重渲染掉的补回来 */
   function scan() {
-    if (!on || !inScope()) return;
+    if (!on) return;
+    if (!inScope()) { unmountAll(); refreshRoots(); return; }
+    refreshRoots();
     var q = collectQualified();
     for (var i = 0; i < q.use.length; i++) mount(q.use[i]);
 
     /* 清理:不在本次名单里的(出图了 / 不再像上传框 / 已离开文档)一律摘掉 */
-    var btns = document.querySelectorAll('[' + BTN_ATTR + ']');
+    var btns = queryRoots('[' + BTN_ATTR + ']');
     for (var j = 0; j < btns.length; j++) {
       var t = btns[j].parentElement;
-      var keep = t && document.contains(t) && q.use.indexOf(t) >= 0;
+      var keep = t && t.isConnected && q.use.indexOf(t) >= 0;
       if (!keep) {
         if (btns[j].parentNode) btns[j].parentNode.removeChild(btns[j]);
         if (t && t.getAttribute(TILE_ATTR) === '1') t.removeAttribute(TILE_ATTR);
@@ -542,7 +625,7 @@
   }
 
   function putByInput(tile, file) {
-    var input = tile.querySelector('input[type="file"]');
+    var input = inputForTile(tile);
     if (!input) return false;
     var dt = transferOf(file);
     if (!dt) return false;
@@ -599,20 +682,12 @@
   /* 表单里的 <img> 总数:框被平台整块重渲染时的「出图」判据
      (2026-11-08 真机:塞完文件平台把上传框换成「上传中」节点,
       旧节点永远等不到 img —— 但全表单的图片总数一定会涨)。 */
-  function formImgCount() {
-    try {
-      var f = document.getElementById('goodsEditScrollContainer') || document.body;
-      return f.querySelectorAll('img').length;
-    } catch (e) { return -1; }
-  }
-
-  function waitImageSmart(tile, ms) {
-    var base = formImgCount();
+  function waitImageSmart(tile, ms, imageRoot, base) {
     return new Promise(function (resolve) {
       var start = Date.now();
       (function tick() {
         if (hasImage(tile)) { resolve(true); return; }
-        var n = formImgCount();
+        var n = imageRoot.querySelectorAll('img').length;
         if (base >= 0 && n > base) { resolve(true); return; }
         if (Date.now() - start >= ms) { resolve(false); return; }
         setTimeout(tick, 150);
@@ -631,6 +706,7 @@
   }
 
   function startPaste(tile, btn) {
+    if (!on || !inScope() || !tile.isConnected) return;
     if (busyTile) return;              // 一次只处理一个框:连点两下会重复塞图
     busyTile = tile;
     setBtn(btn, '读取剪贴板…', true);
@@ -646,6 +722,7 @@
           why + '。请先截图或复制一张图片,再点一次「粘贴图片」。');
         return null;
       }
+      if (!on || !inScope() || !tile.isConnected) return null;
 
       var file;
       try {
@@ -667,20 +744,24 @@
       ];
 
       var i = 0;
+      var imageRoot = tile.getRootNode();
+      imageRoot = imageRoot.querySelector('#goodsEditScrollContainer') || imageRoot;
+      var baseImages = imageRoot.querySelectorAll('img').length;
       function next() {
+        if (!on || !inScope()) return Promise.resolve(false);
         if (i >= steps.length) return Promise.resolve(false);
         var step = steps[i++];
         var okRoute = false;
         try { okRoute = step.run(); } catch (e) { okRoute = false; }
         if (!okRoute) return next();
-        return waitImageSmart(tile, 1200).then(function (got) {
+        return waitImageSmart(tile, 1200, imageRoot, baseImages).then(function (got) {
           if (got) return true;
-          if (!document.contains(tile)) {
+          if (!tile.isConnected) {
             /* 框被平台整块重渲染 = 文件已被受理(上传转圈中)。
                ⛔ 不许再打后面的通道 —— 会重复上传;
                改成耐心等:上传完成后 <img> 出现,全表单图片总数会涨。 */
             log('图片粘贴:平台已受理(框被重渲染),等出图…');
-            return waitImageSmart(tile, 8000);
+            return waitImageSmart(tile, 8000, imageRoot, baseImages);
           }
           log('图片粘贴:通道 ' + step.name + ' 没出图,换下一条');
           return next();
@@ -719,7 +800,7 @@
 
   function summarize(q) {
     var mountedCount = 0;
-    try { mountedCount = document.querySelectorAll('[' + BTN_ATTR + ']').length; } catch (e) { mountedCount = 0; }
+    try { mountedCount = queryRoots('[' + BTN_ATTR + ']').length; } catch (e) { mountedCount = 0; }
     var s = '候选 ' + (q ? q.all.length : 0) + ' · 已挂 ' + mountedCount
       + (q ? ' · 识别' + q.tier : '');
     if (s === lastSummary) return;
@@ -735,7 +816,7 @@
       var wait = '';
       var shape = '';
       var hasInput = false;
-      try { hasInput = !!t.querySelector('input[type="file"]'); } catch (e) { hasInput = false; }
+      try { hasInput = !!inputForTile(t); } catch (e) { hasInput = false; }
       var st = null;
       try { st = window.getComputedStyle(t); } catch (e) { st = null; }
       var r = boxOf(t);
@@ -761,10 +842,13 @@
   function boot() {
     if (on) {
       /* 观察器先建好:scan 抛错也不至于让后续变更无人处理(上一版就是这样静默死掉的) */
-      if (!observer) {
-        observer = new MutationObserver(function () { scheduleScan(400); });
-        observer.observe(document.body || document.documentElement, { childList: true, subtree: true });
-      }
+      refreshRoots();
+      // attachShadow 不触发外层 DOM 变更；只检查微前端宿主，不轮询全部上传框。
+      if (!rootTimer && location.hostname === 'store.weixin.qq.com') rootTimer = setInterval(function () {
+        var href = location.href;
+        var changed = refreshRoots();
+        if (changed || href !== lastHref) { lastHref = href; scheduleScan(100); }
+      }, 1200);
       /* 表单很长(内容高 4000~6000+),新框多半是滚动后才渲染出来的 */
       window.addEventListener('scroll', onScroll, true);
 
@@ -774,13 +858,18 @@
       } catch (e) {
         log('图片粘贴:首扫异常 ' + ((e && e.message) || e));
       }
-      if (q && q.all.length && !document.querySelectorAll('[' + BTN_ATTR + ']').length) {
+      if (q && q.all.length && !queryRoots('[' + BTN_ATTR + ']').length) {
         explainRejects(q.all);
       }
     } else {
       if (observer) { observer.disconnect(); observer = null; }
+      clearInterval(rootTimer); rootTimer = 0;
+      clearTimeout(scanTimer); scanTimer = 0;
+      clearTimeout(scrollTimer); scrollTimer = 0;
       window.removeEventListener('scroll', onScroll, true);
       unmountAll();
+      queryRoots('style[' + SHADOW_STYLE + ']').forEach(function (style) { style.remove(); });
+      roots = [document];
       lastSummary = '';
     }
   }

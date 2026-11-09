@@ -1,44 +1,4 @@
-/**
- * 活动广场 · 勾选主商品联动渠道品（2026-10-25 新增，计划中功能 #1）
- * ============================================================
- * 【行为】父活动详情 / 报名页（/ffa/merchant/parent-campaign-detail）每一行是
- *   一个主商品，主商品勾选框右侧下方还有一枚「渠道品跟随主品报名 (N)」。
- *   本模块让这一行里的**渠道品勾选状态始终跟主品一致**：勾主商品就补勾渠道品，
- *   取消主商品就一并取消渠道品；表头「全选」/「取消全选」也一次性同步所有已渲染行。
- *
- * 【用户定案的口径】
- *   ① 双向同步（2026-10-25 01:00 追加）：勾上补勾、取消一并取消。
- *      第一版只做补勾，理由是「用户说平台自己会连带取消」——实测平台并不会，
- *      用户随即要求「取消主品报名的时候也帮我取消对应的渠道品」。
- *   ② 手动取消渠道品后再重新勾主商品 —— **再补勾**：每次「未勾 → 已勾」
- *      都是一次报名意图。
- *   ③ 表头全选 —— **也联动**：汇总成一条消息，不逐行刷屏。
- *      2026-11-08 重写：这张表是虚拟滚动，DOM 里只有视口那一屏（约 6 行）。
- *      第一版只扫「当前 DOM」，于是超过一屏的商品永远等不到代点（用户报
- *      「商品超过大概 6 个，下面商品都不会自动勾选渠道品」）。
- *      现在点全选会一屏一屏滚完整张表、逐屏补勾，结束把滚动位置还原，
- *      最后只发一条汇总消息。
- *
- * 【识别策略：认文案，不认 class】
- *   平台这套是 auxo/ecom 组件库，class 带哈希后缀（style_container__1TTrI 之类），
- *   跨版本必变。所以判据全部落在**可见文案**上：
- *     · 行的边界   = 从被点的勾选框往上找，第一个「含「渠道品…报名」文案 +
- *                    文本长度 ≤ 800 字 + 勾选框数 ≤ 12」的祖先；
- *     · 行内主品框 = 行内第一枚不在渠道品控件里的勾选框；
- *     · 渠道品控件 = 「渠道品跟随主品报名」文案最近的、包着勾选框的那层壳。
- *   找不到就当没这回事（宁可不做，也不乱点 —— 这是「渠道品页歪按钮」那次的教训）。
- *
- * 【为什么不模拟接口】
- *   勾选渠道品会随主品一起提交报名，提交参数由平台自己组装；我们只把用户本来
- *   要点的那一下代点了。走真实点击链路，不猜报名接口，也就不会被平台规则盯上。
- *
- * 【时序】点击后一律等 60ms 再读状态：平台是 React 受控组件，勾选态在同一拍里
- *   还没落到 DOM 上。因此「主品是否真勾上」「渠道品是否已勾好」都按延后读取判定，
- *   不看点击瞬间的值。
- *
- * 【零常驻开销】只在 click 捕获阶段响应，不挂 MutationObserver、不轮询扫描：
- *   页面不动的时候本模块一次 DOM 查询都不做。
- */
+/** 活动广场：由独立按钮补勾已选主商品的渠道品，逐屏扫描、按商品去重并回读最新节点。 */
 (function () {
   'use strict';
 
@@ -58,11 +18,6 @@
      3000 只够 6 行左右的普通表格（含页头/侧栏），再往下就没扫到 —— 与用户报的
      「超过 6 个就不联动」正好重合；虚拟列表一屏只有几百个节点，这里给足余量。 */
   var MAX_SWEEP_NODES = 12000;
-  var SETTLE_MS = 60;               // 等平台把勾选态落定
-  var VERIFY_MS = 120;              // 代点之后再回读一次状态，确认真的勾上了
-  var LATE_MS = 260;                // 渠道品控件「勾了主品才渲染」时的补一次
-  var SWEEP_SETTLE_MS = 180;        // 全选后等各行勾选态批量落定
-  var SWEEP_RETRY_MS = 400;         // 第一次扫不到就再等一拍重扫一次
   /* ---- 逐屏滚动（2026-11-08 新增，虚拟列表） ---- */
   var SCROLL_ROOM_MIN = 40;         // 「内容高 − 可见高」超过这么多才算可滚容器
   var SCROLL_SETTLE_MS = 300;       // 滚一屏后等虚拟列表重渲染
@@ -77,9 +32,6 @@
 
   var enabled = false;
   var prevFlag = null;              // 首次读到的状态要落进来（否则第一次拨开关静默）
-  var selfClicking = 0;             // 自己代点的这一下不回声（防回环）
-  var lastSayAt = 0;
-  var lastSayText = '';
 
   /* ==========================================================
    * 一、基础工具
@@ -148,14 +100,11 @@
       var inner = box.querySelector && box.querySelector('input[type=checkbox]');
       if (inner) target = inner;
     }
-    selfClicking++;
     try {
       target.click();
     } catch (e) {
-      selfClicking = Math.max(0, selfClicking - 1);
       return false;
     }
-    setTimeout(function () { selfClicking = Math.max(0, selfClicking - 1); }, 0);
     return true;
   }
 
@@ -281,64 +230,6 @@
     return null;
   }
 
-  /* ==========================================================
-   * 四、表头全选
-   * ========================================================== */
-
-  /** 这枚勾选框是否就长在某个商品行里（行 = 只含一枚锚点、框数不越界的那层） */
-  function insideRowBlock(box) {
-    var node = box, depth = 0;
-    while (node && node.nodeType === 1 && node !== document.body && depth++ < MAX_CLIMB) {
-      var t = tight(node.textContent);
-      if (t.indexOf(ANCHOR_HEAD) >= 0 && ANCHOR_TAIL.test(t) && t.length <= MAX_ROW_TEXT &&
-          countBoxes(node) <= MAX_ROW_BOXES && anchorLeaves(node).length === 1) {
-        return true;
-      }
-      node = node.parentElement;
-    }
-    return false;
-  }
-
-  /** 这枚勾选框像不像表头「全选」：在 th/thead/表头容器里，或在所有商品行上方 */
-  function looksLikeSelectAll(box) {
-    var node = box, i = 0;
-    while (node && node.nodeType === 1 && i++ < 6) {
-      var tag = String(node.tagName || '').toUpperCase();
-      if (tag === 'TH' || tag === 'THEAD') return true;
-      if (/thead|table-head|tableheader|header-row|list-header/i.test(classNameOf(node))) return true;
-      node = node.parentElement;
-    }
-    // 已经长在某个商品行里（比如用户点的就是渠道品那枚框）⇒ 绝不可能是全选。
-    // 2026-10-25 补：少了这道闸门，位置兜底会把「行内的框」误判成全选，
-    // 于是用户手动取消渠道品又被一口气补回去。
-    if (insideRowBlock(box)) return false;
-    // 兜底：位置在所有「带渠道品的行」上方
-    try {
-      var boxRect = box.getBoundingClientRect();
-      var rows = allRows();
-      if (!rows.length) return false;
-      var top = Infinity;
-      for (var k = 0; k < rows.length; k++) {
-        var r = rows[k].getBoundingClientRect();
-        if (r.height > 0 && r.top < top) top = r.top;
-      }
-      return boxRect.top < top - 2;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  /** 页面上所有「带渠道品控件」的行（只在全选时跑一次，有节点上限） */
-  function allRows() {
-    var hosts = collectChannelHosts();
-    var rows = [];
-    for (var i = 0; i < hosts.length; i++) {
-      var row = rowOfHost(hosts[i]);
-      if (row && rows.indexOf(row) < 0) rows.push(row);
-    }
-    return rows;
-  }
-
   function collectChannelHosts() {
     var out = [];
     var nodes;
@@ -377,10 +268,6 @@
    * ========================================================== */
 
   function say(text, type, count, full) {
-    var now = Date.now();
-    if (text === lastSayText && now - lastSayAt < 1200) return;   // 连点不刷屏
-    lastSayText = text;
-    lastSayAt = now;
     var opts = { source: SOURCE, count: count || '' };
     if (full) opts.full = full;
     if (type === 'error' || type === 'alert') {
@@ -391,73 +278,6 @@
     if (typeof toast === 'function') { toast(text, type || 'success', opts); return; }
     if (typeof setStatus === 'function') { setStatus(text, type || 'success', opts); }
   }
-
-  /* ==========================================================
-   * 六、主流程
-   * ========================================================== */
-
-  /**
-   * 点击落定后判定。双向同步：
-   *   · 主品「未勾 → 已勾」⇒ 补勾渠道品；
-   *   · 主品「已勾 → 未勾」⇒ 一并取消渠道品（2026-10-25 用户追加：平台上并不会
-   *     自动连带取消，所以这一半也要我们做）。
-   */
-  function afterClick(box) {
-    if (!box || !box.isConnected) return;
-    var hit = locateRow(box);
-    if (hit) { handleRow(box, hit); return; }
-    if (looksLikeSelectAll(box)) { sweep(0); return; }
-    // 有些活动页的渠道品勾选框是「勾了主品才渲染」——等一拍再确认一次。
-    // 仍找不到就什么都不做（宁可不做，也不乱点）。
-    setTimeout(function () {
-      if (!enabled || !box || !box.isConnected) return;
-      var late = locateRow(box);
-      if (late) handleRow(box, late);
-    }, LATE_MS);
-  }
-
-  /** 单行同步：把渠道品拉到与主品一致；点完要**回读状态**再报，没成就说没成（不许谎报） */
-  function handleRow(box, hit) {
-    var host = hit.host;
-    var want = stateOf(box);              // 主品现在的状态 = 渠道品该有的状态
-    if (stateOf(host) === want) return;   // 已经一致：不重复点
-    var verb = want ? '勾选' : '取消';
-    if (!fireClick(host)) {
-      say('渠道品没' + verb + '成功，请手动处理', 'alert', '',
-        '这一行认出了渠道品勾选框，但代点没有成功，可能是平台改了控件结构。请手动处理，并把这一页反馈给助手。');
-      return;
-    }
-    setTimeout(function () {
-      if (stateOf(host) === want) {
-        say(want ? '已联动勾选渠道品' : '已联动取消渠道品', 'success', '1 个');
-      } else {
-        say('渠道品没' + verb + '成功，请手动处理', 'alert', '',
-          '已点到渠道品勾选框，但状态没变成预期（可能该渠道品不可报名/已报名，或平台拦下了这次点击）。请手动确认这一行。');
-      }
-    }, VERIFY_MS);
-  }
-
-  /* ==========================================================
-   * 六·二、表头全选 · 逐屏滚动联动（2026-11-08 重写）
-   * ==========================================================
-   * 【为什么重写】用户报「商品超过大概 6 个时，点全选只有上面几个联动，下面的商品
-   *   都不会自动勾选渠道品」。原因：这张商品表是**虚拟滚动** —— DOM 里只有视口
-   *   那一屏（约 6 行），滚出去的行会被销毁重建。第一版只扫「当前 DOM 里的行」，
-   *   所以全选时只有第一屏被联动；下面的行压根不在页面里，永远等不到代点。
-   *
-   * 【现在的做法】沿用「批量复制链接」已在真机验证过的那条思路：
-   *   ① 先记下用户原来的滚动位置；
-   *   ② 从列表顶部开始，一屏一屏往下滚，每屏把「主品已勾、渠道品未勾」的行补上；
-   *   ③ 连续两屏滚不动 = 到底，收工；
-   *   ④ 把滚动位置还原，只发一条汇总消息。
-   *
-   * 【为什么必须主动滚，不能等用户自己滚】渠道品没勾上，这一行就等于没报上渠道品；
-   *   用户点完全选通常直接去提交，等不到他逐屏看一遍。
-   *
-   * 【安全阀】逐行代点间隔 70ms（平台是受控组件，点太快会被吞掉）；最多滚 40 屏、
-   *   代点 400 行；每行点完都回读状态，只报真的落定了的数量。
-   *   页面没有渠道品 / 列表本来不用滚 ⇒ 行为和第一版完全一致（不滚、不打扰）。
-   */
 
   function sleep(ms) {
     return new Promise(function (resolve) { setTimeout(resolve, ms); });
@@ -547,59 +367,59 @@
     };
   }
 
-  /**
-   * 同步「当前这一屏」的渠道品。
-   * 逐行串行代点（点一行 → 等落定 → 再点下一行）：平台是受控组件，一次点六七个
-   * 会中途重渲染，后面的节点就废了（这正是「一屏内也偶尔少勾」的隐患）。
-   */
-  function syncScreen(stat) {
-    var staleCount = 0;                // 单屏内「节点被平台重渲染」的次数（每轮至少推进 1 行）
+  // 商品 ID 优先；无 ID 的旧页面用稳定的行文案，不能用虚拟列表的 DOM 节点作身份。
+  function rowKey(row) {
+    var text = tight(row.textContent);
+    var id = text.match(/ID[:：]?(\d{6,})/i);
+    return id ? id[1] : (row.getAttribute('data-row-key') || text);
+  }
 
-    function pass() {
+  function available(host) {
+    var input = host.matches('input') ? host : host.querySelector('input');
+    return !(host.getAttribute('aria-disabled') === 'true' ||
+      /(^|[-_\s])disabled/i.test(classNameOf(host)) || (input && input.disabled));
+  }
+
+  function latestHost(key) {
+    var hosts = collectChannelHosts();
+    for (var i = 0; i < hosts.length; i++) {
+      var row = rowOfHost(hosts[i]);
+      if (row && rowKey(row) === key) return hosts[i];
+    }
+    return null;
+  }
+
+  async function syncScreen(stat) {
+    var stale = 0;
+    while (enabled && stat.seq === runSeq) {
       var hosts = collectChannelHosts();
-      var i = 0;
-
-      function next() {
-        while (i < hosts.length) {
-          if (!enabled) return Promise.resolve('done');   // 中途关开关：立刻停手
-          var host = hosts[i++];
-          /* 平台是受控组件：点一下就可能把整行/整屏重建，手里这枚就废了。
-             废了不回读、不硬点，直接重扫 —— 第一版一口气点完，后面的点击全
-             落在已销毁的节点上，这正是「只有前几个联动上」的另一个来源。 */
-          if (!host.isConnected) return Promise.resolve('stale');
-          var row = rowOfHost(host);
-          if (!row) continue;
-          var main = mainBoxInRow(row, host);
-          if (!main) continue;
-          var want = stateOf(main);
-          if (stateOf(host) === want) continue;                       // 这一行已经一致
-          if (stat.tried >= MAX_SWEEP_TICKS) return Promise.resolve('done');
-          if (!fireClick(host)) return Promise.resolve('done');
-          stat.tried++;
-          return sleep(CLICK_GAP_MS).then(function () {
-            if (stateOf(host) === want) {
-              if (want) stat.filled++; else stat.cleared++;
-            }
-            progress(stat);
-            return next();
-          });
-        }
-        return Promise.resolve('done');
+      var clicked = false;
+      for (var i = 0; i < hosts.length; i++) {
+        var host = hosts[i];
+        if (!host.isConnected) break;
+        var row = rowOfHost(host);
+        var main = row && mainBoxInRow(row, host);
+        if (!main || !stateOf(main)) continue;
+        var key = rowKey(row);
+        if (stat.seen.has(key)) continue;
+        stat.seen.add(key);
+        if (stateOf(host)) { stat.ready++; continue; }
+        if (!available(host)) { stat.skipped++; continue; }
+        if (stat.tried >= MAX_SWEEP_TICKS) { stat.limited = true; return; }
+        stat.tried++;
+        if (!fireClick(host)) { stat.failed++; continue; }
+        await sleep(CLICK_GAP_MS);
+        // React 可能已经销毁旧节点；只有当前页面里同一商品的新节点才作成功依据。
+        var current = latestHost(key);
+        if (current && stateOf(current)) stat.filled++;
+        else stat.failed++;
+        progress(stat);
+        clicked = true;
+        break; // 每次点击后重新收集，避免继续使用被重建的这一屏。
       }
-
-      return next();
+      if (!clicked) return;
+      if (stale++ >= MAX_STALE_PER_SCREEN) { stat.limited = true; return; }
     }
-
-    function loop() {
-      return pass().then(function (r) {
-        if (r === 'stale' && staleCount++ < MAX_STALE_PER_SCREEN && stat.tried < MAX_SWEEP_TICKS) {
-          return loop();
-        }
-        return r;
-      });
-    }
-
-    return loop();
   }
 
   /** 多屏时给一条进行中的状态（一屏内不打扰，保持第一版的安静）。
@@ -608,7 +428,7 @@
   function progress(stat) {
     if (!stat.scrolled || typeof setStatus !== 'function') return;
     try {
-      setStatus('正在逐屏联动渠道品', 'running', { source: SOURCE });
+      setStatus('正在检查已选商品渠道品', 'running', { source: SOURCE });
     } catch (e) { /* 忽略 */ }
   }
 
@@ -626,9 +446,9 @@
     var len = stepLenFor(mover);
 
     function round() {
-      if (!enabled) return Promise.resolve();
+      if (!enabled || stat.seq !== runSeq) return Promise.resolve();
       return syncScreen(stat).then(function () {
-        if (stat.rounds++ >= MAX_SWEEP_ROUNDS || stat.tried >= MAX_SWEEP_TICKS) return;
+        if (stat.rounds++ >= MAX_SWEEP_ROUNDS || stat.tried >= MAX_SWEEP_TICKS) { stat.limited = true; return; }
         var moved = mover.stepBy(len);
         if (Math.abs(moved) >= 8) { stat.scrolled = true; idle = 0; } else idle++;
         if (idle >= 2) return;                      // 连续两屏滚不动 = 到底
@@ -640,94 +460,113 @@
     return round();
   }
 
-  function sweepRun(attempt) {
-    var stat = { tried: 0, filled: 0, cleared: 0, rounds: 0, scrolled: false };
-    var hosts = collectChannelHosts();
-    if (!hosts.length) return Promise.resolve(stat);          // 这页没有渠道品，静默
+  var sweeping = false;
+  var runSeq = 0;
+  var buttonHost = null;
+  var actionButton = null;
+  var observer = null;
+  var mountTimer = null;
 
+  async function sweepRun() {
+    var stat = { tried: 0, filled: 0, ready: 0, skipped: 0, failed: 0,
+      rounds: 0, scrolled: false, limited: false, seen: new Set(), seq: runSeq };
+    var hosts = collectChannelHosts();
     var row = null;
     for (var i = 0; i < hosts.length && !row; i++) row = rowOfHost(hosts[i]);
     var mover = row ? makeMover(row) : null;
-    if (!mover) return syncScreen(stat).then(function () { return stat; });
-
-    mover.toTop();
-    return sleep(SCROLL_SETTLE_MS)
-      .then(function () { return walkDown(stat, mover); })
-      .then(function () {
-        mover.restore();                          // 用户的视图还给他，别因为联动被滚到别处
-        return sleep(120);
-      })
-      .then(function () { return stat; });
-  }
-
-  /** 全选联动入口：先等平台把各行勾选态批量落定（180ms），再开工 */
-  var sweeping = false;
-
-  function sweep(attempt) {
-    if (!enabled || sweeping) return;
-    var wait = attempt === 0 ? SWEEP_SETTLE_MS : SWEEP_RETRY_MS;
-    setTimeout(function () {
-      if (!enabled || sweeping) return;
-      sweeping = true;
-      sweepRun(attempt).then(function (stat) {
-        sweeping = false;
-        reportSweep(stat, attempt);
-      }, function () {
-        sweeping = false;
-      });
-    }, wait);
-  }
-
-  function reportSweep(stat, attempt) {
-    var done = stat.filled + stat.cleared;
-    if (!done) {
-      /* 只有「一屏内、一枚都没点」才重扫一次：那是平台还没把全选的勾选态写进 DOM。
-         多屏走完（scrolled）已经花了好几秒，状态早落定了 —— 这时 0 个就是真的没得点，
-         再走一遍纯粹是白滚一遍页面。点过但没落定同理只重扫一次。 */
-      if (attempt === 0 && (stat.tried > 0 || !stat.scrolled)) { sweep(1); return; }
-      if (stat.tried) {
-        say('渠道品没同步成功，请手动处理', 'alert', '',
-          '表头全选后点到了渠道品勾选框，但状态没变成预期。请手动确认这些行。');
-      }
-      return;                                     // 本来就不需要点（都一致）：不出声
+    try {
+      if (mover) {
+        mover.toTop();
+        await sleep(SCROLL_SETTLE_MS);
+        await walkDown(stat, mover);
+      } else await syncScreen(stat);
+      return stat;
+    } finally {
+      if (mover) mover.restore();
     }
-    if (stat.filled && stat.cleared) say('已联动同步渠道品', 'success', done + ' 个');
-    else if (stat.filled) say('已联动勾选渠道品', 'success', done + ' 个');
-    else say('已联动取消渠道品', 'success', done + ' 个');
   }
 
-  /* ---- 事件：只认真实用户的点击 ---- */
-  function onDocumentClick(e) {
-    if (!enabled) return;
-    if (selfClicking > 0) return;                 // 自己代点的那一下不回环
-    var box = checkboxFrom(e.target);
-    if (!box) return;
-    // 捕获阶段读到的是「点击前」的状态，等平台把受控状态写进 DOM 再判
-    setTimeout(function () { afterClick(box); }, SETTLE_MS);
+  async function sweep() {
+    if (!enabled || sweeping) return;
+    sweeping = true;
+    var seq = runSeq;
+    updateButton();
+    try {
+      var stat = await sweepRun();
+      if (!enabled || seq !== runSeq) return;
+      var incomplete = stat.failed || stat.skipped || stat.limited;
+      say('已选商品的渠道品', incomplete ? 'alert' : 'success', '补勾 ' + stat.filled + ' 项',
+        '本次成功补勾 ' + stat.filled + ' 项，原已勾选 ' + stat.ready + ' 项，跳过不可用 ' +
+        stat.skipped + ' 项，未确认成功 ' + stat.failed + ' 项。按主商品行计数。' +
+        (stat.limited ? '列表较长，本次达到扫描上限，请检查剩余商品。' : ''));
+    } catch (e) {
+      say('已选商品的渠道品', 'alert', '检查中断', '渠道品检查中断，请手动确认勾选状态后重试。');
+    } finally {
+      sweeping = false;
+      updateButton();
+    }
   }
 
-  /* ==========================================================
-   * 七、生命周期
-   * ========================================================== */
+  function updateButton() {
+    if (!actionButton) return;
+    actionButton.disabled = sweeping;
+    actionButton.textContent = sweeping ? '正在勾选渠道品…' : '自动勾选适用的渠道品';
+  }
+
+  function mountButton() {
+    if (!enabled || !document.body) return;
+    var candidates = document.querySelectorAll('button,[role="button"]');
+    var anchor = null;
+    for (var i = 0; i < candidates.length; i++) {
+      if (/^批量修改工具/.test(tight(candidates[i].textContent))) { anchor = candidates[i]; break; }
+    }
+    if (!anchor) {
+      if (buttonHost) buttonHost.remove();
+      return;
+    }
+    if (buttonHost && buttonHost.isConnected && buttonHost.previousElementSibling === anchor) return;
+    if (buttonHost) buttonHost.remove();
+    buttonHost = document.createElement('span');
+    buttonHost.setAttribute('data-dyc-campaign-tick', '');
+    buttonHost.style.cssText = 'display:inline-flex;vertical-align:middle;margin-left:16px;flex:0 0 auto;';
+    var shadow = buttonHost.attachShadow({ mode: 'open' });
+    var style = document.createElement('style');
+    style.textContent = ':host{all:initial;display:inline-flex}button{all:initial;box-sizing:border-box;display:inline-flex;align-items:center;justify-content:center;width:max-content;white-space:nowrap;height:32px;padding:0 16px;border:1px solid #d9d9d9;border-radius:4px;background:#fff;color:#333;font:14px Arial,sans-serif;cursor:pointer}button:hover{color:#1677ff;border-color:#1677ff}button:focus-visible{outline:2px solid #1677ff;outline-offset:2px}button:disabled{cursor:wait;color:#999}';
+    shadow.appendChild(style);
+    actionButton = document.createElement('button');
+    actionButton.type = 'button';
+    actionButton.title = '仅补勾已选主商品的可用渠道品，完成后显示本次补勾数量。';
+    actionButton.addEventListener('click', sweep);
+    shadow.appendChild(actionButton);
+    updateButton();
+    anchor.insertAdjacentElement('afterend', buttonHost);
+  }
 
   function pageHasAnchor() {
-    try {
-      return !!document.body && tight(document.body.textContent).indexOf(ANCHOR_HEAD) >= 0;
-    } catch (e) {
-      return false;
-    }
+    return !!document.querySelector('[data-dyc-campaign-tick]');
   }
 
   function start() {
     if (enabled) return;
     enabled = true;
-    document.addEventListener('click', onDocumentClick, true);
+    mountButton();
+    observer = new MutationObserver(function () {
+      if (mountTimer !== null) return;
+      mountTimer = setTimeout(function () { mountTimer = null; mountButton(); }, 150);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
   function stop() {
-    if (!enabled) return;
     enabled = false;
-    document.removeEventListener('click', onDocumentClick, true);
+    runSeq++;
+    if (observer) observer.disconnect();
+    observer = null;
+    clearTimeout(mountTimer);
+    mountTimer = null;
+    if (buttonHost) buttonHost.remove();
+    buttonHost = null;
+    actionButton = null;
   }
 
   if (typeof dycReadFlags === 'function') {
@@ -758,16 +597,13 @@
     mainBoxInRow: mainBoxInRow,
     rowOfHost: rowOfHost,
     collectChannelHosts: collectChannelHosts,
-    looksLikeSelectAll: looksLikeSelectAll,
-    insideRowBlock: insideRowBlock,
     stateOf: stateOf,
     fireClick: fireClick,
-    afterClick: afterClick,
     sweep: sweep,
     sweepRun: sweepRun,
     syncScreen: syncScreen,
     makeMover: makeMover,
     scrollTargets: scrollTargets,
-    onDocumentClick: onDocumentClick
+    mountButton: mountButton
   };
 })();
