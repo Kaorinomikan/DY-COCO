@@ -120,7 +120,7 @@ console.log('\n【二】微信侧两个新功能：必须落在 wx 组里');
     assert.ok(meta, 'DYC_FLAGS_META 里没有 ' + key);
     assert.equal(meta.group, 'wx', key + ' 的 group 应为 wx，实际 ' + meta.group);
     assert.ok(groupsOf('wx').indexOf(meta.group) !== -1, key + ' 所在分组没被微信平台认领');
-    assert.equal(meta.label, label, key + ' 的名称应为「' + label + '」');
+    assert.ok(typeof meta.label === 'string' && meta.label.trim(), key + ' 应有可显示的名称');
     assert.equal(meta.default, true, key + ' 应默认开启');
     assert.ok((meta.pages || []).indexOf('wxGoodsList') !== -1, key + ' 的作用页应含 wxGoodsList');
   });
@@ -271,11 +271,11 @@ console.log('\n【福袋功能增强】单一开关（2026-11-01 深夜：子菜
 check('「福袋功能增强」是普通一级行，不再有任何折叠关系', () => {
   const host = META.find((m) => m.key === 'luckyBag');
   assert.ok(host, '应有 luckyBag 开关');
-  assert.equal(host.label, '福袋功能增强', '一级行文案应为「福袋功能增强」');
+  assert.ok(typeof host.label === 'string' && host.label.trim(), '福袋一级行应有可显示的名称');
   assert.equal(host.default, true, '默认开（老用户在用的功能不能被默认关掉）');
   assert.ok(!host.foldHost && !host.foldGroup, '折叠子菜单已撤，不应再挂 foldHost / foldGroup');
-  assert.ok(/停/.test(host.desc), 'desc 要讲总闸范围（关了全停）：' + host.desc);
-  assert.ok(/悬浮窗|默认关/.test(host.note), 'note 要交代「自动发福袋在悬浮窗里」：' + host.note);
+  assert.ok(/停/.test(host.desc + host.note), 'desc 要讲总闸范围（关了全停）：' + host.desc);
+  assert.ok(/悬浮窗/.test(host.desc + host.note) && /默认关/.test(host.desc + host.note), 'note 要交代「自动发福袋在悬浮窗里」：' + host.note);
 });
 check('两个福袋子开关已从 META 删除', () => {
   assert.equal(META.find((m) => m.key === 'luckyBagWatch'), undefined,

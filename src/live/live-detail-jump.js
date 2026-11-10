@@ -32,7 +32,7 @@
  *   脱离布局流反而要自己算坐标、平台改版就漂。
  *
  * 【开关与回声(工程第 21 条)】
- *   弹窗「其他」组新增开关 liveDetailJump,默认开;
+ *   弹窗「跳转服务平台」统一控制大屏和明细页，默认开；
  *   拨动回声来源词 = 「明细跳转」,首次读不出声(与大屏 replay-link.js 同模式)。
  *   挂载 / 摘除按钮本身**不弹消息** —— 那是界面变化不是操作结果,
  *   且本页消息盒子由货号复制等高频功能共用,不为静默的 UI 挂载刷历史。
@@ -58,7 +58,7 @@
   }
 
   function enabled() {
-    return onThisPage() && flags.liveDetailJump !== false;
+    return onThisPage() && flags.servicePlatformJump !== false;
   }
 
   /** 文本归一:去空白后比较,防平台在文案里夹换行 / 全角空格 */

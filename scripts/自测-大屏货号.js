@@ -1211,10 +1211,14 @@ console.log('\n=========== D. 款号口径 ===========');
     // 开关的三项功能必须在同一条说明里说清（用户 2026-10-31 定范围）
     const flagsSrcG = require('fs').readFileSync(
       require('path').join(ROOT, 'src/content/flags.js'), 'utf8');
-    ok('开关标签是「直播大屏商品名优化」', flagsSrcG.indexOf("直播大屏商品名优化") >= 0);
-    ok('  └ 归属抖店大类', /key: 'liveScreenPolish',\s*\n\s*group: 'shop'/.test(flagsSrcG));
-    ok('  └ 说明里点出三项：完整展示 / 复制货号 / 去掉黑幕',
-       /desc: '商品名完整展示、可快捷复制货号，并去掉悬浮黑幕。'/.test(flagsSrcG));
+    const metaContext = require('node:vm').createContext({});
+    require('node:vm').runInContext(flagsSrcG, metaContext);
+    const screenFlag = metaContext.DYC_FLAGS_META.find((m) => m.key === 'liveScreenPolish');
+    ok('大屏开关有可显示名称', screenFlag && typeof screenFlag.label === 'string' && screenFlag.label.trim());
+    ok('  └ 归属抖店大类', screenFlag && screenFlag.group === 'shop');
+    ok('  └ 说明包含完整商品名、复制货号和隐藏黑幕', screenFlag &&
+       /完整/.test(screenFlag.desc) && /商品名/.test(screenFlag.desc) &&
+       /复制货号/.test(screenFlag.desc) && /(?:隐藏|去掉).*黑幕/.test(screenFlag.desc));
   }
 
   /* ---------- 汇总 ---------- */

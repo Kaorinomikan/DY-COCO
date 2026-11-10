@@ -42,7 +42,7 @@
   }
 
   function enabled() {
-    return onThisPage() && flags.liveScreenJump !== false;
+    return onThisPage() && flags.servicePlatformJump !== false;
   }
 
   function attach() {

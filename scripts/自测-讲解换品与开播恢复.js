@@ -41,6 +41,7 @@ function setup(group) {
     window.__test={state:state,apply:apply,setOn:setOn,checkNow:checkNow,
       fast:doFastCycle,slow:doCycle,vigil:vigilTick,enter:enterVigil};
   `;
+  w.eval(fs.readFileSync(path.resolve(__dirname, '../src/content/flags.js'), 'utf8'));
   w.eval(lecture.replace('  boot();', hook));
   function add(key, active) {
     const r = w.document.createElement('div'); r.dataset.key = key; r.dataset.name = key;

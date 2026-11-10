@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 'use strict';
 
-// 只读检查。默认列全部存量；--gate 阻断；--base <提交> 只阻断相对该提交新增的违规。
+// 只读检查。--gate 阻断菜单违规与更新说明结构缺陷；--base <提交> 只拦新增违规。
 // 不判断功能是否实现、不替代人工核对；长度按 Unicode 字符计，含标点与空格。
 const fs = require('node:fs');
 const path = require('node:path');
@@ -13,6 +13,30 @@ const args = process.argv.slice(2);
 const limits = Object.freeze({ label: 12, desc: 32, note: 24, help: 56, summary: 30, news: 48, items: 5 });
 const len = (text) => Array.from(text || '').length;
 const plain = (text) => text.replace(/\*\*|`/g, '').trim();
+
+function helpStyle(value, add) {
+  if (!value) return;
+  if (!value.endsWith('。') || /[,;:!?()]/.test(value)) add('punctuation', '问号说明使用全角标点，并以句号收尾');
+  if (/(页面滚动链|回读|原生框|DOM|histKey|Shadow DOM|querySelector)/.test(value)) add('engineering', '问号说明含内部术语，请改为用途或操作结果');
+}
+
+function isBlocking(issue) {
+  return issue.file !== 'RELEASE_NOTES.md' || issue.structural;
+}
+
+function checkPopup(source) {
+  const issues = [];
+  // 子选项 tip 和直接传给问号的短句；变量提示由 flags.js 单独检查。
+  source.split(/\r?\n/).forEach((line, i) => {
+    const match = line.match(/\btip:\s*'([^']*)'/) || line.match(/^\s*attachHelpBadge\([^,]+,\s*'([^']*)'/);
+    if (!match) return;
+    const value = match[1];
+    const add = (rule, message) => issues.push({ file: 'src/popup/popup.js', id: 'help-' + (i + 1), field: 'tip', rule, message, value });
+    if (len(value) > limits.help) add('length', '子菜单问号超过 ' + limits.help + ' 字');
+    helpStyle(value, add);
+  });
+  return { issues };
+}
 
 function checkFlags(source) {
   const context = vm.createContext({});
@@ -32,6 +56,7 @@ function checkFlags(source) {
       if (typeof value !== 'string') throw new Error(m.key + '.' + field + ' 必须是字符串');
       if ((field === 'label' || field === 'desc') && !value.trim()) add(m, field, 'required', '缺少功能名或作用说明', value);
       if (len(value) > limits[field]) add(m, field, 'length', len(value) + ' 字，超过 ' + limits[field] + ' 字', value);
+      if (field !== 'label') helpStyle(value, (rule, message) => add(m, field, rule, message, value));
       if (/[\r\n]/.test(value)) add(m, field, 'multiline', '短提示含换行，应拆到说明面板', value);
       if (/(绝不|永远不会|不会出错|不是出错|保证成功|全场景)/.test(value)) add(m, field, 'absolute', '包含无条件保证或把异常直接判为正常的措辞', value);
     });
@@ -328,10 +353,11 @@ function autofixNews(source, allIssues) {
 
 function collect(read, baseline) {
   const flags = checkFlags(read('src/content/flags.js'));
+  const popup = checkPopup(read('src/popup/popup.js'));
   const notes = read('RELEASE_NOTES.md');
   const news = checkNews(notes);
   const base = checkNewsBaseline(notes, baseline);
-  return { issues: flags.issues.concat(news.issues, base.issues), stats: { ...flags.stats, ...news.stats, ...base.stats } };
+  return { issues: flags.issues.concat(popup.issues, news.issues, base.issues), stats: { ...flags.stats, ...news.stats, ...base.stats } };
 }
 
 function selfTest() {
@@ -402,7 +428,17 @@ function selfTest() {
   assert(checkNews('# 标题\n\n## 本版要点\n\n- 某功能可用。\n').issues.some((i) => i.structural), '缺一句话应算结构性');
   assert(!checkNews(newsDoc(['某功能可用。'])).issues.some((i) => i.structural), '正常说明不该有结构性问题');
 
-  console.log('文案检查器自测：21 组通过（短句、超长、绝对保证、更新结构、同功能重复、入口错误、存量差异、基线 R1/R2/R3/R4、正常终态、误报护栏、未覆盖、无基线跳过、自动整理删重复条、R1 只提示不删、全违规不删空、截断到 5 条、结构性分级）。');
+  assert(checkFlags(sample.replace('输入序号，滚到对应商品。', '输入序号,定位商品')).issues.some((i) => i.rule === 'punctuation'));
+  assert(checkFlags(sample.replace('输入序号，滚到对应商品。', '回读原生框。')).issues.some((i) => i.rule === 'engineering'));
+  assert.equal(checkPopup("  { tip: '扫描时遮住商品列表。' },").issues.length, 0);
+  assert(checkPopup("  { tip: '" + '字'.repeat(57) + "。' },").issues.some((i) => i.rule === 'length'));
+  assert(checkPopup("  attachHelpBadge(row, '读取 DOM。');").issues.some((i) => i.rule === 'engineering'));
+  assert(checkPopup("  { tip: '扫描,列表' },").issues.some((i) => i.rule === 'punctuation'));
+  assert(isBlocking({file: 'src/content/flags.js', rule: 'length'}));
+  assert(isBlocking({file: 'src/popup/popup.js', rule: 'punctuation'}));
+  assert(!isBlocking({file: 'RELEASE_NOTES.md', rule: 'length'}));
+  assert(isBlocking({file: 'RELEASE_NOTES.md', structural: true}));
+  console.log('文案检查器自测：菜单标点、术语、子菜单长度及阻断分级通过；原 21 组通过（短句、超长、绝对保证、更新结构、同功能重复、入口错误、存量差异、基线 R1/R2/R3/R4、正常终态、误报护栏、未覆盖、无基线跳过、自动整理删重复条、R1 只提示不删、全违规不删空、截断到 5 条、结构性分级）。');
 }
 
 try {
@@ -444,11 +480,11 @@ try {
     previous = new Set(old.issues.map(signature));
   }
   result.issues.forEach((i) => { i.existing = base ? previous.has(signature(i)) : false; });
-  /* 只有结构性问题是「发布必须停」的：缺少一句话、要点 0 条 —— 更新页会显示异常。
-   * 措辞类（长度、实现细节、基线、重复）一律降为警告（用户 2026-11-05：
+  /* 菜单违规必须改正；更新说明只有缺少一句话、要点 0 条等结构缺陷阻断。
+   * 更新说明措辞类（长度、实现细节、基线、重复）一律降为警告（用户 2026-11-05：
    * 文案的写法由助手自己改，不能因为文案让发布中断）。 */
-  result.blocking = result.issues.filter((i) => !i.existing && i.structural).length;
-  result.notes = result.issues.filter((i) => !i.existing && !i.structural).length;
+  result.blocking = result.issues.filter((i) => !i.existing && isBlocking(i)).length;
+  result.notes = result.issues.filter((i) => !i.existing && !isBlocking(i)).length;
   result.base = base;
   if (args.includes('--json')) console.log(JSON.stringify(result, null, 2));
   else {
@@ -462,10 +498,10 @@ try {
       }
     }
     result.issues.forEach((i) => {
-      const tag = i.existing ? '[存量]' : (i.structural ? '[阻断]' : '[警告]');
+      const tag = i.existing ? '[存量]' : (isBlocking(i) ? '[阻断]' : '[警告]');
       console.log(tag + ' ' + i.file + ' / ' + i.id + '.' + i.field + '：' + i.message);
     });
-    console.log('共 ' + result.issues.length + ' 项规则命中；阻断 ' + result.blocking + ' 项（结构性），警告 ' + result.notes + ' 项（措辞类，不拦发布）。');
+    console.log('共 ' + result.issues.length + ' 项规则命中；阻断 ' + result.blocking + ' 项（菜单或结构性），警告 ' + result.notes + ' 项（措辞类，不拦发布）。');
     console.log('边界：不判断语义正确、功能承诺与实机行为，仍须逐项人工核对。');
   }
   if (args.includes('--gate') && result.blocking) process.exitCode = 1;

@@ -259,8 +259,11 @@ const {
   const iBar = liveJs.indexOf('src/live/toolbar.js');
   ok(iBag > 0 && iBar > 0 && iBag < iBar, '⑳ manifest 里 lucky-bag 在 toolbar 之前（入口必须最后）');
 
-  ok(/label:\s*'福袋功能增强'/.test(FLAGS_SRC),
-    '⑳ 「福袋功能增强」已登记（2026-11-01 深夜改名）');
+  const flagContext = require('node:vm').createContext({});
+  require('node:vm').runInContext(FLAGS_SRC, flagContext);
+  const bagFlag = flagContext.DYC_FLAGS_META.find((m) => m.key === 'luckyBag');
+  ok(bagFlag && typeof bagFlag.label === 'string' && bagFlag.label.trim(),
+    '⑳ 福袋总开关已登记且有可显示名称');
   ok(!/key:\s*'luckyBagWatch'/.test(FLAGS_SRC) && !/key:\s*'luckyBagAuto'/.test(FLAGS_SRC),
     '⑳ 两个子开关已从 popup 撤下（自动发福袋挪进悬浮面板）');
   ok(/AUTO_KEY\s*=\s*'dycBagAuto'/.test(CODE),

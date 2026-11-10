@@ -48,7 +48,7 @@
 // │ 发布会被直接中止。不需要靠人记。                                 │
 // └──────────────────────────────────────────────────────────────────┘
 // 全面整改：后台统一设置写入、私有历史与反馈来源截图，更新导入的开关定义。
-var DYC_BUILD = '26.11.10.1+sw35';
+var DYC_BUILD = '26.11.10.2+sw36';
 
 // classic worker，可以 importScripts（manifest 里没有设 type: module）
 importScripts('../shared/gitee.js', '../content/flags.js', '../shared/live-control-assets.js');
@@ -73,11 +73,11 @@ function writeFeatureFlag(key, value, store) {
   var meta = dycFlagMeta(key);
   var where = (meta && meta.store) || (store === 'debug' ? 'debug' : 'features');
   var task = flagWriteQueue.then(function () {
-    if (where === 'debug') return chrome.storage.local.set({ dybDebug: value });
-    return chrome.storage.local.get(DYC_FLAGS_STORE_KEY).then(function (got) {
+    if (where === 'debug') return dycStorageCallP('set', { dybDebug: value });
+    return dycStorageCallP('get', DYC_FLAGS_STORE_KEY).then(function (got) {
       var flags = Object.assign({}, got[DYC_FLAGS_STORE_KEY] || {});
       flags[key] = value;
-      return chrome.storage.local.set({ dybFeatures: flags });
+      return dycStorageCallP('set', { dybFeatures: flags });
     });
   });
   flagWriteQueue = task.catch(function () {});

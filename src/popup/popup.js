@@ -581,8 +581,8 @@ function buildShadePanel() {
   // 原来这里有一行灰字标题「白幕样式（搜索扫描期间）」,职责与问号气泡重叠 ——
   // 删掉,面板里直接就是选项;每个选项的解释也各挂一枚问号。
   const OPTIONS = [
-    { value: 'opaque', label: '不透明白', tip: '底下完全看不见,扫描期间屏幕最安静(推荐)。' },
-    { value: 'translucent', label: '半透明 40%', tip: '隐约能看到列表在翻,知道它在干活,又不干扰阅读。' }
+    { value: 'opaque', label: '不透明白', tip: '扫描时完全遮住商品列表。' },
+    { value: 'translucent', label: '半透明 40%', tip: '扫描时用半透明白幕遮挡，仍可看到列表滚动。' }
   ];
   const radios = [];
 
@@ -660,9 +660,9 @@ function buildOmniPanel() {
 
   const OPTIONS = [
     { value: 'none', label: '默认原生搜索',
-      tip: '回车走平台自己的搜索,最快;全能搜索只在你点【全能搜索】按钮时才用。' },
+      tip: '按回车使用平台搜索；点击「全能搜索」按钮可扫描列表。' },
     { value: 'always', label: '默认全能搜索',
-      tip: '回车直接走全能扫描:能搜名称任意片段、多关键词、价格,但每次都要滚动整个商品列表,比原生慢。' }
+      tip: '按回车使用全能搜索，支持名称片段、多关键词和价格。扫描需滚动整个商品列表。' }
   ];
   const radios = [];
 
@@ -885,7 +885,7 @@ function buildProbeBox() {
   const titleRow = document.createElement('div');
   titleRow.className = 'probe-title';
   titleRow.appendChild(btn);
-  attachHelpBadge(titleRow, '导出本页 DOM 结构，交给助手写适配代码。');
+  attachHelpBadge(titleRow, '导出当前页面结构，用于适配页面功能。');
 
   const msg = document.createElement('div');
   msg.className = 'probe-msg';
@@ -1019,7 +1019,7 @@ function buildReportBox() {
   const titleRow = document.createElement('div');
   titleRow.className = 'probe-title';
   titleRow.appendChild(btn);
-  attachHelpBadge(titleRow, '读取本页诊断报告，纠错用。本页须处于调试态。');
+  attachHelpBadge(titleRow, '复制当前页面的诊断报告，用于排查问题。');
 
   const msg = document.createElement('div');
   msg.className = 'probe-msg';
@@ -1446,10 +1446,10 @@ DYC_FLAGS_META.forEach((meta) => {
       await dycWriteFlag(meta.key, on);
       input._savedValue = on;
       reportApplied(meta.pages, on);
-    } catch (_) {
+    } catch (error) {
       input.checked = before;
       foldOpeners.forEach((entry) => { if (entry.key === meta.key) entry.setGate(before); });
-      flash('设置未保存，已恢复原状态');
+      flash('设置未保存，已恢复原状态：' + dycSettingError(error));
     } finally {
       input._saving = false;
       input.disabled = false;

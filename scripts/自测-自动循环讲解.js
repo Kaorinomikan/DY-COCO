@@ -779,7 +779,7 @@ ok('睡眠唤醒不补点', /不补点|过期太久/.test(src) || src.indexOf('m
 
 /* 2026-10-25 追加:长久记忆 + 面板不被别的功能关掉 */
 ok('时长存 chrome.storage.local(关浏览器也不丢)', /chrome\.storage\.local\.set\(withKey\(MINUTES_KEY/.test(src));
-ok('读时长走 chrome.storage 且带 localStorage 迁移', /chrome\.storage\.local\.get\(MINUTES_KEY\)/.test(src) && /window\.localStorage\.getItem\(MINUTES_KEY\)/.test(src));
+ok('读时长走 chrome.storage 且带 localStorage 迁移', /dycStorageCallP\('get',\s*MINUTES_KEY\)/.test(src) && /window\.localStorage\.getItem\(MINUTES_KEY\)/.test(src));
 ok('外部点击只认真人手势(isTrusted)', /e\.isTrusted === false/.test(src));
 ok('程序化 click 的 detail=0 也挡掉', /e\.detail === 0/.test(src));
 ok('自己发的点击有 800ms 打点兜底', /lastSelfClickAt < 800/.test(src));

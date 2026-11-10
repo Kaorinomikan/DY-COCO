@@ -80,7 +80,7 @@ function load(cands) {
     },
     // 开关读成「关」,让 start() 不跑 —— 本套只测 findAnchor 这一个纯函数,
     // 不去承担 UI 挂载链路的夹具成本(那是另一件事)。
-    dycReadFlags() { return Promise.resolve({ liveDetailJump: false }); },
+    dycReadFlags() { return Promise.resolve({ servicePlatformJump: false }); },
     dycWatchFlags() {},
     MutationObserver: class { observe() {} disconnect() {} takeRecords() { return []; } }
   };

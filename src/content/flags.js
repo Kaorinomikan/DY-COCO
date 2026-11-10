@@ -388,8 +388,8 @@ var DYC_FLAGS_META = [
   {
     key: 'liveNameWrap',
     group: 'live',
-    label: '商品名称不折叠',
-    desc: '小黄车商品名自动换行，不再截断成一行。',
+    label: '商品名完整显示',
+    desc: '小黄车商品名自动换行显示。',
     default: true,
     pages: ['liveCtrl']
   },
@@ -425,8 +425,8 @@ var DYC_FLAGS_META = [
     group: 'live',
     label: '页面滚动按钮',
     // 父开关只解释控制范围与关闭结果,不罗列子项教程。
-    desc: '控制页面滚动按钮，关闭后隐藏按钮。',
-    note: '只作用于页面滚动链，重开后保留各按钮设置。',
+    desc: '显示回到顶部和滚到底部按钮。',
+    note: '关闭后隐藏两类按钮，保留各按钮设置。',
     foldHost: 'scroll',
     default: true,
     pages: ['liveCtrl']
@@ -462,10 +462,10 @@ var DYC_FLAGS_META = [
     //  老存档里的 trial3 由读取侧白名单回落成 'none',不需要迁移脚本。)
     key: 'omniSearch',
     group: 'live',
-    label: '回车定位',
+    label: '回车搜索方式',
     // 用户 2026-10-18 原话:「问号也要改一下,写的默认回车键使用原生搜索」。
-    desc: '控制回车使用原生搜索或全能扫描。',
-    note: '关闭后隐藏全能搜索按钮，原生回车仍可跳结果。',
+    desc: '选择按回车时使用平台搜索或全能搜索。',
+    note: '关闭后隐藏全能搜索按钮，保留平台搜索。',
     default: true,
     pages: ['liveCtrl'],
     panel: 'omniSearch',
@@ -495,8 +495,8 @@ var DYC_FLAGS_META = [
        按用户定「建议采纳」把它提为常显行，位置紧接两枚滚动钮之后。 */
     key: 'cursorFix',
     group: 'live',
-    label: '抓手光标可见',
-    desc: '拖拽排序时，将抓手光标改为白底黑边。',
+    label: '拖拽猫爪光标',
+    desc: '拖拽排序时显示猫爪光标，按住时爪子收拢。',
     default: true,
     pages: ['list', 'liveCtrl']
   },
@@ -539,8 +539,8 @@ var DYC_FLAGS_META = [
     key: 'wxGoodsFullTitle',
     group: 'wx',
     label: '商品名完整显示',
-    desc: '商品列表的商品名不再截断，自动换行显示全名。',
-    note: '长名字会让该行变高。',
+    desc: '商品列表中的商品名自动换行显示。',
+    note: '名称较长时，商品行会增高。',
     default: true,
     pages: ['wxGoodsList']
   },
@@ -553,9 +553,9 @@ var DYC_FLAGS_META = [
     // 「复制链接」内部会短暂打开平台的分享面板读取链接 —— note 里写明。
     key: 'wxRowCopy',
     group: 'wx',
-    label: '商品行快捷复制',
-    desc: '商品行加「货号」「复制链接」两个按钮，点一下即复制。',
-    note: '名字缺货号或链接读不到时才开面板。',
+    label: '复制货号和链接',
+    desc: '在商品行添加「货号」和「复制链接」按钮。',
+    note: '无法直接复制时，打开操作面板。',
     default: true,
     pages: ['wxGoodsList']
   },
@@ -642,52 +642,14 @@ var DYC_FLAGS_META = [
     pages: ['replayPage']
   },
   {
-    /* 直播大屏 · 跳转直播服务平台（2026-10-18 用户定）。
-     *
-     * 作用页：电商罗盘 · 直播大屏专业版  compass.jinritemai.com/screen/live/*
-     *
-     * 做什么：在**播放器下方**放一枚「跳转直播服务平台」按钮，鼠标指上去提示
-     *   「下载直播回放和看评论，复盘直播明细，点这里」，点了新标签页打开
-     *   https://liveservice.douyin.com/ 。
-     *
-     * 为什么是跳转而不是下载：大屏是「看数」的地方，回放与评论都在服务平台那侧；
-     *   在这一页塞一套下载器，既增加合规风险，也让两条链路各自都要维护。
-     *   用户原话「直播大屏专业版不做下载按钮了」。
-     *
-     * 为什么默认**开**：只是一枚指路按钮，不自动跑、不改页面数据。
-     */
-    key: 'liveScreenJump',
+    key: 'servicePlatformJump',
     group: 'other',
-    label: '直播大屏·跳转服务平台',
-    desc: '在直播大屏添加服务平台跳转按钮。',
-    note: '只放一枚按钮，不在大屏页下载内容。',
+    label: '跳转服务平台',
+    desc: '在直播大屏和直播明细页添加服务平台跳转按钮。',
+    note: '下载回放需前往直播服务平台。',
     default: true,
-    pages: ['liveScreenPage']
-  },
-  {
-    /* 直播明细 · 跳转直播服务平台（2026-10-20 用户定）。
-     *
-     * 作用页：电商罗盘「直播明细」两个入口（与 live-detail.js 同两页）：
-     *   compass.jinritemai.com/shop/live-detail      （抖店侧）
-     *   compass.jinritemai.com/talent/live-statement （达人侧）
-     *
-     * 做什么：顶部按钮行「直播大屏」左侧加一枚「去服务平台」（浅蓝实底，
-     *   用户红框指定位置、拍板文案与配色），悬停提示与大屏那枚一字不差：
-     *   「下载直播回放和看评论，复盘直播明细，点这里」，点了新标签页打开
-     *   https://liveservice.douyin.com/ 。
-     *
-     * 为什么和大屏那枚分开两个开关：作用页不同（大屏页 / 明细页），
-     *   用户可能只要一边有；开关文案也才说得清自己在管哪一页。
-     */
-    key: 'liveDetailJump',
-    group: 'other',
-    label: '直播明细·跳转服务平台',
-    desc: '在直播明细页添加服务平台跳转按钮。',
-    note: '只放一枚按钮，不在本页下载内容。',
-    default: true,
-    pages: ['compassLive']
-  },
-/* ── 抖店 · 罗盘商品表(2026-10-18 反馈 #95 追加在末尾)─────────────
+    pages: ['liveScreenPage', 'compassLive']
+  },/* ── 抖店 · 罗盘商品表(2026-10-18 反馈 #95 追加在末尾)─────────────
    * 用户原话:「商品卡、商品销量榜列表,都是需要加入商品名称扩展和快捷复制按钮」,
    * 并明确「这两个网页都要兼容这个功能,就是跟直播明细页的逻辑是一样的」。
    *
@@ -781,8 +743,8 @@ var DYC_FLAGS_META = [
     key: 'channelOfflineDelete',
     group: 'shop',
     label: '渠道品下架并删除',
-    desc: '渠道品列表提供下架并删除及批量操作。',
-    note: '删除无法恢复；仅下架成功还不算完成。',
+    desc: '在渠道品列表中单个或批量下架并删除商品。',
+    note: '删除无法恢复，下架后还会执行删除。',
     default: true,
     pages: ['channelGoods']
   },
@@ -814,7 +776,7 @@ var DYC_FLAGS_META = [
     group: 'live',
     label: '自动循环讲解',
     desc: '讲解到设定时长后自动取消并续讲。',
-    note: '记住模式、间隔与启停状态，停止后需手动开启。',
+    note: '保留讲解设置，手动停止后需重新开启。',
     default: true,
     pages: ['liveCtrl']
   },
@@ -835,8 +797,8 @@ var DYC_FLAGS_META = [
   {
     key: 'liveScreenPolish',
     group: 'shop',
-    label: '直播大屏商品名优化',
-    desc: '商品名完整展示、可快捷复制货号，并去掉悬浮黑幕。',
+    label: '大屏商品名与货号',
+    desc: '完整显示商品名、支持复制货号，并隐藏悬浮黑幕。',
     note: '货号优先平台值，否则取名称末尾款号。',
     default: true,
     pages: ['liveScreenPage']
@@ -877,9 +839,9 @@ var DYC_FLAGS_META = [
   {
     key: 'shopListNameWrap',
     group: 'shop',
-    label: '抖店商品名称完整展示',
-    desc: '商品名优先两行，最多显示三行。',
-    note: '超长名仍省略；右侧空位会加给名字列。',
+    label: '商品名多行显示',
+    desc: '加宽商品名称列，最多显示三行名称。',
+    note: '超出三行的部分仍会省略。',
     default: true,
     pages: ['list']
   },
@@ -891,8 +853,8 @@ var DYC_FLAGS_META = [
     key: 'shopPaste',
     group: 'shop',
     label: '粘贴加橱窗',
-    desc: '读剪贴板里的商品链接，一次最多 30 条直接加进橱窗。',
-    note: '已在橱窗的不重复加；不认口令和短链。',
+    desc: '粘贴商品链接，将商品加入橱窗。',
+    note: '最多 30 条，跳过已有商品；不支持口令和短链。',
     default: true,
     pages: ['shopWindow']
   },
@@ -922,9 +884,9 @@ var DYC_FLAGS_META = [
   {
     key: 'luckyBag',
     group: 'live',
-    label: '福袋功能增强',
-    desc: '福袋监视与悬浮窗总开关，关了全停。',
-    note: '自动发福袋在悬浮窗里，默认关。',
+    label: '福袋监视与自动发送',
+    desc: '显示福袋状态悬浮窗，可设置自动发送。',
+    note: '自动发送默认关闭，关闭此开关后全部停止。',
     default: true,
     pages: ['liveCtrl']
   },
@@ -970,18 +932,18 @@ var DYC_FLAGS_META = [
   {
     key: 'goodsImagePaste',
     group: 'shared',
-    label: '图片剪贴板粘贴',
-    desc: '上传框与商详工具栏加「粘贴图片」，一步贴入。',
-    note: '含规格图小图标；无图或塞不进会提示。',
+    label: '粘贴图片',
+    desc: '在上传入口和商详工具栏添加「粘贴图片」按钮。',
+    note: '支持规格图；无图片或上传失败时提示。',
     default: true,
     pages: ['goodsEdit', 'wxGoodsEdit']
   },
   {
     key: 'fabricSmartFill',
     group: 'shop',
-    label: '面料材质智能填写',
-    desc: '输入「棉80 丝绸20」一键填进原生面料框。',
-    note: '合计须 100%；平台没有的名字按原样新建。',
+    label: '面料材质快捷填写',
+    desc: '输入材质和比例填写面料，合计须 100%。',
+    note: '会覆盖原内容；无同名材质时按原名新建。',
     default: true,
     pages: ['goodsEdit']
   },
@@ -989,8 +951,8 @@ var DYC_FLAGS_META = [
     key: 'wxClearStock',
     group: 'wx',
     label: '商品库存清零',
-    desc: '商品行加清空库存按钮，将全部规格库存更新为 0。',
-    note: '直接提交并回读确认；平台要求额外确认时停止。',
+    desc: '在商品行添加「清空库存」按钮，清零全部规格。',
+    note: '清零前需确认；平台要求额外确认时停止。',
     default: true,
     pages: ['wxGoodsList']
   }
@@ -1044,6 +1006,31 @@ function dycStorageGet(key, cb) {
   }
 }
 
+/** 设置读写必须等待真实回执；兼容仅回调内核，并保留存储失败原因。 */
+function dycStorageCallP(method, payload) {
+  return new Promise(function (resolve, reject) {
+    try {
+      var pending = chrome.storage.local[method](payload, function (result) {
+        var error = chrome.runtime.lastError;
+        if (error) reject(new Error(error.message || String(error)));
+        else Promise.resolve().then(function () {
+          if (!pending || typeof pending.then !== 'function') resolve(result);
+        });
+      });
+      // 同时消费支持 Promise 的实现，避免拒绝成为未处理异常。
+      if (pending && typeof pending.then === 'function') pending.then(resolve, reject);
+    } catch (error) { reject(error); }
+  });
+}
+
+/** 旧页面的扩展上下文失效后无法重连，提示用户自行刷新页面。 */
+function dycSettingError(error) {
+  var message = error && error.message || String(error || '');
+  return /Extension context invalidated/i.test(message)
+    ? '扩展已更新，请在方便时刷新当前网页后重试'
+    : message;
+}
+
 /** dycStorageGet 的 Promise 版（内部多个键并行读时用） */
 function dycStorageGetP(key) {
   return new Promise(function (resolve) {
@@ -1056,9 +1043,18 @@ function dycStorageGetP(key) {
  * 读取失败时回退到默认值 —— 宁可功能照常可用,也不要因为
  * 一次 storage 异常就把用户的功能悄悄关掉。
  */
+// 旧版任一跳转关闭时先保持关闭；用户设置统一开关后，以新值为准。
+function dycNormalizeFlags(stored) {
+  var out = Object.assign({}, DYC_FLAGS_DEFAULTS, stored || {});
+  if (!stored || stored.servicePlatformJump === undefined) {
+    out.servicePlatformJump = out.liveScreenJump !== false && out.liveDetailJump !== false;
+  }
+  return out;
+}
+
 function dycReadFlags() {
   return dycStorageGetP(DYC_FLAGS_STORE_KEY).then(function (r) {
-    return Object.assign({}, DYC_FLAGS_DEFAULTS, (r && r[DYC_FLAGS_STORE_KEY]) || {});
+    return dycNormalizeFlags((r && r[DYC_FLAGS_STORE_KEY]) || {});
   });
 }
 
@@ -1074,7 +1070,7 @@ function dycReadAllFlags() {
     .then(function (r) { return !!(r && r[DYC_DEBUG_STORE_KEY]); });
 
   return Promise.all([featureRead, debugRead]).then(function (res) {
-    var obj = res[0];
+    var obj = dycNormalizeFlags(res[0]);
     var debugOn = res[1];
     var out = {};
     DYC_FLAGS_META.forEach(function (m) {
@@ -1101,19 +1097,29 @@ function dycWriteFlag(key, value) {
   // 所有弹窗通过同一个后台队列写入，避免多个窗口同时读改写丢掉另一项。
   // store 随消息带上：万一后台还是旧缓存包、不认识这个键，它仍能按正确位置
   // 落库，而不是直接回「无效设置」（2026-11-05）。
-  return new Promise(function (resolve, reject) {
-    chrome.runtime.sendMessage({
-      type: 'dyc:writeFlag', key: key, value: !!value,
-      store: meta.store === 'debug' ? 'debug' : 'features'
-    }, function (res) {
-      var error = chrome.runtime.lastError;
-      if (error || !res || !res.ok) {
-        reject(new Error((error && error.message) || (res && res.error) || '设置未保存'));
-        return;
-      }
-      resolve();
+  function send(attempt) {
+    return new Promise(function (resolve, reject) {
+      try {
+        chrome.runtime.sendMessage({
+          type: 'dyc:writeFlag', key: key, value: !!value,
+          store: meta.store === 'debug' ? 'debug' : 'features'
+        }, function (res) {
+          var error = chrome.runtime.lastError;
+          var message = error && error.message || '';
+          if (error && attempt === 0 && /Receiving end does not exist|message port closed|message channel closed/i.test(message)) {
+            setTimeout(function () { send(1).then(resolve, reject); }, 200);
+            return;
+          }
+          if (error || !res || !res.ok) {
+            reject(new Error(message || (res && res.error) || '设置未保存'));
+            return;
+          }
+          resolve();
+        });
+      } catch (error) { reject(error); }
     });
-  });
+  }
+  return send(0);
 }
 
 /**
@@ -1129,8 +1135,7 @@ function dycWatchFlags(cb) {
   chrome.storage.onChanged.addListener(function (changes, area) {
     if (area !== 'local') return;
     if (!changes[DYC_FLAGS_STORE_KEY]) return;
-    cb(Object.assign({}, DYC_FLAGS_DEFAULTS,
-      (changes[DYC_FLAGS_STORE_KEY].newValue) || {}));
+    cb(dycNormalizeFlags(changes[DYC_FLAGS_STORE_KEY].newValue));
   });
 }
 
@@ -1496,7 +1501,7 @@ function markSeen(list) {
 function dycWriteHideList(ids) {
   var payload = {};
   payload[DYC_HIDE_LIST_KEY] = dycSanitizeHideList(ids);
-  return chrome.storage.local.set(payload);
+  return dycStorageCallP('set', payload);
 }
 
 /** 订阅勾选清单变化,回调收到净化后的 id 数组(与 dycReadHideList 同口径) */
@@ -1532,7 +1537,7 @@ function dycReadShadeMode() {
 function dycWriteShadeMode(mode) {
   var payload = {};
   payload[DYC_SHADE_MODE_KEY] = DYC_SHADE_MODES.indexOf(mode) >= 0 ? mode : 'opaque';
-  return chrome.storage.local.set(payload);
+  return dycStorageCallP('set', payload);
 }
 
 /** 订阅档位变化,回调收到净化后的档位字符串(与 dycReadShadeMode 同口径) */
@@ -1572,7 +1577,7 @@ function dycReadOmniMode() {
 function dycWriteOmniMode(mode) {
   var payload = {};
   payload[DYC_OMNI_MODE_KEY] = DYC_OMNI_MODES.indexOf(mode) >= 0 ? mode : 'none';
-  return chrome.storage.local.set(payload);
+  return dycStorageCallP('set', payload);
 }
 
 /** 订阅档位变化,回调收到净化后的档位字符串(与 dycReadOmniMode 同口径) */

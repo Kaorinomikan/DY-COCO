@@ -53,6 +53,7 @@ function setup(store = {}, extraHook = '') {
     paintReadout:paintReadout,setDragValue:function(fn){valueAt=fn;}};
 `;
   assert.ok(source.includes('  boot();'));
+  w.eval(fs.readFileSync(path.resolve(__dirname, '../src/content/flags.js'), 'utf8'));
   w.eval(source.replace('  boot();', hook + extraHook));
   /* 2026-11-10:源码新增「检查最小间隔 150ms」(多源合并)。本套件在同一时刻连续
    * 调 checkNow / setOn 验证行为语义,时间不前进 ⇒ 会被合并闸吞掉。这里关掉它。 */

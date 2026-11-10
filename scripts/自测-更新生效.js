@@ -198,7 +198,7 @@ function runFinishAndClose(opts) {
     vm.createContext(sandbox);
     // flagWriteQueue 是 SW 模块级的串行队列，抽函数时一并注入。
     vm.runInContext(
-      'var flagWriteQueue = Promise.resolve();\n'
+      extract('dycStorageCallP', flagsSrc) + '\nvar flagWriteQueue = Promise.resolve();\n'
       + extract('writeFeatureFlag', swSrc) + '\nthis.wf = writeFeatureFlag;', sandbox);
     return { data, wf: sandbox.wf };
   }

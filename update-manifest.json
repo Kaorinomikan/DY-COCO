@@ -1,5 +1,5 @@
 {
-  "version": "26.11.10.1",
+  "version": "26.11.10.2",
   "algorithm": "sha256",
   "files": [
     {
@@ -20,12 +20,12 @@
     {
       "path": "manifest.json",
       "size": 12935,
-      "sha256": "7b778e1b45632a6ee5201c119f23ec0989de2bc2403f198b81e8f3f6e798f5dd"
+      "sha256": "c3abaa66fba1b40314fdefa18ec3ab4614828471cf6a1871dbc8e6dc255f3079"
     },
     {
       "path": "src/background/service-worker.js",
-      "size": 92490,
-      "sha256": "3e81df3f26312afb769e619dc385bb5d0c226beb198766ef829ca0fce89846fd"
+      "size": 92484,
+      "sha256": "4e89ff4caacbf66caa07fef08e3c267d9dbc2c9454be1cc1a1c3d6814d18d3b2"
     },
     {
       "path": "src/content/anchor.js",
@@ -69,8 +69,8 @@
     },
     {
       "path": "src/content/cursor-fix.js",
-      "size": 35251,
-      "sha256": "e33b85d741354f96bba2e09bb3de4c8124d17400533b12b4fe91e88bec8eb2e6"
+      "size": 47021,
+      "sha256": "d1229c8eea40a924003c6ce7dea9201e1829679660bbb3a2748aceb16513f8f3"
     },
     {
       "path": "src/content/debug-panel.js",
@@ -104,8 +104,8 @@
     },
     {
       "path": "src/content/flags.js",
-      "size": 89753,
-      "sha256": "46e6bebe1fb7ce280855621896da6e2504e9329231dfc922ced07170856d655b"
+      "size": 89483,
+      "sha256": "cd59a3d94f919f1ce049f4cf181f2b4321599e1ba769cc33552984b3594a54d2"
     },
     {
       "path": "src/content/goods-batch-copy.js",
@@ -249,8 +249,8 @@
     },
     {
       "path": "src/live/auto-loop-lecture.js",
-      "size": 292079,
-      "sha256": "36a32a245fc0f1b0d5b86633f8ee4640caf32e7ccbfff4a1a240216ff3b04780"
+      "size": 292095,
+      "sha256": "0cf49d7c45ac748fdf4689d7ad47d6580efe6e78a433a4aca19582223f5fcc25"
     },
     {
       "path": "src/live/auto-refresh.js",
@@ -299,8 +299,8 @@
     },
     {
       "path": "src/live/live-detail-jump.js",
-      "size": 8385,
-      "sha256": "0bb9b431001c1168a661d7358959bd49b32571e73df087c6d6ede050df2b83eb"
+      "size": 8406,
+      "sha256": "8ca2283f02d9429e4831e87cb4581a10239888ec4b82719458a0b9cdcba7ebd3"
     },
     {
       "path": "src/live/live-detail-tab.js",
@@ -384,8 +384,8 @@
     },
     {
       "path": "src/popup/popup.js",
-      "size": 72587,
-      "sha256": "874168003147a39b8684bddf733630c04add72a68450b987a09950163fa852be"
+      "size": 72538,
+      "sha256": "cfce43d79c2947700807e8d1ae0e4f3384fa6da53824f73362e61e2d94f59392"
     },
     {
       "path": "src/replay/m3u8.js",
@@ -404,8 +404,8 @@
     },
     {
       "path": "src/replay/replay-link.js",
-      "size": 4352,
-      "sha256": "7df48660e4467903cb5d82e54356bc2847ce4acc4a7386354935f7526d37b6ba"
+      "size": 4357,
+      "sha256": "62bcb58a25ae413267bc11e5dc99a0566425649fbcf8a8feb307d011819d219d"
     },
     {
       "path": "src/replay/replay-meta.js",

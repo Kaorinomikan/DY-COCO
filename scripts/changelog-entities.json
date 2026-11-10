@@ -54,7 +54,7 @@
       "name": "直播明细",
       "words": ["直播明细"],
       "files": ["src/live/live-detail.js", "src/live/live-detail-jump.js", "src/live/live-detail-tab.js"],
-      "flags": ["liveDetailJump", "liveDetailAutoTab"]
+      "flags": ["servicePlatformJump", "liveDetailAutoTab"]
     },
     {
       "name": "页面滚动按钮",
@@ -102,7 +102,7 @@
       "name": "直播大屏",
       "words": ["直播大屏", "大屏"],
       "files": ["src/live/live-screen.js"],
-      "flags": ["liveScreenJump", "liveScreenPolish"]
+      "flags": ["servicePlatformJump", "liveScreenPolish"]
     },
     {
       "name": "渠道品",

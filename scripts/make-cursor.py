@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
-抓手光标图生成器 v2 —— 产出 1x(32px) + 2x(64px) PNG 并(可选)注入 cursor-fix.js
+抓手光标图生成器 —— 默认奶油色粉肉垫猫爪，产出 1x(32px) + 2x(64px) PNG。
+悬停张开、按下收拢；--shape grab --active-shape grabbing 可重绘经典抓手。
 
 为什么要有 2x
 ------------
@@ -44,6 +45,7 @@
 import argparse
 import base64
 import io
+import math
 import os
 import re
 import sys
@@ -71,7 +73,7 @@ COLORS = {
 # 热点:掌心(四指指根与掌体交汇处),按 1x 图(32px)像素坐标给。
 # image-set 选中 2x 图时由浏览器按分辨率自行换算,无需另给。
 HOTSPOT = {'grab': (15, 18), 'grabbing': (14, 16), 'open': (15, 18),
-           'point': (14, 18)}
+           'point': (14, 18), 'paw': (16, 20), 'paw_closed': (16, 20)}
 
 # ------------------------------------------------------------------ 绘图工具
 # (画布尺寸由调用方传入,同一份 128 坐标通吃 32px 与 64px 两档)
@@ -169,11 +171,68 @@ def hand_grabbing(W):
     return L
 
 
+def cat_paw(W, closed=False):
+    """方案 1：奶油色猫爪与粉肉垫；同一掌心热点，按下时轮廓收拢。"""
+    layer = new_layer(W)
+    d = ImageDraw.Draw(layer)
+    cream = (255, 248, 233, 255)
+    pink = (237, 158, 168, 255)
+    ink = COLORS['ink']
+
+    def curve(start, segments, fill, outlined=False):
+        # 64px 提案坐标；超采样后统一缩图，不新增绘图依赖。
+        points = [start]
+        x0, y0 = start
+        for x1, y1, x2, y2, x3, y3 in segments:
+            for step in range(1, 25):
+                t = step / 24.0
+                u = 1 - t
+                points.append((u**3*x0 + 3*u*u*t*x1 + 3*u*t*t*x2 + t**3*x3,
+                               u**3*y0 + 3*u*u*t*y1 + 3*u*t*t*y2 + t**3*y3))
+            x0, y0 = x3, y3
+        scaled = [(x * W / 64, y * W / 64) for x, y in points]
+        d.polygon(scaled, fill=fill)
+        if outlined:
+            d.line(scaled + [scaled[0]], fill=ink, width=max(1, round(W / 64)),
+                   joint='curve')
+
+    if closed:
+        curve((17, 42), [(11, 36, 11, 25, 17, 23), (20, 13, 27, 17, 29, 20),
+                        (34, 12, 41, 16, 42, 22), (52, 20, 55, 29, 51, 37),
+                        (51, 48, 44, 54, 32, 54), (22, 54, 15, 50, 17, 42)], cream)
+        curve((22, 39), [(23, 33, 27, 32, 31, 35), (37, 31, 41, 33, 43, 39),
+                        (45, 44, 41, 47, 33, 47), (24, 47, 20, 44, 22, 39)], pink, True)
+        for a, b in [((19, 26), (22, 30)), ((30, 23), (30, 28)),
+                     ((42, 25), (40, 30))]:
+            d.line([(x*W/64, y*W/64) for x, y in (a, b)], fill=ink,
+                   width=max(1, round(W / 64)))
+    else:
+        curve((13, 33), [(6, 25, 9, 17, 15, 18), (16, 7, 25, 7, 28, 15),
+                        (32, 4, 41, 8, 42, 17), (51, 10, 57, 18, 52, 27),
+                        (61, 31, 55, 42, 49, 45), (47, 55, 21, 57, 16, 47),
+                        (12, 43, 10, 38, 13, 33)], cream)
+        for cx, cy, angle in [(17, 26, -22), (28, 19, 0), (41, 22, 18)]:
+            points = []
+            rot = math.radians(angle)
+            for step in range(65):
+                t = step * math.tau / 64
+                x, y = 4 * math.cos(t), 5 * math.sin(t)
+                points.append(((cx+x*math.cos(rot)-y*math.sin(rot))*W/64,
+                               (cy+x*math.sin(rot)+y*math.cos(rot))*W/64))
+            d.polygon(points, fill=pink)
+            d.line(points, fill=ink, width=max(1, round(W / 64)), joint='curve')
+        curve((22, 40), [(23, 33, 27, 32, 32, 35), (37, 31, 41, 32, 44, 39),
+                        (47, 45, 44, 48, 34, 48), (24, 49, 20, 46, 22, 40)], pink, True)
+    return layer
+
+
 SHAPES = {
     'grab': hand_grab,
     'grabbing': hand_grabbing,
     'open': hand_open,
     'point': hand_point,
+    'paw': cat_paw,
+    'paw_closed': lambda W: cat_paw(W, closed=True),
 }
 
 # ------------------------------------------------------------------ 描边
@@ -320,12 +379,12 @@ def inject(idle_uri, idle2x_uri, active_uri, active2x_uri,
 
 def main():
     ap = argparse.ArgumentParser(description='生成抓手光标图(1x+2x)并注入 cursor-fix.js')
-    ap.add_argument('--shape', default='grab', choices=sorted(SHAPES),
-                    help='悬停态手形(默认 grab 抓握形)')
-    ap.add_argument('--active-shape', default='grabbing', choices=sorted(SHAPES),
-                    help='按下态手形(默认 grabbing 握拳形)')
-    ap.add_argument('--outline', type=float, default=1.0,
-                    help='描边粗细,单位 CSS px(默认 1.0;1x/2x 图按同视觉厚度折算)')
+    ap.add_argument('--shape', default='paw', choices=sorted(SHAPES),
+                    help='悬停态造型(默认 paw 张开猫爪)')
+    ap.add_argument('--active-shape', default='paw_closed', choices=sorted(SHAPES),
+                    help='按下态造型(默认 paw_closed 收拢猫爪)')
+    ap.add_argument('--outline', type=float, default=1.5,
+                    help='描边粗细,单位 CSS px(默认 1.5;1x/2x 图按同视觉厚度折算)')
     ap.add_argument('--color', default='ink', choices=sorted(COLORS),
                     help='描边颜色(默认 ink 近黑)')
     ap.add_argument('--write', action='store_true',

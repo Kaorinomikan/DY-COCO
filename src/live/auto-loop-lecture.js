@@ -3270,7 +3270,7 @@
    * 旧版本写在 localStorage 里,这里保留一次性迁移(localStorage 没有值就不管)。
    */
   function readMinutes() {
-    return chrome.storage.local.get(MINUTES_KEY).then(function (r) {
+    return dycStorageCallP('get', MINUTES_KEY).then(function (r) {
       var v = r ? parseFloat(r[MINUTES_KEY]) : NaN;
       if (isFinite(v) && v >= MIN_MIN && v <= MAX_MIN) return normMin(v);
       // 迁移:老值在 localStorage
@@ -3298,11 +3298,11 @@
   function writeSetting(key, value) {
     // 串行提交，防止连续启停时迟到的「开启」覆盖最后一次「停止」。
     settingsWrite = settingsWrite.then(function () {
-      return chrome.storage.local.set(withKey(key, value));
+      return dycStorageCallP('set', withKey(key, value));
     }).catch(function (e) {
       noteDiag('设置保存失败:' + (e && e.message));
       if (typeof setStatus === 'function') {
-        setStatus('设置未保存', 'alert', { source: SOURCE, count: '重开后可能恢复旧设置', histKey: BOX_FAIL });
+        setStatus('设置未保存', 'alert', { source: SOURCE, count: dycSettingError(e) || '重开后可能恢复旧设置', histKey: BOX_FAIL });
       }
     });
     return settingsWrite;
@@ -3310,7 +3310,7 @@
 
   function readSettings(mark) {
     return Promise.all([readMinutes(),
-      chrome.storage.local.get([GROUP_KEY, MODE_KEY, SECONDS_KEY, ENABLED_KEY, INFINITE_KEY])])
+      dycStorageCallP('get', [GROUP_KEY, MODE_KEY, SECONDS_KEY, ENABLED_KEY, INFINITE_KEY])])
       .then(function (result) {
         if (mark !== setupSeq) return;
         var r = result[1] || {};

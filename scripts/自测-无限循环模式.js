@@ -118,6 +118,7 @@ function setup(store = {}) {
   };
 `;
   assert.ok(source.includes('  boot();'), '源码入口 boot(); 不见了');
+  w.eval(fs.readFileSync(path.resolve(__dirname, '../src/content/flags.js'), 'utf8'));
   w.eval(source.replace('  boot();', hook));
   return {
     dom, w, api: w.__test, store, row, button,

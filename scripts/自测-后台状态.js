@@ -387,6 +387,7 @@ function setupPopupEventContext() {
     foldOpeners: [{ key: 'testFlag', setGate(value) { gate.on = value; gate.calls++; } }],
     reportApplied() { calls.applied++; },
     flash(text) { calls.flashes.push(text); },
+    dycSettingError: (error) => error.message,
     dycWriteFlag() {
       calls.writes++;
       return new Promise((resolve, reject) => { resolveWrite = resolve; rejectWrite = reject; });
