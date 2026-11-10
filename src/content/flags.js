@@ -971,8 +971,8 @@ var DYC_FLAGS_META = [
     key: 'goodsImagePaste',
     group: 'shared',
     label: '图片剪贴板粘贴',
-    desc: '上传框内加「粘贴图片」，一步贴入剪贴板图片。',
-    note: '仅空白框显示；无图或塞不进会提示。',
+    desc: '上传框与商详工具栏加「粘贴图片」，一步贴入。',
+    note: '含规格图小图标；无图或塞不进会提示。',
     default: true,
     pages: ['goodsEdit', 'wxGoodsEdit']
   },

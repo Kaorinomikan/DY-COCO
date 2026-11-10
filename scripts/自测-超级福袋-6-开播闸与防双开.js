@@ -307,5 +307,28 @@ const {
   ok(bp.api.snapshot().auto.code === '',
     '㋅⑯ 真点出去的那一拍，诊断标记为已放行');
 
+  /* ㋅⑯-b 抽屉关着、但上一轮读数还没到期（2026-11-10 真机诊断报告）。
+   * 现场：快照里 runningCards=1 / cardLeft 有值，续发闸却写「看不见现场
+   * （抽屉关着、也没有进行中卡片）」—— 自相矛盾，读报告的人会以为它现在
+   * 真什么都没看见。口径：读数未到期 ⇒ running-hold + 剩余秒数。 */
+  bp = await bootBagPage();
+  bp.api.setAutoForTest(true);
+  bp.api.setTimingForTest({ tick: 999999, lock: 0 });
+  bp.openDrawer();
+  bp.doc.querySelector('#drawer tbody').innerHTML =
+    '<tr id="r1"><td><div>10元店铺红包 ID 8899</div></td>' +
+    '<td>进行中 距结束 03:12</td></tr>';
+  bp.api.tick();                                // 读到进行中 ⇒ 记下到期时刻
+  bp.doc.getElementById('drawer').remove();     // 抽屉关掉：这一拍什么都读不到
+  bp.api.tick();
+  av = bp.api.snapshot().auto;
+  ok(!!av && av.code === 'running-hold',
+    '㋅⑯ 抽屉关着但读数未到期 → 报 running-hold，不是「看不见现场」（实际 ' +
+    (av && av.code) + '）');
+  ok(!!av && /\d\d:\d\d/.test(av.why),
+    '㋅⑯ 那句人话带上剩余时间，与同一份快照的读数对得上：' + (av && av.why));
+  ok(bp.api.snapshot().auto.why.indexOf('间隔') > -1,
+    '㋅⑯ 顺带说明「结束后按间隔 N 秒发」，间隔设 0 也照样写明');
+
   summary();
 })();

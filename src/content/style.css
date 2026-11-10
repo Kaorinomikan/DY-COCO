@@ -438,6 +438,50 @@
   text-align: right;
 }
 
+/* ---- 面料材质「智能填写」· 说明面板(2026-11-10 用户需求) ----
+   点输入框展开,告诉用户能填什么。纯展示:里面没有一个可点元素
+   (用户原话「不需要点一下就预填内容」)。
+   固定 px,不随页面缩放;宽度跟随自建框,上限 420。 */
+.dyc-fabric-guide {
+  display: none;
+  box-sizing: border-box;
+  flex: 1 0 100%;
+  order: 10;
+  width: 100%;
+  max-width: 420px;
+  margin: 8px 0 0;
+  padding: 10px 12px;
+  border: 1px solid #d6e2ff;
+  border-radius: 8px;
+  background: #fff;
+  box-shadow: 0 4px 14px rgba(23, 43, 77, 0.07);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #33383f;
+  text-align: left;
+  cursor: default;
+}
+.dyc-fabric-guide.is-open { display: block; }
+.dyc-fabric-guide-hd { margin-bottom: 6px; color: #8f959e; font-size: 11.5px; }
+.dyc-fabric-guide-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 3px 0;
+  font-size: 12.5px;
+}
+.dyc-fabric-guide-row b {
+  font-family: ui-monospace, Consolas, "Microsoft YaHei", monospace;
+  font-weight: 400;
+  color: #0d3ba8;
+}
+.dyc-fabric-guide-row i { color: #8f959e; font-size: 11px; font-style: normal; white-space: nowrap; }
+.dyc-fabric-guide-sep { height: 1px; margin: 8px 0; background: #f0f1f3; }
+.dyc-fabric-guide-rule { padding: 2px 0; color: #646a73; font-size: 12px; }
+.dyc-fabric-guide-rule em { margin-right: 4px; color: #1f2329; font-style: normal; font-weight: 600; }
+
 /* 小上传框(详情图那类 80px 格子)的紧凑版:24px 按钮会盖住中间的「+」。
    仍是固定 px,不随页面缩放。 */
 .dyc-imgpaste-btn.is-compact {
@@ -448,4 +492,41 @@
   font-size: 11px;
   line-height: 18px;
   border-radius: 5px;
+}
+
+/* ---- 规格图相机图标的微型入口(2026-11-10 用户需求) ----
+   那个图标只有 24~32px,常规按钮(56 起)压根挂不上。
+   胶囊挂在图标**正下方**(top:100%),不压图标、不推开后面的输入框;
+   宽度与图标同宽,高 16px,文字 10px。固定 px。 */
+.dyc-imgpaste-btn.is-micro {
+  left: 50%;
+  right: auto;
+  bottom: auto;
+  top: 100%;
+  transform: translateX(-50%);
+  margin-top: 3px;
+  width: 34px;
+  height: 16px;
+  padding: 0;
+  border-radius: 4px;
+  font-size: 10px;
+  line-height: 14px;
+  z-index: 4;
+}
+
+/* 祖先 overflow 会裁掉下方胶囊时的降级:贴在图标内底部 11px,仍不遮中心 */
+.dyc-imgpaste-btn.is-micro-inside {
+  left: 2px;
+  right: 2px;
+  bottom: 1px;
+  top: auto;
+  transform: none;
+  margin-top: 0;
+  width: auto;
+  height: 11px;
+  padding: 0;
+  border-radius: 3px;
+  font-size: 9px;
+  line-height: 9px;
+  z-index: 4;
 }

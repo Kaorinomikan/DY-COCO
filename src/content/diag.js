@@ -488,7 +488,14 @@
     return safe(function () {
       var api = window.__DYC_AUTO_LOOP__;
       if (!api || typeof api.probe !== 'function') return null;
-      return { '状态': typeof api.snapshot === 'function' ? api.snapshot() : null, '现场': api.probe() };
+      var snap = typeof api.snapshot === 'function' ? api.snapshot() : null;
+      /* 2026-11-10:EMA 只说「单拍 82ms」,分段才说「贵在哪一步」。
+         这一步会真跑一遍各子函数(几百毫秒),只在用户主动点诊断时执行。 */
+      var prof = null;
+      if (typeof api.profile === 'function') {
+        try { prof = api.profile(); } catch (e) { prof = null; }
+      }
+      return { '状态': snap, '现场': api.probe(), '分段': prof };
     }, null);
   }
 
@@ -1121,6 +1128,53 @@
         : '未收到拍点(切到后台后循环会失效)') +
         ' · 注册=' + (bt.reg || '?') + ' · 监听=' + (bt.listen ? '是' : '否') +
         ' · 代码=' + (bt.tag || '旧'));
+      /* 2026-11-10 新增:三个热函数的实测耗时(EMA)。
+       * 用户报「开了循环超级卡」时,这一行是唯一能区分「慢在哪一步」的证据 ——
+       * check = 每拍状态判断(含行扫描),place = 胶囊跟位,paint = 胶囊重绘。 */
+      var pf = st.perf || {};
+      if (pf.n) {
+        /* ★ 2026-11-10 第四轮:EMA 会把长尾抹平(平均值 23.8 可以来自
+         *   「13 次 1ms + 1 次 115ms」),而卡顿体验由那一次决定。
+         *   ⇒ 主读数换成「中位 / 最大 / 超 20ms 次数」,EMA 只留作对照。 */
+        var tail = (pf.slow
+          ? ' · ⚠ 超 ' + '20ms ' + pf.slow + ' 次'
+          : ' · 无超 20ms 尖峰');
+        L.push('- 耗时:check 中位 ' + (pf.checkMed === undefined ? '?' : pf.checkMed) +
+          ' ms · 最大 ' + (pf.checkMax === undefined ? '?' : pf.checkMax) + ' ms' + tail +
+          '(共 ' + (pf.checkN || 0) + ' 次 · EMA ' + pf.check + ')' +
+          ' · place ' + pf.place + ' · paint ' + pf.paint +
+          '(节拍 tick ' + pf.tickMs + ' / pos ' + pf.posMs + ' ms)');
+        if (pf.ring && pf.ring.length) {
+          L.push('- check 最近 ' + pf.ring.length + ' 次(ms):' + pf.ring.join(' / '));
+        }
+        /* 2026-11-10:check 内部还分三段 —— 不能只说「check 82ms」,
+           要说清是「找行贵」还是「找到行之后的判态贵」。 */
+        L.push('- check 分段:找行 ' + (pf.live || 0) + ' ms · 二次遍历 ' + (pf.any || 0) +
+          ' ms · 跟随 ' + (pf.follow || 0) + ' ms · 其余 ' + (pf.other || 0) +
+          ' ms · 观察器唤醒 ' + (pf.wake === undefined ? '?' : pf.wake) + ' 次/分');
+      }
+      /* 现场分段测:每项「冷/热」两次读数,冷态大 = 在扫 DOM,冷热都小 = 不是它 */
+      var seg = al['分段'] || null;
+      if (seg) {
+        var segKeys = ['rows', 'rowsCold', 'findLiveRow', 'findAnyLecturingRow', 'findAnchor', 'findCartPanel',
+          'findMarksIn', 'findMarksAll', 'btnAll11', 'marksInAll', 'isLecturing',
+          'scrollHostOfAny', 'listHeight'];
+        var parts = [];
+        for (var si = 0; si < segKeys.length; si++) {
+          if (seg[segKeys[si]]) parts.push(segKeys[si] + ' ' + seg[segKeys[si]]);
+        }
+        L.push('- 现场分段(冷/热 ms):' + parts.join(' · '));
+        var worst = '', worstV = 0;
+        for (var sk in seg) {
+          if (!Object.prototype.hasOwnProperty.call(seg, sk)) continue;
+          var coldV = parseFloat(String(seg[sk]).split('/')[0]);
+          if (coldV > worstV) { worstV = coldV; worst = sk; }
+        }
+        if (worst && worstV >= 10) {
+          L.push('  > 判读:冷态最贵的是 **' + worst + '**(' + worstV +
+            ' ms)。单拍偏重主要来自它,优化就对准这一个函数,别处改了也没用。');
+        }
+      }
       /* 后台等待走的是拍子还是兜底定时器 —— 这一行直接说明"后台动作靠什么推动"。
          全 0 说明还没在后台跑过一轮,不能当作通了的证据。 */
       if (bt.nap || bt.fb) {

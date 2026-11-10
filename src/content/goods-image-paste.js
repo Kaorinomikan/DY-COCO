@@ -43,6 +43,12 @@
   var BTN_CLASS = 'dyc-imgpaste-btn';
   var TILE_ATTR = 'data-dyc-imgpaste-tile';
   var BTN_ATTR = 'data-dyc-imgpaste-btn';
+  /* 2026-11-10 新增:微型入口(规格图相机图标)与商详图片工具栏按钮 */
+  var MODE_ATTR = 'data-dyc-imgpaste-mode';
+  var TOOLBAR_CLASS = 'dyc-imgpaste-toolbar';
+  var TOOLBAR_ATTR = 'data-dyc-imgpaste-toolbar';
+  var TOOLBAR_ANCHOR = '从主图填入';
+  var TOOLBAR_TIP = '点一下把剪贴板里的图片加到商详图片末尾（一次一张）';
 
   var on = false;
   var observer = null;
@@ -56,7 +62,12 @@
   var shadowCss = '.dyc-imgpaste-btn{all:initial;position:absolute;left:6px;right:6px;bottom:6px;box-sizing:border-box;height:24px;margin:0;padding:0 4px;border:1px solid #d6e2ff;border-radius:6px;background:#eef3ff;color:#1664ff;font:12px/22px "Microsoft YaHei",sans-serif;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;z-index:3}'
     + '.dyc-imgpaste-btn:hover{background:#1664ff;border-color:#1664ff;color:#fff}'
     + '.dyc-imgpaste-btn:disabled{opacity:.6;cursor:default}'
-    + '.dyc-imgpaste-btn.is-compact{height:20px;left:4px;right:4px;bottom:4px;font-size:11px;line-height:18px;border-radius:5px}';
+    + '.dyc-imgpaste-btn.is-compact{height:20px;left:4px;right:4px;bottom:4px;font-size:11px;line-height:18px;border-radius:5px}'
+    /* 微型入口:规格图相机图标只有 24~32px,按钮挂在图标**正下方**(top:100%),
+       不压图标本身。宽度与图标同宽,高度 16px,文字 10px。
+       被祖先 overflow:hidden 裁掉时降级为 is-micro-inside(贴在图标内底部 11px)。 */
+    + '.dyc-imgpaste-btn.is-micro{left:50%;right:auto;bottom:auto;top:100%;transform:translateX(-50%);margin-top:3px;width:34px;height:16px;padding:0;border-radius:4px;font-size:10px;line-height:14px;z-index:4}'
+    + '.dyc-imgpaste-btn.is-micro-inside{left:2px;right:2px;bottom:1px;height:11px;padding:0;border-radius:3px;font-size:9px;line-height:9px;z-index:4}';
 
   // 微信商品表单在 micro-app 内；同源 iframe 也可能承载图片编辑区域。
   function collectRoots() {
@@ -255,39 +266,77 @@
     return false;
   }
 
-  function tileQualifies(tile) {
-    if (!tile || tile.nodeType !== 1) return false;
-    if (!tile.isConnected) return false;
-    if (!visible(tile)) return false;
-    if (inFloatingChrome(tile)) return false;
-    if (hasImage(tile)) return false;
+  /**
+   * 从 file input 向上找「微型入口」——规格图那种 18~55px 的小图标。
+   *
+   * 2026-11-10 用户需求:规格图（颜色分类右侧的相机）也要能贴剪贴板图片。
+   *   那个入口只有 24~32px，被常规档 56 的下限直接判死。
+   * 只向上爬 4 层、碰到大容器就停 —— 避免认到整行然后把按钮挂在行尾。
+   */
+  function microTileFromInput(input) {
+    var node = input.parentElement;
+    var guard = 0;
+    while (node && guard < 4) {
+      guard++;
+      var r = boxOf(node);
+      if (r.width > 55 || r.height > 55) break;      // 已经爬到行/列容器,再往上没有意义
+      if (r.width >= 18 && r.height >= 18) {
+        var ratio = r.width / r.height;
+        if (ratio >= 0.55 && ratio <= 1.8) return node;
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
 
-    /* 结构门槛:框里必须真有一个文件输入框 —— 这是「能把图塞进去」的唯一前提。
-       空态文案不再当门槛(见 hasUploadHint 注释),只在没有 file input 时
-       拿它当「这是上传区」的旁证。 */
+  /**
+   * 分类:这个候选是不是上传入口,是哪一档。
+   *   'normal' 常规空白上传框(56~320 的方块)
+   *   'micro'  微型入口(2026-11-10 新增:规格图那种 24~32px 的相机图标)
+   *   null     不是
+   *
+   * 微型档的硬门槛是**框内必须有图片类型的 file input** —— 没有 input 就贴不进去,
+   * 这条比外形更能说明「这是个上传入口」（页面上的删除/编辑小图标不会带 file input）。
+   */
+  function classifyTile(tile) {
+    if (!tile || tile.nodeType !== 1) return null;
+    if (!tile.isConnected) return null;
+    if (!visible(tile)) return null;
+    if (inFloatingChrome(tile)) return null;
+    if (hasImage(tile)) return null;
+
     var hasInput = false;
     try { hasInput = !!inputForTile(tile); } catch (e) { hasInput = false; }
-    if (!hasInput && !hasUploadHint(tile)) return false;
+    if (!hasInput && !hasUploadHint(tile)) return null;
 
     var r = boxOf(tile);
-    /* 0×0 = 尺寸未知(还没布局),交给 isVisible 的结论,这里不判 */
-    if (r.width > 0 && r.height > 0) {
-      if (r.width < 56 || r.height < 56) return false;
-      if (r.width > 320 || r.height > 320) return false;
+    var known = r.width > 0 && r.height > 0;
+    var normalSize = false;
+    if (known) {
       var ratio = r.width / r.height;
-      if (ratio < 0.5 || ratio > 2.2) return false;
+      normalSize = r.width >= 56 && r.width <= 320 && r.height >= 56 && r.height <= 320
+        && ratio >= 0.5 && ratio <= 2.2;
+      var microSize = hasInput && r.width >= 18 && r.width <= 55 && r.height >= 18 && r.height <= 55
+        && ratio >= 0.55 && ratio <= 1.8;
+      if (!normalSize && !microSize) return null;
     }
 
     var st = null;
     try { st = window.getComputedStyle(tile); } catch (e) { st = null; }
     if (st) {
-      if (st.pointerEvents === 'none') return false;
+      if (st.pointerEvents === 'none') return null;
       var op = parseFloat(st.opacity);
-      if (isFinite(op) && op < 0.6) return false;
-      if (st.visibility === 'hidden') return false;
+      if (isFinite(op) && op < 0.6) return null;
+      if (st.visibility === 'hidden') return null;
     }
-    return true;
+
+    /* 0×0 = 尺寸未知(还没布局 / jsdom):不判尺寸,按常规档放行。
+       ⛔ 这里不能顺手要求「上传图片」文案 —— 资质格只有「＋ / 0/20」,
+       那样会把真机上的资质格一起判死(2026-11-08 踩过)。 */
+    if (!known) return 'normal';
+    return normalSize ? 'normal' : 'micro';
   }
+
 
   /** accept 同时支持图片 MIME 和扩展名列表。 */
   function acceptsImages(input) {
@@ -316,7 +365,11 @@
     try { inputs = queryRoots('input[type="file"]'); } catch (e) { inputs = []; }
     for (var i = 0; i < inputs.length; i++) {
       if (!acceptsImages(inputs[i])) continue;
+      /* 2026-11-10:同一个 input 走两条路认宿主 ——
+         常规(向上找 56~320 的方块)与微型(就近找 18~55 的小图标)。
+         两者都收进来,由 collectQualified 剔除"祖先与后代同时合格"的那一层。 */
       push(tileFromInput(inputs[i]));
+      push(microTileFromInput(inputs[i]));
     }
 
     if (typeof findAllByText === 'function') {
@@ -358,9 +411,10 @@
     return btn;
   }
 
-  function mount(tile) {
+  function mount(tile, mode) {
     if (!tile || tile.getAttribute(TILE_ATTR) === '1') return;
-    if (!tileQualifies(tile)) return;
+    if (!mode) mode = classifyTile(tile);
+    if (!mode) return;
 
     var btn = makeButton(tile);
     ensureStyle(tile);
@@ -374,10 +428,33 @@
 
     tile.appendChild(btn);
     tile.setAttribute(TILE_ATTR, '1');
+    tile.setAttribute(MODE_ATTR, mode);
+
+    if (mode === 'micro') {
+      /* 微型:挂在图标正下方。祖先若裁切(overflow:hidden),下方的胶囊会被剪掉,
+         这时降级成「贴在图标内底部 11px」—— 仍然不遮图标中心。 */
+      btn.classList.add('is-micro');
+      if (clipsOverflow(tile)) btn.classList.add('is-micro-inside');
+      return;
+    }
 
     /* 小框(详情图那类 80px 的格子)用紧凑版:24px 高的按钮会盖住中间的「+」 */
     var r = boxOf(tile);
     if (r.height > 0 && r.height < 90) btn.classList.add('is-compact');
+  }
+
+  /** 向上 3 层看有没有 overflow 裁切 —— 决定微型胶囊能不能挂到图标外面 */
+  function clipsOverflow(el) {
+    var node = el;
+    var guard = 0;
+    while (node && guard < 3) {
+      guard++;
+      var ov = '';
+      try { ov = window.getComputedStyle(node).overflow || ''; } catch (e) { ov = ''; }
+      if (/hidden|auto|scroll/.test(ov)) return true;
+      node = node.parentElement;
+    }
+    return false;
   }
 
   function unmountAll() {
@@ -385,14 +462,36 @@
     for (var i = 0; i < btns.length; i++) {
       var tile = btns[i].parentElement;
       if (btns[i].parentNode) btns[i].parentNode.removeChild(btns[i]);
-      if (tile && tile.getAttribute(TILE_ATTR) === '1') tile.removeAttribute(TILE_ATTR);
+      if (tile && tile.getAttribute(TILE_ATTR) === '1') {
+        tile.removeAttribute(TILE_ATTR);
+        tile.removeAttribute(MODE_ATTR);
+      }
     }
+    unmountToolbars();
   }
 
   /** 每个框独立判断，主图文案不能屏蔽同页只有「＋ / 0/20」的资质格。 */
   function collectQualified() {
     var tiles = collectTiles();
-    return { all: tiles, use: tiles.filter(tileQualifies), tier: '结构' };
+    var use = [];
+    for (var i = 0; i < tiles.length; i++) {
+      var mode = classifyTile(tiles[i]);
+      if (!mode) continue;
+      try { tiles[i].setAttribute(MODE_ATTR, mode); } catch (e) { /* 只读节点 */ }
+      use.push(tiles[i]);
+    }
+
+    /* 同一处只留最内层:行容器与行内小图标同时合格时,只挂小图标。
+       否则规格行上会出现两枚「粘贴图片」(2026-11-10 加微型档后必须去重)。 */
+    if (use.length > 1) {
+      use = use.filter(function (t) {
+        for (var k = 0; k < use.length; k++) {
+          if (use[k] !== t && t.contains(use[k])) return false;
+        }
+        return true;
+      });
+    }
+    return { all: tiles, use: use, tier: '结构' };
   }
 
   /** 幂等重扫:新框挂上、已出图的框摘掉、被平台重渲染掉的补回来 */
@@ -401,7 +500,7 @@
     if (!inScope()) { unmountAll(); refreshRoots(); return; }
     refreshRoots();
     var q = collectQualified();
-    for (var i = 0; i < q.use.length; i++) mount(q.use[i]);
+    for (var i = 0; i < q.use.length; i++) mount(q.use[i], q.use[i].getAttribute(MODE_ATTR));
 
     /* 清理:不在本次名单里的(出图了 / 不再像上传框 / 已离开文档)一律摘掉 */
     var btns = queryRoots('[' + BTN_ATTR + ']');
@@ -410,12 +509,273 @@
       var keep = t && t.isConnected && q.use.indexOf(t) >= 0;
       if (!keep) {
         if (btns[j].parentNode) btns[j].parentNode.removeChild(btns[j]);
-        if (t && t.getAttribute(TILE_ATTR) === '1') t.removeAttribute(TILE_ATTR);
+        if (t && t.getAttribute(TILE_ATTR) === '1') {
+          t.removeAttribute(TILE_ATTR);
+          t.removeAttribute(MODE_ATTR);
+        }
       }
     }
 
+    mountToolbars();
+
     summarize(q);
     return q;
+  }
+
+  /* ==========================================================
+   * 二之二、商详图片工具栏按钮(2026-11-10 用户需求)
+   *
+   * 用户原话:「从主图填入的左边,也做剪贴板上图的按钮」。
+   * 商详图片那一块 8 张全是已出图的格子,按「有图不挂」的规矩那里一个按钮都没有,
+   * 所以这里做**行级按钮**:点一次读剪贴板,把图追加到列表末尾
+   * （与平台自己的「上传图片」一致:不插空位、不改顺序）。
+   *
+   * 定位不写死类名:先找「从主图填入」这颗按钮(全页唯一),
+   * 它的父元素就是按钮组;再向上找最近的、含图片 file input 的祖先当区块根。
+   * 取 input **只在区块根内取** —— 取不到就报错,绝不跨区块去拿主图/白底图的。
+   * ========================================================== */
+
+  var toolbarBusy = false;
+
+  function insideForm(el) {
+    var form = null;
+    try { form = document.getElementById('goodsEditScrollContainer'); } catch (e) { form = null; }
+    if (!form) return true;          // 别的布局(微信)没有这个容器,不做限制
+    return form.contains(el);
+  }
+
+  /** 在 root 下按文本找按钮(优先返回真正的 <button> 祖先) */
+  function findByText(root, text, limit) {
+    var out = [];
+    if (!root || !root.querySelectorAll) return out;
+    var walker = null;
+    try { walker = document.createTreeWalker(root, 4, null, false); } catch (e) { walker = null; }
+    if (!walker) return out;
+    var n;
+    while ((n = walker.nextNode())) {
+      var t = (n.nodeValue || '').trim();
+      if (!t || t.indexOf(text) < 0) continue;
+      var el = n.parentElement;
+      var up = el;
+      var guard = 0;
+      while (up && guard < 3) {
+        if (up.tagName === 'BUTTON') { el = up; break; }
+        up = up.parentElement;
+        guard++;
+      }
+      if (el && out.indexOf(el) < 0) out.push(el);
+      if (out.length >= (limit || 3)) break;
+    }
+    return out;
+  }
+
+  function firstImageInput(scope) {
+    var list;
+    try { list = scope.querySelectorAll('input[type="file"]'); } catch (e) { return null; }
+    for (var i = 0; i < list.length; i++) {
+      if (acceptsImages(list[i])) return list[i];
+    }
+    return null;
+  }
+
+  /** 「商详图片（8/50）」→ {cur:8, max:50};读不到返回 null(不拦) */
+  function readCount(root) {
+    if (!root) return null;
+    var walker = null;
+    try { walker = document.createTreeWalker(root, 4, null, false); } catch (e) { return null; }
+    var n;
+    var guard = 0;
+    while ((n = walker.nextNode()) && guard < 400) {
+      guard++;
+      var t = (n.nodeValue || '').trim();
+      if (!t || t.indexOf('商详图片') < 0) continue;
+      var m = t.match(/[（(]\s*(\d+)\s*\/\s*(\d+)\s*[）)]/);
+      if (m) return { cur: parseInt(m[1], 10), max: parseInt(m[2], 10) };
+    }
+    return null;
+  }
+
+  function findToolbarHost() {
+    var anchors = findByText(document, TOOLBAR_ANCHOR, 3);
+    for (var i = 0; i < anchors.length; i++) {
+      var anchor = anchors[i];
+      if (!visible(anchor)) continue;
+      if (!insideForm(anchor)) continue;          // 弹窗里的同名按钮不算
+      var group = anchor.parentElement;
+      if (!group) continue;
+      var root = null;
+      var node = group;
+      var guard = 0;
+      while (node && guard < 6) {
+        guard++;
+        if (firstImageInput(node)) { root = node; break; }
+        node = node.parentElement;
+      }
+      if (!root) continue;
+      return { anchor: anchor, group: group, root: root };
+    }
+    return null;
+  }
+
+  function makeToolbarButton(host) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = TOOLBAR_CLASS;
+    btn.setAttribute(TOOLBAR_ATTR, '1');
+    btn.textContent = BTN_TEXT;
+    btn.title = TOOLBAR_TIP;
+    btn.setAttribute('aria-label', TOOLBAR_TIP);
+
+    /* 与平台那颗「从主图填入」同高。读不到就按 32 兜底(注入控件用固定 px)。 */
+    var h = Math.round(boxOf(host.anchor).height) || 32;
+    btn.style.cssText = 'box-sizing:border-box;height:' + h + 'px;padding:0 12px;'
+      + 'margin:0 8px 0 0;border:1px solid #d6e2ff;border-radius:6px;'
+      + 'background:#eef3ff;color:#1664ff;'
+      + 'font-family:-apple-system,BlinkMacSystemFont,"Microsoft YaHei",sans-serif;'
+      + 'font-size:13px;line-height:1;cursor:pointer;vertical-align:middle;white-space:nowrap;';
+
+    btn.addEventListener('mouseenter', function () {
+      if (btn.disabled) return;
+      btn.style.background = '#1664ff';
+      btn.style.borderColor = '#1664ff';
+      btn.style.color = '#fff';
+    });
+    btn.addEventListener('mouseleave', function () {
+      if (btn.disabled) return;
+      btn.style.background = '#eef3ff';
+      btn.style.borderColor = '#d6e2ff';
+      btn.style.color = '#1664ff';
+    });
+
+    btn.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      toolbarPaste(host, btn);
+    });
+    ['mousedown', 'mouseup', 'pointerdown', 'pointerup'].forEach(function (t) {
+      btn.addEventListener(t, function (ev) { ev.stopPropagation(); });
+    });
+    return btn;
+  }
+
+  function mountToolbars() {
+    var host = findToolbarHost();
+    if (!host) return;
+    var exist = host.group.querySelector('[' + TOOLBAR_ATTR + ']');
+    if (exist) {
+      /* 平台重渲染可能把锚点挪位:按钮跟着回到锚点左边 */
+      if (exist.nextElementSibling !== host.anchor) {
+        try { host.group.insertBefore(exist, host.anchor); } catch (e) { /* 结构变了不硬来 */ }
+      }
+      return;
+    }
+    var btn = makeToolbarButton(host);
+    try {
+      host.group.insertBefore(btn, host.anchor);
+    } catch (e) {
+      log('商详工具栏:插入失败 ' + ((e && e.message) || e));
+    }
+  }
+
+  function unmountToolbars() {
+    var btns = queryRoots('[' + TOOLBAR_ATTR + ']');
+    for (var i = 0; i < btns.length; i++) {
+      if (btns[i].parentNode) btns[i].parentNode.removeChild(btns[i]);
+    }
+  }
+
+  /** 区块内图片总数涨了 = 平台把图收下了 */
+  function waitImageGrow(root, base, ms) {
+    return new Promise(function (resolve) {
+      var start = Date.now();
+      (function tick() {
+        if (!root || !root.isConnected) { resolve(false); return; }
+        if (root.querySelectorAll('img').length > base) { resolve(true); return; }
+        if (Date.now() - start >= ms) { resolve(false); return; }
+        setTimeout(tick, 150);
+      })();
+    });
+  }
+
+  function toolbarPaste(host, btn) {
+    if (!on || !inScope()) return;
+    if (toolbarBusy) return;
+
+    if (!host || !host.root || !host.root.isConnected) {
+      host = findToolbarHost();
+      if (!host) return;
+    }
+
+    var cnt = readCount(host.root);
+    if (cnt && cnt.max && cnt.cur >= cnt.max) {
+      say('商详图片已满 ' + cnt.max + ' 张', 'alert', '未上传',
+        '先删掉几张再贴,平台本身也不让超过 ' + cnt.max + ' 张。');
+      log('商详工具栏:张数已满 ' + cnt.cur + '/' + cnt.max);
+      return;
+    }
+
+    var input = firstImageInput(host.root);
+    if (!input) {
+      say('找不到商详图片的上传入口', 'alert', '未上传',
+        '这一块里没有可写入的文件输入框。请点平台自己的「上传图片」手动选一张;若每次都不行,把这个提示发给开发者。');
+      log('商详工具栏:区块内没有 file input');
+      return;
+    }
+
+    toolbarBusy = true;
+    setBtn(btn, '读取剪贴板…', true);
+    log('商详工具栏:开始');
+
+    readImage().then(function (img) {
+      if (!img || !img.ok) {
+        var why = (!img || !img.error || img.error === NO_IMAGE) ? '剪贴板里没有图片' : img.error;
+        say('剪贴板里没有图片', 'alert', '未上传',
+          why + '。请先截图或复制一张图片,再点一次「粘贴图片」。');
+        return null;
+      }
+      if (!on || !inScope()) return null;
+
+      var file;
+      try { file = toFile(img); } catch (e) {
+        say('图片读不出来', 'alert', '未上传', (e && e.message) || '图片转码失败');
+        return null;
+      }
+
+      var base = host.root.querySelectorAll('img').length;
+      setBtn(btn, '粘贴中…', true);
+
+      var ok = false;
+      try { ok = putFilesToInput(input, file); } catch (e) { ok = false; }
+      if (!ok) {
+        /* 塞不进 input 的组件(只认拖拽/粘贴的)再试一次事件 */
+        try { putByEvent(host.root, file, 'drop'); ok = true; } catch (e) { ok = false; }
+      }
+      if (!ok) {
+        say('图片没能贴进去', 'alert', '未上传',
+          '这一块的上传入口不接受程序写入。请点平台自己的「上传图片」手动选择文件。');
+        return null;
+      }
+
+      return waitImageGrow(host.root, base, 4000).then(function (got) {
+        if (got) {
+          say('图片', 'success', '已入框');
+          log('商详工具栏:成功');
+        } else {
+          say('图片没能贴进去', 'alert', '未上传',
+            '文件已经交给平台,但 4 秒内没看到图片增加。可以等一下再看;若一直不动,请手动上传并把这个提示发给开发者。');
+          log('商详工具栏:交出去了但没看到图');
+        }
+        return null;
+      });
+    }).catch(function (e) {
+      log('商详工具栏异常:' + ((e && e.message) || e));
+      say('粘贴出错', 'alert', '未上传', (e && e.message) || String(e));
+    }).then(function () {
+      toolbarBusy = false;
+      setBtn(btn, BTN_TEXT, false);
+      /* 贴完按钮还在(行级入口常驻),只重扫一次把新增格子的按钮补齐 */
+      scheduleScan(600);
+    });
   }
 
   function scheduleScan(delay) {
@@ -624,8 +984,8 @@
     } catch (e) { return null; }
   }
 
-  function putByInput(tile, file) {
-    var input = inputForTile(tile);
+  /** 把文件塞进指定的 file input(工具栏按钮与框内按钮共用) */
+  function putFilesToInput(input, file) {
     if (!input) return false;
     var dt = transferOf(file);
     if (!dt) return false;
@@ -643,6 +1003,10 @@
       input.dispatchEvent(legacy);
     }
     return true;
+  }
+
+  function putByInput(tile, file) {
+    return putFilesToInput(inputForTile(tile), file);
   }
 
   function putByEvent(tile, file, type) {

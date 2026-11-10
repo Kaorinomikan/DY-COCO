@@ -282,6 +282,26 @@ async function toVigil(f) {
   check(d.api.state.on === false, '连续 30 分钟没有可讲解的商品 ⇒ 真停');
   check(/30 分钟/.test(d.api.state.status ? d.api.state.status.text : ''), '停下来时说清是 30 分钟没见到按钮');
 
+  /* ---------- ⑦·b 30 分钟兜底的基准必须是「这一次守夜」(2026-11-10 用户报障) ----------
+   * 现象:「已经能跟进到新的讲解的品,但是还是会因为 30 分钟找不到品而停止」。
+   * 根因:lastBtnSeen 只在守夜探针里刷新,正常倒计时阶段从不更新 ——
+   *   于是它记录的是上一次守夜的时刻。只要正常循环连续跑了 30 分钟以上,
+   *   下一次进守夜的第一拍就会拿这个陈旧时刻当场判死,商品明明还在讲也照停。
+   * 复现:把 lastBtnSeen 设成 35 分钟前(等价于「上次守夜在 35 分钟前,之后一直正常」),
+   *   行被回收后进守夜 ⇒ 修复前第一拍就停,修复后应继续守。 */
+  const nb = await ready({ dybAutoLoopSeconds: 15, dybAutoLoopGroup: 'sec', dybAutoLoopEnabled: false }, true);
+  nb.api.state.lastBtnSeen = nb.now() - 2100000;       // 35 分钟前见过按钮,之后一直在正常循环
+  nb.mount(false);                                     // 行被虚拟滚动回收 ⇒ 该进守夜了
+  nb.api.enterVigil('连续找不到那一行');
+  check(nb.api.state.phase === 'vigil', '前置:行不见了 ⇒ 确实在守夜');
+  nb.api.vigilTick(); await flush();
+  check(nb.api.state.on === true,
+    '刚进守夜不拿上一次守夜的旧时刻判死(正常跑满 30 分钟后进守夜必须继续守)');
+  /* 反向保护:进了守夜之后真的连续 30 分钟见不到按钮,仍然要停 —— 不能因此永不停止 */
+  nb.api.state.lastBtnSeen = nb.now() - 1800001;
+  nb.api.vigilTick(); await flush();
+  check(nb.api.state.on === false, '守夜期内真的 30 分钟见不到按钮 ⇒ 仍然真停(兜底没被削弱)');
+
   const e = await ready({ dybAutoLoopSeconds: 15, dybAutoLoopGroup: 'sec', dybAutoLoopEnabled: false }, true);
   await toVigil(e);
   check(e.api.state.phase === 'vigil', '前置:确实在守夜');

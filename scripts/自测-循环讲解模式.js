@@ -49,10 +49,14 @@ function setup(store = {}, extraHook = '') {
   window.__test={state:state,apply:apply,start:start,setOn:setOn,setGroup:setGroup,saveSeconds:saveSeconds,
     checkNow:checkNow,doFastCycle:doFastCycle,doCycle:doCycle,flushWrites:function(){return settingsWrite;},
     advance:function(ms){state.nextAt=Date.now()+ms;},slider:slider,
+    setCheckMin:setCheckMin,
     paintReadout:paintReadout,setDragValue:function(fn){valueAt=fn;}};
 `;
   assert.ok(source.includes('  boot();'));
   w.eval(source.replace('  boot();', hook + extraHook));
+  /* 2026-11-10:源码新增「检查最小间隔 150ms」(多源合并)。本套件在同一时刻连续
+   * 调 checkNow / setOn 验证行为语义,时间不前进 ⇒ 会被合并闸吞掉。这里关掉它。 */
+  w.__test.setCheckMin(0);
   return {dom,w,api:w.__test,store,notes,row,button,timers,
     mount:value=>{mounted=value;},clicks:()=>clicks,now:()=>now,advance:ms=>{now+=ms;},
     ui:selector=>w.document.getElementById('dyc-auto-loop-host').shadowRoot.querySelector(selector)};

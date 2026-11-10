@@ -230,16 +230,20 @@ const { ok, boot, bootBagPage, setText, summary } = B;
   ok(val6.classList.contains('wait'),
      '⑤ 等待态单独一档字色（不会看成「福袋还剩这么多」）');
 
-  /* ⑤-b 到点就不再报（发出去之后该由下一轮的倒计时接管） */
+  /* ⑤-b 到点就不再报（发出去之后该由下一轮的倒计时接管）
+   * 2026-11-10 改：这一档现在会接着报「确认节拍」的倒计时（下一次自动自查），
+   * 或在没有排定时说「待确认」—— 两者都不再是「未开始」。本条要锁的仍是
+   * **不再报间隔数字**，所以排除「未开始」这个唯一错误值。 */
   env6.api.setRoundEndAtForTest(Date.now() - 200000);    // 间隔已过
-  ok(env6.api.gapWait() === 0 && env6.api.badgeText() === '未开始',
-     '⑤ 间隔走完 → 不再报等待（圆钮回「未开始」等下一拍读数）');
+  ok(env6.api.gapWait() === 0 && env6.api.badgeText() !== '未开始',
+     '⑤ 间隔走完 → 不再报间隔倒计时（转确认节拍「等 mm:ss」）：' + env6.api.badgeText());
 
   /* ⑤-c 间隔 = 0 时没有可数的东西（这一层不额外等），不能显示 00:00 */
   env6.api.setGapSec(0);
   env6.api.setRoundEndAtForTest(Date.now() - 30000);
-  ok(env6.api.gapWait() === 0 && env6.api.badgeText() === '未开始',
-     '⑤ 间隔设 0 时不显示等待倒计时（0 = 这一层不加等）');
+  ok(env6.api.gapWait() === 0 && env6.api.badgeText() !== '未开始'
+     && env6.api.badgeText() !== '00:00',
+     '⑤ 间隔设 0 时不出 00:00（转「等 mm:ss」/「待确认」）：' + env6.api.badgeText());
 
   /* ⑤-d 福袋还在跑时不抢：这一行/圆钮该报福袋自己的剩余时间 */
   let env7 = await boot({ watch: true, auto: true, status: '活动进行中 距结束 03:00' });
@@ -249,12 +253,85 @@ const { ok, boot, bootBagPage, setText, summary } = B;
   ok(/^0[23]:\d\d$/.test(env7.api.badgeText()),
      '⑤ 圆钮仍报福袋剩余时间：' + env7.api.badgeText());
 
+  /* ⑤-d-2 本轮在跑时，面板那一行的标签必须是「本轮开奖」（2026-11-10 真机误解）
+   * 旧版一律挂「下轮开始」，可那一行报的是**本轮还剩多久开奖** ——
+   * 用户把间隔设成 0，看到「下轮开始 14:37」就以为「还要等 14 分钟才发下一个」。
+   * 断言只看标签语义，不绑具体秒数（那是环境相关的）。 */
+  env7.api.togglePanel();
+  const sh7 = env7.doc.getElementById('dyb-bag-panel').shadowRoot;
+  const k7 = sh7.querySelector('.rl .k');
+  const v7 = sh7.querySelector('.rl .val');
+  ok(!!k7 && /本轮/.test(k7.textContent) && k7.textContent !== '下轮开始',
+     '⑤ 本轮在跑时标签写「本轮开奖」（不再挂「下轮开始」）：' + (k7 ? k7.textContent : ''));
+  ok(!!v7 && /^0[23]:\d\d$/.test(v7.textContent),
+     '⑤ 同一行报的确实是本轮开奖倒计时：' + (v7 ? v7.textContent : ''));
+
   /* ⑤-e 自动发福袋关着时同样不报（等待只服务于自动续轮） */
   let env8 = await boot({ watch: true, auto: false });
   env8.api.setGapSec(300);
   env8.api.setRoundEndAtForTest(Date.now() - 30000);
   env8.tick();
   ok(env8.api.gapWait() === 0, '⑤ 自动发福袋关着 → 不做间隔倒计时');
+
+  /* ============================================================
+   * ⑤-f 确认节拍也要有倒计时（2026-11-10 用户原话：
+   *     「福袋会自动开始，但是等待中没有指示，所以我不知道他在运作」）
+   * ------------------------------------------------------------
+   * 现场根因：正常运行里最长的等待是「每 N 分钟开一次抽屉读一眼」，
+   * 它以前**没有任何显示出口** —— 圆钮只剩「未开始」，与「功能没启用」
+   * 完全同形。这一节锁三处出口：圆钮 / 气泡 / 面板。
+   * ============================================================ */
+  let envC = await boot({ watch: true, auto: true, noRows: true, noDialog: true });
+  envC.api.setAutoForTest(true);
+  envC.api.setGapSec(0);                     // 这一层不加等，单独看确认节拍
+  envC.api.setLiveEvidenceForTest();         // 闸开（等价「刚读到过进行中」）
+  envC.api.setNextConfirmAtForTest(Date.now() + 120000);
+  const cwC = envC.api.confirmWait();
+  ok(cwC > 115000 && cwC <= 120000,
+     '⑤ 确认节拍剩余 ≈ 2 分钟（实际 ' + Math.round(cwC / 1000) + ' 秒）');
+  const btC = envC.api.badgeText();
+  ok(/^等 0[12]:\d\d$/.test(btC),
+     '⑤ 圆钮报「等 mm:ss」——等待中也看得出它在跑（不再与「未开始」同形）：' + btC);
+  envC.api.paintBadgeForTest();              // 气泡是每秒重绘的，别真等 1 秒
+  const shC = envC.doc.getElementById('dyb-bag-badge').shadowRoot;
+  const tipC = shC && shC.querySelector('.tip');
+  ok(!!tipC && /后自查一次/.test(tipC.textContent),
+     '⑤ 悬停气泡写清「X 后自查一次」：' + (tipC ? tipC.textContent : '（无气泡）'));
+
+  envC.api.togglePanel();
+  const shP = envC.doc.getElementById('dyb-bag-panel').shadowRoot;
+  const kC = shP.querySelector('.rl .k');
+  const vC = shP.querySelector('.rl .val');
+  /* 断言绑结构不绑文案：这一行标签以后怎么改措辞都行，但**不能**再自称
+   * 「下轮开始」——那是在承诺「届时必发」，而确认节拍只是去看一眼。 */
+  ok(!!kC && kC.textContent !== '下轮开始' && /^0[12]:\d\d$/.test(vC.textContent),
+     '⑤ 面板那一行改口径（不再谎称「下轮开始」）且带倒计时：' +
+     (kC ? kC.textContent : '') + ' ' + (vC ? vC.textContent : ''));
+
+  /* ⑤-g 闸关（判据没确认在播）⇒「待确认」，仍不能退回「未开始」。
+   * 这一档是用户真机里最常见的样子（liveRaw.state = unknown / streak 51）。 */
+  let envD = await boot({ watch: true, auto: true, noRows: true, noDialog: true });
+  envD.api.setAutoForTest(true);
+  envD.api.setGapSec(0);
+  envD.api.setGateClosedForTest();           // 判据 unknown 的真机现场：无在播证据
+  envD.api.setNextConfirmAtForTest(0);       // 也没有排定的下次自查
+  envD.api.setLiveStateForTest('unknown');   // liveRaw.state = unknown（报告现场）
+  const btD = envD.api.badgeText();
+  ok(btD === '待确认',
+     '⑤ 判据认不出 + 没有排定自查 → 「待确认」（它还在守，只是没往下走）：' + btD);
+  envD.api.paintBadgeForTest();
+  const shD = envD.doc.getElementById('dyb-bag-badge').shadowRoot;
+  const tipD = shD && shD.querySelector('.tip');
+  ok(!!tipD && /暂不自动动作/.test(tipD.textContent),
+     '⑤ 闸关时气泡说清「暂不自动动作」并给出手动出路：' +
+     (tipD ? tipD.textContent : '（无气泡）'));
+
+  /* ⑤-h 明确未开播（idle）仍写「未开始」—— 2026-11-03 的既定口径：
+   * 圆钮照常露脸，人一眼看出它在待命等开播。两种「没动作」的原因不同，
+   * 不能合并成一句话，所以这两档必须都在。 */
+  envD.api.setLiveStateForTest('idle');
+  ok(envD.api.badgeText() === '未开始',
+     '⑤ 明确未开播仍写「未开始」（与「认不出」区分开）：' + envD.api.badgeText());
 
   /* ============================================================
    * ⑥ 两条滑条一套尺寸 + 端点留余量（2026-11-08 用户原话：
@@ -438,8 +515,11 @@ const { ok, boot, bootBagPage, setText, summary } = B;
     draw: 0,
     name: ''
   }) === false, '⑨ 进行中凭据已过期 → 不恢复');
-  ok(env14.api.badgeText() === '未开始',
-    '⑨ 圆钮回「未开始」，不替过期读数背书');
+  /* 2026-11-10 改：判据 unknown 时段没有「未开始」这一档了 —— 有排定的下次
+   * 自查就报「等 mm:ss」，没有就报「待确认」。本条要锁的是**不替过期凭据背书**，
+   * 所以只接受这两种「没在跑」的表达，绝不放行「进行中」。 */
+  ok(/^(?:待确认|等 \d\d:\d\d)$/.test(env14.api.badgeText()),
+    '⑨ 圆钮不替过期读数背书（待确认 / 等下次自查）：' + env14.api.badgeText());
 
   /* ⑨-d 写盘内容：含写入时刻与间隔锚点（注入 storage 桩，验真实写入路径） */
   let env15 = await boot({ watch: true, auto: true });

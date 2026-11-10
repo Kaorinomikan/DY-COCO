@@ -315,8 +315,11 @@ ok('收尾把用户原来的搜索词写回去', /setInputValue\(srch\.input, sr
  *   对应的时间占位符可以改一下文案」。 */
 
 ok('找款/续讲/拖滑条期间 place() 位置冻结(busy 与 drag 都判在 findAnchor 之前)', (function () {
-  const i = src.indexOf('function place() {');
-  const seg = src.slice(i, i + 1100);
+  /* 2026-11-10:place 外面套了计时壳,函数体改名 placeBody。断言改成按新名定位,
+   * 语义不变:busy/drag 的冻结判断必须排在读锚点(fetch 布局)之前。 */
+  const i = src.indexOf('function placeBody() {');
+  if (i < 0) return false;
+  const seg = src.slice(i, i + 1400);
   const a = seg.indexOf('if (state.busy || drag)');
   const b = seg.indexOf('findAnchor(');
   return a > 0 && b > a;
@@ -340,18 +343,22 @@ ok('自己滚屏触发的 scroll 事件不再把胶囊藏起来', (function () {
   const seg = src.slice(i, i + 500);
   return /if \(state\.busy && !userBusy\(\)\) return;/.test(seg);
 })(), 'noteScroll 里应有 busy 闸门');
-ok('找商品期间时间槽显示「定位中」', /slot\.textContent = state\.busyLabel \|\| '定位中'/.test(src) &&
+ok('找商品期间时间槽显示「定位中」', /slotTxt = state\.busyLabel \|\| '定位中'/.test(src) &&
   /state\.busyLabel = '搜索中'/.test(src));
 ok('busy 文案排在 phase 分支之前(否则永远轮不到)', (function () {
   /* 2026-11-05:原来按「paint 起 1200 字符」切,加了无限模式的分支后窗口不够,
    * 断言变成 indexOf=-1 互比 —— 过时的是切片,不是代码。改成按函数边界截取。
    * 2026-11-05 二次:兜底 2000 字符又被「胶囊 ∞ 常驻」那段挤出窗口,改成找
-   * 下一个同级函数开头(不再依赖字符数),以后往 paint 里加代码不会假红。 */
-  const i = src.indexOf('function paint()');
-  let j = src.indexOf('\n  function ', i + 10);
+   * 下一个同级函数开头(不再依赖字符数),以后往 paint 里加代码不会假红。
+   * 2026-11-10:重绘改成「先算 cls / slotTxt,最后统一写」 —— 函数改名 paintBody,
+   * run 分支的落点由 `key = 'run:'` 变为 `slotTxt = fmtLeft(...)`。切片终点改用
+   * 紧随其后的计时壳 `var paint = timeIt(`,断言语义不变:busy 必须排在 run 之前。 */
+  const i = src.indexOf('function paintBody(');
+  let j = src.indexOf('var paint = timeIt(', i);
   if (j < 0) j = i + 4000;
   const seg = src.slice(i, j);
-  return seg.indexOf("state.busyLabel || '定位中'") < seg.indexOf("key = 'run:'");
+  const busyAt = seg.indexOf("state.busyLabel || '定位中'");
+  return i >= 0 && busyAt >= 0 && busyAt < seg.indexOf('slotTxt = fmtLeft(');
 })());
 ok('动作开始/收尾都重画一次(文案进得去也出得来)',
   (src.match(/state\.busy = true;\s*\n\s*paint\(\);/) || []).length >= 1 &&
@@ -795,7 +802,17 @@ ok('时间槽定宽 + 等宽数字', /\.slot\{width:\d+px;text-align:right;font-
 ok('不计时时槽位直接显示状态词(未开启 / 待讲解 / 重试中)', /'未开启'/.test(src) && /'待讲解'/.test(src) && /'重试中'/.test(src));
 ok('四态各自的槽位配色齐备', /\.cap\.wait \.slot\{color:#c25e00\}/.test(src) && /\.cap\.err \.slot\{color:#c62222\}/.test(src) && /\.cap\.off \.slot\{color:#a9aeb5/.test(src));
 ok('重绘时 off 类必须一起清(否则关过再开还是灰)', /remove\('on', 'wait', 'err', 'off'\)/.test(src));
-ok('四态 class 都会在对应分支加上', /classList\.add\('off'\)/.test(src) && /classList\.add\('on'\)/.test(src) && /classList\.add\('wait'\)/.test(src) && /classList\.add\('err'\)/.test(src));
+ok('四态 class 都会在对应分支加上', (function () {
+  /* 2026-11-10:重绘改成「先算目标态、变了才写」—— 分支里不再直接 classList.add('x'),
+   * 而是给 cls 赋态名,最后统一 add(cls)。断言跟着改,防的仍是同一条回潮:
+   * 四种状态都得有落点,并且必须真的搬到胶囊上。 */
+  const i = src.indexOf('function paintBody(');
+  const j = src.indexOf('var paint = timeIt(', i);
+  const seg = (i >= 0 && j > i) ? src.slice(i, j) : '';
+  return ['off', 'on', 'wait', 'err'].every(function (c) {
+    return new RegExp("cls = '" + c + "'").test(seg);
+  }) && /cap\.classList\.add\(cls\)/.test(seg);
+})());
 ok('按钮内有图标填实(用户反馈「很空」)', /class="ico"/.test(src) && /width:13px;height:13px/.test(src));
 ok('悬停浮层已删除(与展开面板内容重复)', !/\.tip\{position:fixed/.test(src) && src.indexOf('function paintTip') < 0);
 ok('提示区的加粗字跟当前色带上色(红/绿/橙)', /data-zone=\"r\"/.test(src) && /data-zone=\"g\"/.test(src) && /data-zone=\"o\"/.test(src));
@@ -891,7 +908,9 @@ ok('长按胶囊复制诊断也删了(用户要求),不留隐藏手势',
   !/holdFired/.test(src) && !/function copyDiagnosis/.test(src) && !/按住胶囊/.test(src));
 
 /* 2026-10-25 用户报「反应很迟钝」后的提速 */
-ok('DOM 唤醒:列表变动 300ms 内就复查', /new MutationObserver/.test(src) && /}, 300\);/.test(src));
+/* 2026-11-10:去抖 300 → 600ms。单拍 82ms 时,300ms 去抖等于每秒白跑三次完整检查;
+   这条断言刻意绑死具体值 —— 它是性能参数,调它必须被看见(不是随手放宽)。 */
+ok('DOM 唤醒:列表变动后按去抖复查(600ms)', /new MutationObserver/.test(src) && /}, 600\);/.test(src));
 ok('观察器按容器挂载并在停用时摘除', /observerTarget/.test(src) && /observer\.disconnect\(\)/.test(src));
 ok('续讲后状态翻转轮询 200ms 一次', /Math\.ceil\(VERIFY_MS \/ 200\)/.test(src));
 ok('取消后按商品名找回那一行(不再依赖「讲解中」标记)', /function findRowByName/.test(src) && /findRowByName\(key\)/.test(src));
@@ -1141,6 +1160,43 @@ function report() {
   }
   console.log('全绿。真机仍需用 __DYC_AUTO_LOOP__.probe() 核一次「讲解」按钮识别。');
 }
+
+/* ---------------- 性能:热路径不许做全页文本扫描(2026-11-10) ----------------
+ * 用户原话:「我的自动循环开了之后超级卡」。
+ * 真机诊断:整页 textContent 254 万字(直播间历史评论全留在 DOM 里)、数万节点。
+ * 旧实现里 isLecturing 每拍先全页找「讲解中」标记、再用 row.contains 过滤,
+ * 而它挂在秒档 250ms 的拍点上 —— 主线程被按死在扫描上,表现就是「开了就卡」。
+ * 下面五条钉住同一条纪律:**热路径的开销不许随页面规模增长**。 */
+ok('isLecturing 在行内找标记,不再全页扫', (function () {
+  const i = src.indexOf('function isLecturing(');
+  const j = src.indexOf('\n  }', i);
+  const seg = (i >= 0 && j > i) ? src.slice(i, j) : '';
+  return /findMarksIn\(\s*row\s*\)/.test(seg) && seg.indexOf('findAllLecturingMarks(') < 0;
+})());
+ok('全页标记扫描有缓存 + 优先小黄车作用域', (function () {
+  const i = src.indexOf('function findAllLecturingMarks(');
+  const j = src.indexOf('\n  }', i);
+  const seg = (i >= 0 && j > i) ? src.slice(i, j) : '';
+  return /MARKS_TTL/.test(seg) && /marksCache/.test(seg) && /findCartPanel\(\)/.test(seg);
+})());
+ok('DOM 变更判据不拼整棵子树文本(不调 txt)', (function () {
+  const i = src.indexOf('function mutationRelevant(');
+  const j = src.indexOf('\n  }', i);
+  const seg = (i >= 0 && j > i) ? src.slice(i, j) : '';
+  /* 先剥注释再判:注释里正大光明写着「不再 txt(target)」,不剥就会被自己的说明误伤。 */
+  const code = seg.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  return code.length > 0 && !/\btxt\(/.test(code) && /nodeValue/.test(code);
+})());
+ok('胶囊重绘「变了才写」,不再每拍无条件改四态', (function () {
+  const i = src.indexOf('function paintBody(');
+  const j = src.indexOf('var paint = timeIt(', i);
+  const seg = (i >= 0 && j > i) ? src.slice(i, j) : '';
+  return /if \(slot\.textContent !== slotTxt\)/.test(seg) && /needCls/.test(seg);
+})());
+ok('跟位节拍 ≥500ms(250ms 在 254 万字的页面上纯属浪费)', (function () {
+  const m = /var POS_MS = (\d+)/.exec(src);
+  return !!m && Number(m[1]) >= 500;
+})());
 
 /* ---------------- A. 原生搜索通道的降级(异步,放最后) ----------------
  * 搜索框不在(用户收起小黄车 / 平台改版)、没有商品 ID(名字兜底键)时,

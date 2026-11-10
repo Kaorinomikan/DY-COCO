@@ -256,6 +256,7 @@ const STATE_PRELUDE = `
   var unknownStreak = 0;
   var autoStopped = false;
   var unknownSaid = false;
+  var liveSaid = false;
   var retrySaid = false;
   var nextAt = 0;
   var startedAt = 0;
@@ -270,7 +271,10 @@ const STATE_PRELUDE = `
   var lastClickAt = 0;
   var flags = { liveAutoRefresh: true };
   function enabled() { return !!flags && flags.liveAutoRefresh !== false; }
-  function say() {}
+  /* 播报必须可数 —— 「同一场只报一次」只能靠数条数验,不能靠读源码 */
+  var _said = [];
+  function say(m, t, o) { _said.push({ m: m, t: t, o: o || {} }); }
+  function __saidLog() { return _said; }
   /* 点灯用例只关心「档位怎么变」,灯的挂载/绘制交给真机与 O 段,
      这里给三个桩,免得为了点一下把整套 DOM 垫片都拉进来。 */
   function ensureLamp() { return true; }
@@ -284,6 +288,7 @@ const STATE_PRELUDE = `
     _scroller = null; _scrollerAt = 0;
     savedScroll = null; slowRetry = false; mode = 'auto';
     liveState = 'unknown'; everLive = false; unknownStreak = 0; autoStopped = false;
+    liveSaid = false; _said = [];
     nextAt = 0; startedAt = 0; busyUntil = 0; failCount = 0;
     lamp = null; _lastTypeAt = 0; unknownSaid = false; retrySaid = false;
     _popupAt = 0; _popupHit = false; _scrollTgt = null; _scrollAt = 0;
@@ -304,7 +309,8 @@ const STATE_PRELUDE = `
   }
   function __get() {
     return { mode: mode, liveState: liveState, autoStopped: autoStopped,
-             slowRetry: slowRetry, unknownStreak: unknownStreak, failCount: failCount };
+             slowRetry: slowRetry, unknownStreak: unknownStreak, failCount: failCount,
+             liveSaid: liveSaid };
   }
   /** 把灯节点直接摆进闭包（O 段测 placeLamp 用） */
   function __setLamp(el) { lamp = el; }
@@ -325,6 +331,7 @@ const M = buildModule(
   'clickRefresh', 'now', 'inViewport', 'placeLamp', 'settle', 'resetSettle',
   'lampColor', 'lampTitle', 'needLamp',
    'autoEffective', 'offResumesAuto', 'onLampClick',
+   'onLiveChange',
    'markScrollTgt', 'inScrollChain', 'scrollingNow', 'scheduleNext', 'failOnce'],
   STATE_VARS,
   {
@@ -339,7 +346,7 @@ const M = buildModule(
     Date: Date
   },
   STATE_PRELUDE,
-  ['__reset', '__set', '__get', '__setLamp']
+  ['__reset', '__set', '__get', '__setLamp', '__saidLog']
 );
 
 /** 重置每轮用例共享的状态（同一个模块实例，状态是闭包里的） */
@@ -1250,6 +1257,69 @@ oLamp.style.display = '';
 docRegistry.bySel['.auxo-popover'] = [ new FakeEl('DIV', { rect: withRect(600, 400, 0, 0) }) ];
 ok('Q3 大浮层盖住灯 ⇒ 仍然藏(#98 不回归)',
   M.placeLamp(oBtn) === true && oLamp.style.display === 'none');
+
+/* ============================================================
+ * R. 开播播报按「场次」去重（用户 2026-11-10 反馈「时不时提示已开播」）
+ * ============================================================
+ * 现象：消息盒里连着三条「自动刷新 ｜ 已开播，自动停」（14:48 / 14:51 / 14:55）。
+ * 根因：判据会在 live ⇄ unknown 之间小幅抖动（平台整块重渲染、侧栏「未开播」
+ *       字样出现又消失、商品行重排），每抖回 live 就被当成一次「刚开播」再报一遍。
+ * 口径：**一场直播一条消息**；确认回到未开播（真下播 / 换场）才重新武装。
+ * ============================================================ */
+
+const countSaid = (kw) => M.__saidLog().filter((s) => s.m.indexOf(kw) >= 0).length;
+
+resetState();
+M.__set({ mode: 'auto', liveState: 'live', autoStopped: false });
+M.onLiveChange();
+const firstSaid = M.__saidLog()[0] || {};
+eq('R1 首次确认在播 ⇒ 报一次「已开播，自动停」', countSaid('已开播'), 1);
+ok('R1b 报完即记档 + 自动停置位',
+  M.__get().liveSaid === true && M.__get().autoStopped === true);
+ok('R1c 消息带 histKey（整页刷新后同一场也只占一条）',
+  !!firstSaid.o && firstSaid.o.histKey === '自动刷新-开播停刷',
+  JSON.stringify(firstSaid));
+
+/* 抖动：live → unknown → live 连抖两轮，一条都不许多报 */
+for (const st of ['unknown', 'live', 'unknown', 'live']) {
+  M.__set({ liveState: st });
+  M.onLiveChange();
+}
+eq('R2 ★判据 live⇄unknown 抖动不重复报开播', countSaid('已开播'), 1);
+eq('R2b ★直播中抖成 unknown 也不报「状态未知」（本场在播，不算状态异常）',
+  countSaid('状态未知'), 0);
+
+/* 真下播：确认未开播 ⇒ 复位（自动停解除 + 播报重新武装） */
+M.__set({ liveState: 'prelive', autoStopped: true });
+M.onLiveChange();
+eq('R3 确认未开播 ⇒ 播报重新武装', M.__get().liveSaid, false);
+eq('R3b 自动停解除', M.__get().autoStopped, false);
+
+/* 同一页面内的下一场照常报一次 */
+M.__set({ liveState: 'live' });
+M.onLiveChange();
+eq('R4 下一场再报一次', countSaid('已开播'), 2);
+
+/* 强制档不报：用户自己要求「开播也刷」，没有可通知的变化 */
+resetState();
+M.__set({ mode: 'force', liveState: 'live' });
+M.onLiveChange();
+eq('R5 强制档进 live 不播报', countSaid('已开播'), 0);
+ok('R5b 强制档也不置 autoStopped', M.__get().autoStopped === false);
+
+/* 悬停说明不改口（titleOf 会重置闭包，必须放在数条数的用例之后） */
+ok('R5c 抖成 unknown 时悬停说明仍说「已开播」',
+  titleOf({ mode: 'auto', liveState: 'unknown', autoStopped: true }).indexOf('已开播') >= 0 &&
+  titleOf({ mode: 'auto', liveState: 'unknown', autoStopped: true }).indexOf('状态未知') < 0);
+
+/* 反向守卫：压掉的是「直播中改口」，不是把这条提示整体删掉 ——
+ * 从没确认过在播时，判不出照旧提醒一次（否则真异常就没人说了） */
+resetState();
+M.__set({ mode: 'auto', liveState: 'unknown' });
+M.onLiveChange();
+eq('R6 没能确认在播 ⇒ 仍提醒一次「状态未知」', countSaid('状态未知'), 1);
+M.onLiveChange();
+eq('R6b 同一段失效不重复提醒', countSaid('状态未知'), 1);
 
 /* ============================================================
  * 汇总

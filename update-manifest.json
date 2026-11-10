@@ -1,5 +1,5 @@
 {
-  "version": "26.11.09.1",
+  "version": "26.11.10.1",
   "algorithm": "sha256",
   "files": [
     {
@@ -20,12 +20,12 @@
     {
       "path": "manifest.json",
       "size": 12935,
-      "sha256": "37c1dfc7ce2d87fc7251c44ff6775a615dfe12d97dc04ac1a8399ee7fa54542e"
+      "sha256": "7b778e1b45632a6ee5201c119f23ec0989de2bc2403f198b81e8f3f6e798f5dd"
     },
     {
       "path": "src/background/service-worker.js",
       "size": 92490,
-      "sha256": "bc1a6b706b79afd2d1dbb1c41ed9b68d0f50b9986660d7837b0d7b1f416c92d8"
+      "sha256": "3e81df3f26312afb769e619dc385bb5d0c226beb198766ef829ca0fce89846fd"
     },
     {
       "path": "src/content/anchor.js",
@@ -79,8 +79,8 @@
     },
     {
       "path": "src/content/diag.js",
-      "size": 62611,
-      "sha256": "0815d0fc701317e956eb895519464af631ed2715095e0d828fecae1f42869b02"
+      "size": 65840,
+      "sha256": "fdd0c85b4b83882a735085f5fd382bf9fe2d4ca70e042af2aa7c3fa473c1fd53"
     },
     {
       "path": "src/content/dialog.js",
@@ -99,13 +99,13 @@
     },
     {
       "path": "src/content/fabric-smart-fill.js",
-      "size": 72144,
-      "sha256": "4da6bb8f3bb57883ea207bb4bd52ccafbb45c24781b5e06aa0b4ad7058c65a76"
+      "size": 75866,
+      "sha256": "143c6017ef60758ae38a8cbd5eec7aa7ae374a6a76c2d83fc720b853504f9ed9"
     },
     {
       "path": "src/content/flags.js",
-      "size": 89750,
-      "sha256": "83feeb2fee45cbd51872754b5fe5e0124d18528a2ab35265c0615f42865f1ee5"
+      "size": 89753,
+      "sha256": "46e6bebe1fb7ce280855621896da6e2504e9329231dfc922ced07170856d655b"
     },
     {
       "path": "src/content/goods-batch-copy.js",
@@ -119,8 +119,8 @@
     },
     {
       "path": "src/content/goods-image-paste.js",
-      "size": 37154,
-      "sha256": "33063957d52dc92d425d1357079e6527890d6cfecae7a971dcb899b78e8c0ac0"
+      "size": 51540,
+      "sha256": "ad36528d6e1785c395509bfb5af5afd56344bff1aa6c28ff5f31422f92d9341c"
     },
     {
       "path": "src/content/goods-list-flag.js",
@@ -204,8 +204,8 @@
     },
     {
       "path": "src/content/style.css",
-      "size": 13122,
-      "sha256": "4a82b82293aa88b341efaa081dd58de94065c73a059dcea78d3791607cf6f852"
+      "size": 15516,
+      "sha256": "1d059a048c4b243b9707b2c907b8c1ccbd0f2417d44cef0a38dc6ffcbcb3309d"
     },
     {
       "path": "src/content/wx-goods-title.js",
@@ -249,13 +249,13 @@
     },
     {
       "path": "src/live/auto-loop-lecture.js",
-      "size": 271783,
-      "sha256": "dfd635e087a596a6e59febca59b228b1409335100cbb67a302af24785204cf26"
+      "size": 292079,
+      "sha256": "36a32a245fc0f1b0d5b86633f8ee4640caf32e7ccbfff4a1a240216ff3b04780"
     },
     {
       "path": "src/live/auto-refresh.js",
-      "size": 71127,
-      "sha256": "32ae8a19b339bad99fb0d24fb05dda14cea744bd22289f8aa943589527db6329"
+      "size": 73501,
+      "sha256": "b462498eedfb844e4341675e3b0418e5d6013de8bed31217c87bcbfad8c8bf28"
     },
     {
       "path": "src/live/back-to-bottom.js",
@@ -324,8 +324,8 @@
     },
     {
       "path": "src/live/lucky-bag.js",
-      "size": 349232,
-      "sha256": "4798fe5963265192030a83fa155a813c6827233a7ebd1ec7987a266e1f65415c"
+      "size": 357608,
+      "sha256": "48c8fe6b9be7f16ed5e7f77f627772d79f45e293a26f44ee56936783fb68b685"
     },
     {
       "path": "src/live/name-wrap.js",

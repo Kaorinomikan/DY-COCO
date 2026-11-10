@@ -965,12 +965,14 @@
    * 随快照与诊断报告带出去，下一次现场就能一眼看出卡在哪。
    * 记录是最后写入者赢：本拍有更具体的否决就覆盖，成功点出去则清空。 */
   var autoVetoCode = '';
+  var autoVetoWhy = '';          // 带动态数字的否决理由（静态表给不了时用）
   var autoVetoAt = 0;
   var AUTO_VETO_TEXT = {
     'stopped': '已经停机（不在扫描）',
     'hidden': '标签页在后台（后台不动作）',
     'offline': '判据明确「未开播/已下播」',
     'no-scene': '看不见现场（抽屉关着、也没有进行中卡片）',
+    'running-hold': '进行中（读数未到期，等它结束）',
     'auto-off': '「自动发福袋」没开',
     'gate': '开播闸没放行（未确认在播）',
     'no-cand': '没有可点的「待开始」行（抽屉开着但读不到可点链接）',
@@ -990,8 +992,11 @@
     'retry-wait': '按阶梯等待下一次自查'
   };
 
-  function setAutoVeto(code) {
+  function setAutoVeto(code, why) {
     autoVetoCode = code || '';
+    /* 少数否决理由要带现场数字（例如「进行中，剩 14:37」），静态表给不了；
+     * 调用方可传第二参数覆盖，不传就仍读 AUTO_VETO_TEXT 那套固定文案。 */
+    autoVetoWhy = why || '';
     autoVetoAt = Date.now();
   }
 
@@ -2649,21 +2654,39 @@
        * 「未开始」，人以为福袋没了。
        * 现在：这份读数没到期就继续用它走秒，到期自然停。
        * 注意 hold 不在这里续期，也不在「读到现场」时丢掉 —— 见下面汇总处。 */
+      /* 「看不见现场」不等于「没有在跑」（2026-11-10 真机诊断报告）：
+       * 上一轮读数（holdDrawAt / runningFactUntil）还没到期时，这一拍确实
+       * 什么都读不到，但本轮明明在跑。旧版一律报 no-scene
+       * （「看不见现场（抽屉关着、也没有进行中卡片）」），与同一份快照里的
+       * runningCards=1 / cardLeft 自相矛盾 —— 读报告的人会以为它现在真的
+       * 什么都没看见。现在把两种情形分开：读数未到期 ⇒ running-hold 带剩余；
+       * 确实什么都没有 ⇒ no-scene（原样）。 */
+      var heldLeft = 0;
       if (holdDrawAt && Date.now() < holdDrawAt) {
         liveRunning = true;
         drawAt = holdDrawAt;
+        heldLeft = holdDrawAt - Date.now();
       } else if (runningFactUntil && Date.now() < runningFactUntil) {
         /* 复核刚确认「在跑」、平台没给倒计时（2026-11-04）：保留「进行中」，
          * 但不编秒数。凭据到期自然退回「未开始」，等下一次确认接管。 */
         liveRunning = true;
         drawAt = 0;
+        heldLeft = runningFactUntil - Date.now();
       } else {
         setHoldDraw(0);
         runningCount = 0;
         liveRunning = false;   // 看不见任何现场，也不能声称「进行中」
         drawAt = 0;
       }
-      setAutoVeto('no-scene');
+      if (heldLeft > 0) {
+        setAutoVeto('running-hold',
+          (drawAt > 0
+            ? '进行中（抽屉关着，读数是之前记下的，剩 ' + fmtMs(heldLeft) + '）'
+            : '进行中（刚确认在跑，平台没给秒数，凭据剩 ' + fmtMs(heldLeft) + '）')
+          + ' · 结束后按间隔 ' + gapSec + ' 秒发');
+      } else {
+        setAutoVeto('no-scene');
+      }
       return;
     }
     quietSince = 0;
@@ -5032,6 +5055,22 @@
     if (rw > 0) return '等 ' + fmtMs(rw);
     var g2 = gapWaitLeft();
     if (g2 > 0) return '等 ' + fmtMs(g2);
+    /* 正常运行的常态等待：下一次确认节拍（2026-11-10）。
+     * 这一档以前直接掉到「未开始」—— 用户看到的就是「不知道它还在不在跑」。 */
+    var cw = confirmWaitLeft();
+    if (cw > 0) return '等 ' + fmtMs(cw);
+    /* 闸关（判据没确认在播）：tick 不会开抽屉、也不会点「开始活动」。
+     * 此时写「未开始」等于说「功能没启用 / 已经停了」，比不动更误导 ——
+     * 用户 2026-11-10 的诉求正是「等待中要能看出它在运作」。
+     * 用「待确认」如实表达：还在监视，但这一步被开播判据拦着，没往下走。
+     *
+     * ★ 只对 unknown 生效：明确未开播（idle）仍写「未开始」—— 那是 2026-11-03
+     *   的既定口径（「圆钮照常露脸、显示未开始，人一眼看出它在待命等开播」），
+     *   这两种「没动作」的原因不同，不能合并成一句话。
+     * 必须带 !liveGateOpen()：闸开着只是「这一拍刚好到点」（nextConfirmAt 已被
+     * 跨过、tick 还没写新值）时仍算正常等待，不能闪一下「待确认」。 */
+    if (liveState === 'unknown' && flags.watch && flags.auto && autoOn
+        && !liveGateOpen()) return '待确认';
     return '未开始';
   }
 
@@ -5062,6 +5101,40 @@
     if (runningFactUntil && runningFactUntil > now) return 0;   // 刚确认在跑、没秒数
     var left = lastRoundEndAt + gapSec * 1000 - now;
     return left > 0 ? left : 0;
+  }
+
+  /**
+   * 「下一次自动自查」还剩多久（毫秒；0 = 此刻不该显示）。
+   *
+   * 用户 2026-11-10 真机报告：「福袋会自动开始，但是等待中没有指示，所以我不知道
+   * 他在运作」。现场：圆钮「未开始」、面板「下轮开始 未读到」，而 nextConfirmAt
+   * 正在数 3 分钟（CHECK_MIN）的确认节拍。
+   *
+   * 根因不是状态算错，而是**这条等待从来没有任何显示出口**：
+   *   · gapWaitLeft 只覆盖「上一轮结束后等发福袋间隔」（默认 30 秒，很短）；
+   *   · retryLeft 只覆盖「失败后的阶梯自查」；
+   *   · 而正常运行里最长的等待 —— 每 N 分钟开一次抽屉读一眼 —— 一个消费者都没有，
+   *     于是「跑得好好的、只是在等下一次确认」与「功能没启用」在界面上完全同形。
+   *
+   * 口径：只在**闸开**（已确认在播、确实会去动作）时给数。闸关时没有「下一次」，
+   * 编一个倒计时就是谎话 —— 那一档交给 badgeText 的「待确认」表达（见那里）。
+   *
+   * 与 gapWaitLeft 同一套写法：只读同一本账（nextConfirmAt，由 maybeConfirm 写），
+   * 不另立判定 —— 两处口径分开就会出现「倒计时在走、闸门却没打算动作」。
+   */
+  function confirmWaitLeft() {
+    if (!flags.watch || !flags.auto || !autoOn) return 0;
+    if (phase === 'halted' || phase === 'stopped' || phase === 'off') return 0;
+    if (pendingClick || reverify || probe || confirmBusy) return 0;
+    if (!liveGateOpen()) return 0;
+    var now = Date.now();
+    if (drawAt && drawAt > now) return 0;                       // 在跑，有自己的秒数
+    if (runningFactUntil && runningFactUntil > now) return 0;    // 刚确认在跑、没秒数
+    if (gapWaitLeft() > 0) return 0;                             // 间隔等待优先，别抢
+    /* 已到点 / 还没排上（nextConfirmAt = 0）⇒ 不给数：这一拍 tick 就会去做，
+     * 停在 00:00 上比不显示更让人以为卡住。 */
+    if (nextConfirmAt <= now) return 0;
+    return nextConfirmAt - now;
   }
 
   /**
@@ -5153,9 +5226,12 @@
     if (tipEl) {
       var gwTip = gapWaitLeft();
       var rwTip = retryLeft();
+      var cwTip = confirmWaitLeft();
       var tipTxt = rwTip > 0
         ? ('自动发福袋：' + fmtMs(rwTip) + ' 后自查一次')
-        : (gwTip > 0 ? ('自动发福袋：' + fmtMs(gwTip) + ' 后发下一轮') : '超级福袋');
+        : (gwTip > 0 ? ('自动发福袋：' + fmtMs(gwTip) + ' 后发下一轮')
+        : (cwTip > 0 ? ('自动发福袋：' + fmtMs(cwTip) + ' 后自查一次')
+        : (txt === '待确认' ? '还没确认在播，暂不自动动作（点开可手动刷新）' : '超级福袋')));
       if (tipEl.textContent !== tipTxt) tipEl.textContent = tipTxt;
     }
     box.classList.toggle('dim', !flags.watch);
@@ -5174,7 +5250,12 @@
      * 与福袋快结束时的观感保持一致。 */
     if (!urgent) {
       var gwUrg = gapWaitLeft();
-      urgent = gwUrg > 0 && gwUrg <= 10000;
+      if (gwUrg > 0) urgent = gwUrg <= 10000;
+      /* 确认节拍的最后 10 秒同样压深（2026-11-10）：马上要去看下一眼了。 */
+      if (!urgent) {
+        var cwUrg = confirmWaitLeft();
+        urgent = cwUrg > 0 && cwUrg <= 10000;
+      }
     }
     box.classList.toggle('urgent', urgent);
 
@@ -5837,7 +5918,7 @@
       mrow.appendChild(mbtn);
       box.appendChild(mrow);
 
-      pRefs = { val: v1, unit: u1, min: v2, tk: tk, fill: fill, thumb: thumb, sw: asw, fbtn: fbtn, mbtn: mbtn, gate: g8,
+      pRefs = { k: k1, val: v1, unit: u1, min: v2, tk: tk, fill: fill, thumb: thumb, sw: asw, fbtn: fbtn, mbtn: mbtn, gate: g8,
         gwrap: gw, gtk: gtk, gfill: gfill, gthumb: gthumb, gval: gv };
       pRefs.sw.classList.toggle('on', autoOn);
       slide.cur = slide.target = checkMin;
@@ -5858,9 +5939,22 @@
      * 因为对用户来说问的是同一件事：还要多久才发下一轮。
      * 等待态用灰一档的字色区分（.val.wait），不会把「快结束了」看成「快开始了」。 */
     var waitLeft = 0;
+    /* 标签跟着这一行报的东西换（2026-11-10 真机误解）：
+     *   · 本轮在跑 → 「本轮开奖」，报的是**本轮还剩多久开奖**；
+     *   · 等在跑完 / 在等间隔 → 「下轮开始」，报的是下一轮什么时候发；
+     *   · 只是等确认节拍 → 「下次自查」，报的是下一次去看一眼。
+     * 旧版一律挂「下轮开始」，于是「本轮还剩 14:37 开奖」被读成
+     * 「还要等 14 分钟才发下一个」—— 与用户设的「间隔 0 秒」完全对不上。
+     * 三种标签都是 4 个字，宽度不变，不会撑动面板布局。 */
+    var waitLabel = '下轮开始';
     if (drawAt) {
       var left2 = drawAt - Date.now();
-      txt = left2 > 0 ? fmtMs(left2) : '00:00';
+      if (left2 > 0) {
+        txt = fmtMs(left2);
+        waitLabel = '本轮开奖';
+      } else {
+        txt = '00:00';
+      }
     }
     if (!drawAt || txt === '00:00') {
       /* 失败后的阶梯自查优先于「等下一轮」间隔：两者都在等，但自查是当前
@@ -5868,6 +5962,16 @@
       var rwP = retryLeft();
       waitLeft = rwP > 0 ? rwP : gapWaitLeft();
     }
+    /* 都没有数时退到确认节拍（2026-11-10）：正常运行里最长的等待就是
+     * 「每 N 分钟开一次抽屉读一眼」，它以前不给任何数字，这一行只能写
+     * 「未读到」—— 用户看到的就是「不知道怎么看出它还在跑」。
+     * 这一档语义与上面两档不同（不是「要发了」，而是「要去看一眼」），
+     * 所以左侧标签跟着换，不能挂着「下轮开始」误导成「届时必发」。 */
+    if (waitLeft <= 0) {
+      var cwP = confirmWaitLeft();
+      if (cwP > 0) { waitLeft = cwP; waitLabel = '下次自查'; }
+    }
+    if (pRefs.k && pRefs.k.textContent !== waitLabel) pRefs.k.textContent = waitLabel;
     if (waitLeft > 0) txt = fmtMs(waitLeft);
     if (pRefs.val.textContent !== txt) pRefs.val.textContent = txt;
     pRefs.unit.style.display = (drawAt || waitLeft > 0) ? '' : 'none';
@@ -6436,7 +6540,7 @@
         auto: {
           code: autoVetoCode,
           why: autoVetoCode
-            ? (AUTO_VETO_TEXT[autoVetoCode] || autoVetoCode)
+            ? (autoVetoWhy || AUTO_VETO_TEXT[autoVetoCode] || autoVetoCode)
             : (autoVetoAt ? '已放行（这一拍点了「开始活动」）' : '还没有拍子跑过'),
           at: autoVetoAt,
           lookIn: nextConfirmAt ? Math.max(0, nextConfirmAt - Date.now()) : 0,
@@ -6518,6 +6622,28 @@
     /* 间隔倒计时（2026-11-08）：自测要直接断言「还剩多少 / 圆钮写了什么 /
      * 滑条几何是否留出端点余量」，不必去读 Shadow DOM 里的样式。 */
     gapWait: function () { return gapWaitLeft(); },
+    /* 确认节拍倒计时（2026-11-10）：自测要能直接问「还剩多少 / 圆钮写了什么」，
+     * 不必去凑一个时间真的走过去的环境（那是分钟级）。 */
+    confirmWait: function () { return confirmWaitLeft(); },
+    setNextConfirmAtForTest: function (t) { nextConfirmAt = Number(t) || 0; },
+    /* 让开播闸放开（闸只拦自动动作；显示层自测不该被它卡住）。
+     * 走的是 liveGateOpen 自己那条证据链（lastRunningAt 新鲜 = 刚读到过进行中），
+     * 不新增判定口径 —— 否则自测验的就不是线上那条路。 */
+    setLiveEvidenceForTest: function () { lastRunningAt = Date.now(); },
+    /* 反向：把「在播证据」全部清掉，复刻判据 unknown 时的真机现场
+     * （liveRaw.state=unknown、streak 51）—— 那是用户最常见的等待态。 */
+    setGateClosedForTest: function () {
+      lastRunningAt = 0;
+      holdDrawAt = 0;
+      runningFactUntil = 0;
+      liveRunning = false;
+      drawAt = 0;
+    },
+    /* 圆钮/气泡是每秒重绘的（badgeTimer），自测不能真等 1 秒。 */
+    paintBadgeForTest: function () { paintBadge(); },
+    /* 直接摆出判据三态（idle / live / unknown）：显示层要分别验
+     * 「未开始（未开播）/ 倒计时 / 待确认（认不出）」，而 jsdom 里判据恒落一态。 */
+    setLiveStateForTest: function (s) { liveState = s; },
     badgeText: badgeText,
     slideGeom: function () {
       /* halo = 悬停/拖动时那圈 box-shadow 的外扩，端点余量必须连它一起算，

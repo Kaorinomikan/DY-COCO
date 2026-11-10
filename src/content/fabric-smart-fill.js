@@ -39,6 +39,22 @@
   var CLEAR_CLASS = 'dyc-fabric-clear';
   var BOX_ATTR = 'data-dyc-fabric-box';
   var LABEL_TEXT = '面料材质';
+  /* 说明面板(2026-11-10 用户需求):点输入框展开,告诉用户「能填什么」。
+     ⛔ 只给看不给点 —— 用户明确说过「不需要点一下就预填内容」,
+     所以这里是纯 div/span,没有任何点击行为,点了不会往输入框里塞字。
+     示例必须真能解析通过,改这里要同步自测-面料说明面板。 */
+  var GUIDE_CLASS = 'dyc-fabric-guide';
+  var GUIDE_ROWS = [
+    ['棉80 聚酯纤维20', '最简写法'],
+    ['面料：棉80%、聚酯纤维20%', '吊牌整段抄'],
+    ['68%精棉 30%聚酯纤维 2%氨纶', '三项细分'],
+    ['羊毛100', '只有一种']
+  ];
+  var GUIDE_RULES = [
+    ['顺序随意', '先写数字后写名字一样认（80棉 = 棉80）'],
+    ['符号随意', '%、空格、逗号、顿号、斜杠、冒号都不影响'],
+    ['合计要 100', '不满或多出会当场提示，不会往原生框里乱写']
+  ];
 
   var on = false;
   var busy = false;
@@ -49,6 +65,8 @@
   var lastControl = null;
   /* 疑似笔误提示行(挂在自建框里的第二行) */
   var hintNode = null;
+  /* 说明面板的「点外面收起」监听是否已绑(开关来回切时避免重复绑) */
+  var guideDocBound = false;
 
   function log(msg) {
     try { if (typeof debugLog === 'function') debugLog(msg); } catch (e) { /* 日志不影响主流程 */ }
@@ -362,6 +380,61 @@
     }
   }
 
+  /**
+   * 说明面板:四条「能填的样子」+ 三条规则,纯展示。
+   * 用户 2026-11-10 明确「不需要点一下就预填内容」⇒ 这里没有一个可点元素,
+   * 也不绑任何事件;输入框里出现什么,只能由用户自己敲。
+   */
+  function buildGuide() {
+    var wrap = document.createElement('div');
+    wrap.className = GUIDE_CLASS;
+
+    var hd = document.createElement('div');
+    hd.className = 'dyc-fabric-guide-hd';
+    hd.textContent = '下面这些写法都能直接认出来，照着写就行';
+    wrap.appendChild(hd);
+
+    for (var i = 0; i < GUIDE_ROWS.length; i++) {
+      var line = document.createElement('div');
+      line.className = 'dyc-fabric-guide-row';
+      var code = document.createElement('b');
+      code.textContent = GUIDE_ROWS[i][0];
+      var tag = document.createElement('i');
+      tag.textContent = GUIDE_ROWS[i][1];
+      line.appendChild(code);
+      line.appendChild(tag);
+      wrap.appendChild(line);
+    }
+
+    var sep = document.createElement('div');
+    sep.className = 'dyc-fabric-guide-sep';
+    wrap.appendChild(sep);
+
+    for (var j = 0; j < GUIDE_RULES.length; j++) {
+      var rule = document.createElement('div');
+      rule.className = 'dyc-fabric-guide-rule';
+      var key = document.createElement('em');
+      key.textContent = GUIDE_RULES[j][0];
+      rule.appendChild(key);
+      rule.appendChild(document.createTextNode(GUIDE_RULES[j][1]));
+      wrap.appendChild(rule);
+    }
+
+    return wrap;
+  }
+
+  /** 点面板外面就收起(捕获阶段:自建框自己的 mousedown 会被 stopPropagation 掉) */
+  function onGuideDocDown(ev) {
+    var boxes;
+    try { boxes = document.querySelectorAll('[' + BOX_ATTR + ']'); } catch (e) { return; }
+    for (var i = 0; i < boxes.length; i++) {
+      var g = boxes[i].querySelector('.' + GUIDE_CLASS);
+      if (!g) continue;
+      if (boxes[i].contains(ev.target)) continue;
+      g.classList.remove('is-open');
+    }
+  }
+
   /** 清扫误挂进弹窗/浮层的自建框(挂载判据收紧前留下的,或平台 portal 挪了位置) */
   function sweepForeignBoxes() {
     var boxes;
@@ -431,8 +504,19 @@
     box.appendChild(hint);
     hintNode = hint;
 
+    /* 说明面板(2026-11-10):换行到第三行,点输入框展开、打字或点外面收起 */
+    var guide = buildGuide();
+    box.appendChild(guide);
+
     control.parentNode.insertBefore(box, control.nextSibling);
     place(box, control);
+
+    input.addEventListener('focus', function () { guide.classList.add('is-open'); });
+    input.addEventListener('click', function () { guide.classList.add('is-open'); });
+    if (!guideDocBound) {
+      guideDocBound = true;
+      document.addEventListener('mousedown', onGuideDocDown, true);
+    }
 
     btn.addEventListener('click', function (ev) {
       ev.preventDefault();
@@ -442,10 +526,12 @@
     input.addEventListener('keydown', function (ev) {
       if (ev.key === 'Enter') { ev.preventDefault(); run(input, btn); }
     });
-    /* 一改输入就收掉旧提示:否则红字会跟实际输入对不上;顺便同步叉号的显隐 */
+    /* 一改输入就收掉旧提示:否则红字会跟实际输入对不上;顺便同步叉号的显隐。
+       说明面板同时收起 —— 已经动手写了,不需要再教写法。 */
     input.addEventListener('input', function () {
       showHint(null);
       syncClear();
+      guide.classList.remove('is-open');
     });
 
     function syncClear() {
@@ -475,6 +561,10 @@
       if (boxes[i].parentNode) boxes[i].parentNode.removeChild(boxes[i]);
     }
     hintNode = null;
+    if (guideDocBound) {
+      document.removeEventListener('mousedown', onGuideDocDown, true);
+      guideDocBound = false;
+    }
   }
 
   /**

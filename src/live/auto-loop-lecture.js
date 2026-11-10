@@ -134,6 +134,13 @@
    * 到点续讲也要再等一拍。现在改 2 秒一拍(每拍只读几行文本,开销可忽略),
    * 另加 DOM 唤醒(见 ensureObserver),状态一变基本 1 秒内就动。 */
   var TICK_MS = 2000;
+  /* ★ 2026-11-10:检查的最小间隔。
+   *   真机实测单拍 82ms,而「拍点 / DOM 观察器 / 后台拍子 / 看门狗」四个源各自
+   *   都会叫 checkNow —— 同一时刻撞在一起就是同一份工作做两遍,一次白花 80ms。
+   *   状态不可能在 150ms 内变两次(秒档最小间隔 5 秒),所以merge掉是纯收益。
+   *   自测需要「连续两拍」时会用 __DYC_AUTO_LOOP__._setCheckMin(0) 关掉这个闸。 */
+  var CHECK_MIN_MS = 150;
+  var lastCheckAt = 0;
   var GAP_MS = 700;         // 取消 → 续讲 的间隔(够平台收尾,又不让人等)
   /* 点完等状态翻转的观察窗。2026-11-01 从 3000 提到 5000:实机出现过
    * 「点击已发出、按钮 3 秒内没翻」→ 判失败 → 下一轮把商品认成「已停止讲解」。
@@ -180,7 +187,14 @@
    *   6 次 ≈ 30s + 30s + 60s + 60s + 60s 的退避,真正在动作的时间 ≤ 1 分钟,
    *   而不是「一整晚都在滚」。 */
   var FAIL_MAX = 6;
-  var POS_MS = 250;         // 胶囊跟位(只读一个矩形,开销可忽略)
+  /* 胶囊跟位节拍。
+   * ★ 2026-11-10(用户「自动循环开了之后超级卡」):250ms → 500ms。
+   *   旧注释写「只读一个矩形,开销可忽略」—— 在重页面上不成立:这一拍实际要读
+   *   锚点 / 自动刷新圆钮 / 行内「刷新列表」三处矩形(每次都可能先清一遍平台布局),
+   *   再写 style、再判一次遮挡。真机整页 textContent 实测 254 万字,一次强制布局
+   *   就不便宜,4 次/秒是纯浪费 —— 胶囊只在布局变化时需要重贴,滚动期间本来就
+   *   隐身(scrollHideUntil),250→500 肉眼分不出。 */
+  var POS_MS = 500;
   /* 2026-10-26(#114 / #115 / #113 修复)'新增的四个判据 */
   var LOST_STREAK_LIMIT = 20;   // 连续 20 拍(≈40 秒)都找不回来,才允许配合失败次数判终止
   var LOST_GIVEUP_MS = 900000;  // 兜底:15 分钟都找不回来才彻底认输(滚开几分钟不算)
@@ -447,6 +461,95 @@
     return (el.textContent || '').replace(/\s+/g, ' ').trim();
   }
 
+  /**
+   * 只读元素**自身**文本节点(不含子元素子树)—— 短词判定专用。
+   *
+   * ★ 2026-11-10 性能(用户:「自动循环开了之后超级卡」):
+   *   真机中控台整页 textContent 实测 **254 万字**(直播间历史评论全留在 DOM 里),
+   *   而 txt() 走 textContent,会把整棵子树的文本拼成一个字符串,再跑一遍
+   *   `replace(/\s+/g,' ')`。对上层容器做这件事,单次实测 ≈ 105ms(等价规模基准)。
+   *   凡是「文案等于某个短词」的判断(讲解中 / 刷新列表 / 取消讲解…)都不需要整棵子树,
+   *   只看自身文本节点即可,代价 O(自身字符数)。
+   */
+  function ownText(el) {
+    if (!el) return '';
+    var s = '';
+    for (var n = el.firstChild; n; n = n.nextSibling) {
+      if (n.nodeType === 3) s += n.nodeValue;
+    }
+    return s.replace(/\s+/g, ' ').trim();
+  }
+
+  /* ==========================================================
+   * 就地耗时探针(2026-11-10)
+   * ----------------------------------------------------------
+   * 用户报「自动循环开了之后超级卡」,但诊断报告只能证明页面很重
+   * (整页 textContent 254 万字),说不出**哪一步**在吃主线程。
+   * 于是在三个热函数上各挂一层计时,记指数滑动平均:
+   *   check = 每拍的状态判断(含行扫描)  place = 胶囊跟位  paint = 胶囊重绘
+   * 只做 Date.now 差值,不读 DOM、不上报、不发消息;复制诊断时直接看这三个数,
+   * 下次再有人说卡,不用再靠猜。
+   * ========================================================== */
+  var perf = { check: 0, place: 0, paint: 0, n: 0, checkN: 0,
+               live: 0, any: 0, follow: 0, slow: 0, checkMax: 0 };
+
+  /**
+   * check 的最近 24 次**原始**耗时。
+   *
+   * ★ 2026-11-10 第四轮真机教训:EMA 会把长尾抹平 —— 报告里 check 23.8ms,
+   *   而现场分段里 findLiveRow 只有 1ms、btnAll11 只有 2ms。两只对不上,
+   *   唯一解释是「绝大多数调用 1~2ms,少数几次一百多毫秒」,被 4:1 的 EMA 平均掉了。
+   *   而用户感到的卡顿**恰恰由那几次决定**。
+   *   ⇒ 从这一版起同时记:中位数(平时的真实成本)、最大值(尖峰有多高)、
+   *   超 20ms 的次数(尖峰有多频繁)。三者合起来才说明「普遍慢」还是「偶发卡」。
+   */
+  var checkRing = [];
+  var CHECK_SLOW_MS = 20;
+
+  /** EMA(权重 4:1):单次抖动不带跑读数,持续变重能立刻反映 */
+  function ema(key, d) {
+    perf[key] = perf[key] ? (perf[key] * 4 + d) / 5 : d;
+  }
+
+  function timeIt(key, fn) {
+    return function () {
+      var t0 = Date.now();
+      try {
+        return fn.apply(this, arguments);
+      } finally {
+        var d = Date.now() - t0;
+        ema(key, d);
+        perf.n += 1;
+        if (key === 'check') {
+          if (d > perf.checkMax) perf.checkMax = d;
+          if (d >= CHECK_SLOW_MS) perf.slow += 1;
+          checkRing.push(d);
+          if (checkRing.length > 24) checkRing.shift();
+        }
+      }
+    };
+  }
+
+  /** 探针读数(诊断报告用;一位小数,单位毫秒) */
+  function perfOut() {
+    function r(v) { return Math.round(v * 10) / 10; }
+    /* other = 单拍总耗时 - 已埋点的三段。用来判断「贵在找行」还是「贵在后面判态/动作」。 */
+    var other = perf.check - perf.live - perf.any - perf.follow;
+    var sorted = checkRing.slice().sort(function (a, b) { return a - b; });
+    var med = sorted.length ? sorted[Math.floor(sorted.length / 2)] : 0;
+    return {
+      check: r(perf.check), place: r(perf.place), paint: r(perf.paint), n: perf.n,
+      checkN: perf.checkN,
+      /* 长尾三件套:中位(平时) / 最大(尖峰) / 超阈次数(频率) */
+      checkMed: med, checkMax: perf.checkMax, slow: perf.slow,
+      ring: checkRing.slice(-10),
+      live: r(perf.live), any: r(perf.any), follow: r(perf.follow),
+      other: r(other > 0 ? other : 0),
+      wake: wakeRate(),
+      posMs: POS_MS, tickMs: TICK_MS
+    };
+  }
+
   /** 能不能程序化点到它 —— **不含视口条件**(AGENTS 第 53 条) */
   function clickable(el) {
     if (!el || !el.isConnected) return false;
@@ -456,6 +559,25 @@
     if (el.getAttribute && el.getAttribute('aria-disabled') === 'true') return false;
     var st = window.getComputedStyle(el);
     if (st && st.pointerEvents === 'none') return false;
+    return true;
+  }
+
+  /**
+   * 轻量可点判定 —— **不读 computedStyle、不读矩形**。
+   *
+   * ★ 2026-11-10(真机 check 分段:findLiveRow 16.9ms、二次遍历 46.8ms):
+   *   findLectureBtn / findBtnByKind 对**每个文本命中的元素**都调 clickable(),
+   *   而平台按钮是多层嵌套(button > span > 文本),每一层容器的 textContent 都等于
+   *   「讲解」⇒ 每一层都命中 ⇒ 每一层都走一次 getComputedStyle。
+   *   getComputedStyle 会触发样式解析(必要时整棵树重算),在 254 万字的页面上
+   *   单次就是零点几毫秒,11 行 × 每行数层 × 两个函数(找行 + 二次遍历)= 十几到几十毫秒。
+   *   尺寸闸(18~200 × 12~60)调用方已经先过了一遍,所以这里只查"到底能不能点"的
+   *   廉价信号;pointer-events 那一条留到**最终命中**时用 clickable() 复核一次。
+   */
+  function clickableFast(el) {
+    if (!el || !el.isConnected) return false;
+    if (el.disabled) return false;
+    if (el.getAttribute && el.getAttribute('aria-disabled') === 'true') return false;
     return true;
   }
 
@@ -947,12 +1069,15 @@
       if (kind === 'mark') return;             // 状态标记不是按钮
       var r = el.getBoundingClientRect();
       if (r.width < 18 || r.height < 12 || r.width > 200 || r.height > 60) return;
-      if (!clickable(el)) return;
+      if (!clickableFast(el)) return;
       /* stop 信息量最大(既证明在讲、又能取消),同层命中时优先返回它;
        * 其余情况仍取最内层那一枚(外层容器文本相同但尺寸更大,已被尺寸闸挡掉)。 */
       var inner = !hit || el.contains(hit) === false;
       if (!hit || (kind === 'stop' && hitKind !== 'stop') || inner) { hit = el; hitKind = kind; }
     });
+    /* ★ 2026-11-10:pointer-events 只在最终命中上复核一次(理由见 clickableFast)。
+       不可点就当没找到 —— 上层会顺延重试,总比每拍几十次样式重算划算。 */
+    if (hit && !clickable(hit)) return null;
     return hit;
   }
 
@@ -968,9 +1093,10 @@
       if (!kind || kinds.indexOf(kind) < 0) continue;
       var r = el.getBoundingClientRect();
       if (r.width < 18 || r.height < 12 || r.width > 200 || r.height > 60) continue;
-      if (!clickable(el)) continue;
+      if (!clickableFast(el)) continue;
       if (!hit || el.contains(hit) === false) hit = el;   // 取最内层
     }
+    if (hit && !clickable(hit)) return null;   // 同 findLectureBtn:最终命中再复核一次
     return hit;
   }
   function findPopBtn(row) { return findBtnByKind(row, ['pop']); }
@@ -998,31 +1124,45 @@
     return best;
   }
 
-  /** 当前讲解中的行 */
+  /**
+   * 当前讲解中的行。
+   *
+   * ★ 2026-11-10(真机 check 分段):这个函数每拍都被调,单次 16.9ms。
+   *   旧写法对**每一行**先 `txt(row)`(整行子树拼接 + 空白压缩)再 `findLectureBtn`。
+   *   现在改成一趟走完、每行只做两件必要的事:
+   *     ① 找按钮并判态(stop / pop 就说明在讲);
+   *     ② 没有按钮态时,在**行内**找「讲解中」标记(ownText,不拼子树)。
+   *   顺带把它expand成「任意正在讲的行」——原来 findAnyLecturingRow 要再遍历一遍
+   *   同样这 11 行,现在一趟就够(checkNow 因此少一趟 46.8ms 的尖峰)。
+   */
   function findLiveRow() {
     var list = rows();
+    var markRow = null;
     for (var i = 0; i < list.length; i++) {
       var row = list[i];
-      var t = txt(row);
-      if (t.indexOf('讲解中') >= 0) return row;
       var b = findLectureBtn(row);
       /* 2026-11-06:stop(取消讲解)与 pop(弹出讲解卡)都说明"这一行正在讲"。 */
       var k = b ? kindOf(b) : '';
       if (k === 'stop' || k === 'pop') return row;
+      /* 没有按钮态 ⇒ 再看行内标记。只认第一枚,后面的行不必再扫。
+         这里用行内扫描替代原来的整行 txt(row).indexOf('讲解中'):
+         判定范围一样(行内任意深度),但不做整行子树拼接。 */
+      if (!markRow && findMarksIn(row).length) markRow = row;
     }
+    if (markRow) return markRow;
     /* 兜底(2026-10-25 用户报「一直在同一个 tab 也识别不到」后加强):
      * 行集合(rows)本身可能抓不全 —— 那就反过来:先找页面上所有「讲解中」标记,
      * 再沿祖先链找**装着讲解按钮**的那一层,那一层才是真正的商品行。 */
     var marks = findAllLecturingMarks();
     for (var m = 0; m < marks.length; m++) {
       var el = marks[m];
-      for (var k = 0; k < 12 && el && el !== document.body; k++) {
+      for (var k2 = 0; k2 < 12 && el && el !== document.body; k2++) {
         if (findLectureBtn(el)) return el;       // 最准:祖先里有「讲解/取消讲解」按钮
         el = el.parentElement;
       }
       // 没按钮时退回「文本足够长、但还不至于是一整片列表」的那一层
       el = marks[m];
-      for (var k2 = 0; k2 < 12 && el && el !== document.body; k2++) {
+      for (var k3 = 0; k3 < 12 && el && el !== document.body; k3++) {
         var len = txt(el).length;
         if (len > 12 && len < 400) return el;
         el = el.parentElement;
@@ -1044,13 +1184,16 @@
       var k = kindOf(b);
       if (k === 'stop' || k === 'pop') return true;
     }
-    var marks = findAllLecturingMarks();
+    /* ★ 2026-11-06 收紧:只在**本行内**认标记。
+     *   旧的「标记包含此行」写法会把包住整页的容器当成"这一行有标记",
+     *   DOM 里别处残留一枚「讲解中」就能把这行判成在讲 —— 反馈 #131 的
+     *   「商品明明没换、按钮也不是取消讲解,却一直判在讲」就是它放过去的。
+     * ★ 2026-11-10 性能:既然只认本行内,扫的范围就该是**本行**,而不是整页。
+     *   旧写法先全页找齐所有标记、再用 row.contains 过滤,结论一样但代价是全页
+     *   (真机 254 万字 / 数万节点,秒档每 250ms 一次)。现在与页面规模解耦。 */
+    var marks = findMarksIn(row);
     for (var i = 0; i < marks.length; i++) {
       var mk = marks[i];
-      /* ★ 2026-11-06 收紧:只在**本行内**认标记。
-       *   旧的「标记包含此行」写法会把包住整页的容器当成"这一行有标记",
-       *   DOM 里别处残留一枚「讲解中」就能把这行判成在讲 —— 反馈 #131 的
-       *   「商品明明没换、按钮也不是取消讲解,却一直判在讲」就是它放过去的。 */
       if (row === mk || row.contains(mk)) return true;
     }
     return false;
@@ -1121,13 +1264,66 @@
     return null;
   }
 
-  /** 页面上**所有**「讲解中」小标记(不止第一枚) */
+  /**
+   * 页面上**所有**「讲解中」小标记(不止第一枚)。
+   *
+   * ★ 2026-11-10 性能(用户:「自动循环开了之后超级卡」)。这个函数挂在热路径上:
+   *   秒档每 250ms 一次 checkNow → followCurrentLecture → isLecturing → 这里。
+   *   旧实现无作用域、无缓存、逐元素 txt():真机整页 254 万字、数万节点,
+   *   `$$('span, div, i, em, b')` 命中上万个元素后逐个拼整棵子树文本,
+   *   单次可达数百毫秒 —— 主线程被按死在扫描上,表现就是「开了就卡」。
+   *
+   *   三条降载,**判定语义不变**(仍然是「可见的短词标记」):
+   *     ① 作用域优先小黄车面板;面板内找不到才退回整页(标记本来就长在商品行里);
+   *     ② 250ms 缓存:同一拍内被 isLecturing / findLiveRow 反复调用只扫一次;
+   *     ③ 短词只读自身文本节点(ownText),命中候选才读矩形。
+   *
+   * ★ 2026-11-10 二次(补「规模敏感性闸」时实测发现,闸第一次跑就红了):
+   *   ①③ 只解决了「扫一遍多贵」,**没解决「多久扫一遍整页」** —— 面板里没标记时
+   *   仍会全页兜底,而「面板里没标记」恰恰是常态(真机报告 marks 恒为 0)。
+   *   于是退化成「每 250ms 在 254 万字的整页上扫一遍」,这条兜底就是卡顿的另一半。
+   *   现在两道闸一起收:
+   *     · 只有「连商品行都没认出来」才允许整页兜底 —— 那才是行集合抓不全、
+   *       需要从标记反推商品的场景;正常有行时永远不整页扫;
+   *     · 整页兜底另有 30 秒冷却,独立于 250ms 那条短缓存。
+   */
+  var MARKS_TTL = 250;
+  var MARKS_FULL_TTL = 30000;
+  var marksCache = { t: 0, list: [], fullT: 0 };
+
   function findAllLecturingMarks() {
+    var now = Date.now();
+    if (now - marksCache.t < MARKS_TTL) return marksCache.list;
+    var scope = null;
+    try { scope = findCartPanel(); } catch (e) { scope = null; }
+    var out = findMarksIn(scope);
+    if (!out.length && scope && now - marksCache.fullT >= MARKS_FULL_TTL) {
+      var hasRows = false;
+      try { hasRows = rows().length > 0; } catch (e2) { hasRows = false; }
+      if (!hasRows) {
+        marksCache.fullT = now;
+        out = findMarksIn(null);
+      }
+    }
+    marksCache.t = now;
+    marksCache.list = out;
+    return out;
+  }
+
+  /** 在 scope 内找「讲解中」标记(scope 为空 = 整页) */
+  function findMarksIn(scope) {
     var out = [];
-    var cands = $$('span, div, i, em, b');
+    var cands = $$('span, div, i, em, b', scope || document);
     for (var i = 0; i < cands.length; i++) {
       var el = cands[i];
-      var t = txt(el);
+      var t = ownText(el);
+      /* 自身没有文本节点 ⇒ 文字在子节点里。只有「子元素很少」才值得拼一次全文,
+         多子元素的容器一定不是那个短词标记,直接跳过(这就是省下来的那部分)。 */
+      if (!t) {
+        var kids = el.children ? el.children.length : 0;
+        if (!kids || kids > 2) continue;
+        t = txt(el);
+      }
       if (t !== '讲解中' && t !== '正在讲解' && t !== '讲解中…') continue;
       var r = el.getBoundingClientRect();
       if (r.width < 8 || r.width > 160 || r.height < 8 || r.height > 40) continue;
@@ -2337,8 +2533,13 @@
     restartInterval();
   }
 
+  var trackP = -1;
   function refreshTrack() {
     var p = sliderPct(slider.cur);
+    /* 2026-11-10 性能:这条被 paint() 每拍调到,静止时 p 一直不变 ——
+     * 旧写法每拍无条件写两次 style,等于持续制造样式重算。 */
+    if (p === trackP) return;
+    trackP = p;
     /* 填充条:起点固定在轨道最左端,终点落在滑钮圆心 —— 滑钮圆心在 .in
      * 里是 (100% - 2R) * p,换算回轨道坐标系再加一个 R。 */
     if (refs.fill) {
@@ -2407,9 +2608,13 @@
       return;
     }
     var t = state.status || '';
-    refs.r3.hidden = !t;
-    refs.r3.textContent = t.text || '';
-    refs.r3.className = 'r3' + (t.kind ? ' ' + t.kind : '');
+    /* 2026-11-10 性能:变了才写。这条每拍都被 paint() 调到,而状态行几秒才变一次。 */
+    var r3Hidden = !t;
+    if (refs.r3.hidden !== r3Hidden) refs.r3.hidden = r3Hidden;
+    var r3Txt = t.text || '';
+    if (refs.r3.textContent !== r3Txt) refs.r3.textContent = r3Txt;
+    var r3Cls = 'r3' + (t.kind ? ' ' + t.kind : '');
+    if (refs.r3.className !== r3Cls) refs.r3.className = r3Cls;
   }
 
   function setStatusLine(text, kind) {
@@ -2743,7 +2948,7 @@
    *   ⑤ 纵向跟着**基准的中心**走,不再用锚点行中心 —— 这样胶囊与圆钮恒在同一水平线上。
    *   ⑥ 算出来的坐标先过 settle() 吸附:2px 以内不动、10px 以上立刻跟、中间档两拍确认。
    */
-  function place() {
+  function placeBody() {
     if (!host) return;
     /* ★ 2026-10-27 用户报「全局轮询的时候,这个按钮不要一直跳动」。
      *   找款 / 续讲那几秒里,滚屏、跳搜索、跳回来**全是我们自己干的** ——
@@ -2885,8 +3090,13 @@
     if (!isFinite(top)) top = 0;
     if (!observerTarget || !observerTarget.isConnected) ensureObserver();
 
-    if (!panelOpen) { panel.classList.remove('open'); return; }
-    panel.classList.add('open');
+    /* 2026-11-10 性能:面板关着的时候每一拍都在 remove 一个不存在的 class —— 判等后跳过。
+     * 面板只在真打开时才往下走,所以下面那次 offsetHeight(强制布局)不是常态开销。 */
+    if (!panelOpen) {
+      if (panel.classList.contains('open')) panel.classList.remove('open');
+      return;
+    }
+    if (!panel.classList.contains('open')) panel.classList.add('open');
     /* 面板贴着按钮展开:默认按钮正下方 6px、左边缘对齐;
      * 右边放不下就右对齐;下面放不下就翻到按钮上方。 */
     var pw = 344, ph = panel.offsetHeight || 200;
@@ -2902,6 +3112,9 @@
     panel.style.setProperty('--ox', alignRight ? '100%' : '0');
     panel.style.setProperty('--oy', above ? '100%' : '0');
   }
+  /* 2026-11-10:套一层计时壳(见顶部「就地耗时探针」)。函数体保持原名 placeBody,
+     这样内部递归/自引用不受包装影响。 */
+  var place = timeIt('place', placeBody);
 
   /** 小黄车面板容器:锚点的最近一个「宽度明显更大」的祖先 */
   function findCartPanel() {
@@ -2959,17 +3172,19 @@
   /* nap10:上一次「盲模式提前补讲探测」的时刻(限频,别每一拍都读 DOM) */
   var lastPeekAt = 0;
 
-  function paint() {
+  function paintBody() {
     if (!refs.cap) return;
     var cap = refs.cap;
     var slot = refs.capSlot;
     /* 无限模式开关的选中态跟着 state 走 —— 每次 paint 都刷,避免 reload 后
      * 胶囊(用户看得到的那个)与面板里的按钮不同步。 */
     if (refs.inf) {
-      refs.inf.setAttribute('aria-pressed', state.infinite ? 'true' : 'false');
-      refs.inf.title = state.infinite
+      var ap = state.infinite ? 'true' : 'false';
+      if (refs.inf.getAttribute('aria-pressed') !== ap) refs.inf.setAttribute('aria-pressed', ap);
+      var infTitle = state.infinite
         ? '无限循环已开:接不上只守候,不停表'
         : '无限循环:接不上只守候,不停表';
+      if (refs.inf.title !== infTitle) refs.inf.title = infTitle;
     }
     /* 2026-11-05 四次改:∞ 只做状态显示 —— 开=蓝、关=灰,不可点。
      * (上一版曾让它 hidden=!infinite,用户以为功能没做;再上一版做成可点按钮,
@@ -2977,55 +3192,73 @@
     if (refs.capInf) {
       refs.capInf.classList.toggle('on', !!state.infinite);
     }
-    /* ★ 必须把 off 一起清掉:off 的样式写在 on/wait/err 之后,
-     *   残留一个 off 会把已开启时的绿/黄盖回灰色 —— 这正解释了
-     *   「只见过绿色以外的颜色都没见过/关掉再开还是灰」这类现象。 */
-    cap.classList.remove('on', 'wait', 'err', 'off');
     if (refs.power) {
-      refs.power.textContent = state.on ? '停止' : '开启';
-      refs.power.title = state.on ? '停止后仅手动开启才恢复' : '按当前模式和间隔开启循环';
-      refs.power.setAttribute('aria-label', state.on ? '停止循环讲解' : '开启循环讲解');
+      var pTxt = state.on ? '停止' : '开启';
+      if (refs.power.textContent !== pTxt) refs.power.textContent = pTxt;
+      var pTitle = state.on ? '停止后仅手动开启才恢复' : '按当前模式和间隔开启循环';
+      if (refs.power.title !== pTitle) refs.power.title = pTitle;
+      var pLabel = state.on ? '停止循环讲解' : '开启循环讲解';
+      if (refs.power.getAttribute('aria-label') !== pLabel) {
+        refs.power.setAttribute('aria-label', pLabel);
+      }
     }
 
-    var key;
+    /* ★ 2026-11-10 性能:先算目标态,再「变了才写」。
+     *   旧写法每拍无条件 remove 四个状态类再 add、无条件写 textContent / title /
+     *   aria —— 500ms 一拍,在真机那种重页面上等于持续制造样式重算,
+     *   而这几个值绝大多数拍根本没变(状态类几秒才换一次)。 */
+    var cls, slotTxt;
     if (!state.on) {
-      cap.classList.add('off');
-      key = 'off';
-      slot.textContent = state.stopped ? '已停止' : '未开启';
+      cls = 'off';
+      slotTxt = state.stopped ? '已停止' : '未开启';
     } else if (state.busy) {
       /* ★ 2026-10-27 用户:「在找这个商品的时候,对应的时间占位符可以改一下文案」。
        *   动作期间倒计时是停的(不会累加),继续显示 mm:ss 会让人以为还在计时。
        * ★ 2026-10-30:细分成两个三字词 —— 常规轮「定位中」,慢轮调平台搜索时「搜索中」。
        *   两个词都是 3 字(≈33px),塞得进 46px 槽宽,胶囊宽度一个字都不变。 */
-      cap.classList.add('on');
-      key = 'busy:' + (state.busyLabel || '定位中');
-      slot.textContent = state.busyLabel || '定位中';
+      cls = 'on';
+      slotTxt = state.busyLabel || '定位中';
     } else if (state.phase === 'vigil') {
       /* 守夜:循环还活着,但页面上什么都不做。胶囊用 wait(黄)而不是 err(红)——
        * 红是"出错了",黄是"还在等",语义不同。槽里固定 3 个字,宽度与「待讲解」一致。
        * 待命(手动取消后)另用「待命中」:它不会补讲,用户得知道这一档不会自己动手。 */
-      cap.classList.add('wait');
-      key = state.passive ? 'passive' : 'vigil';
-      slot.textContent = state.passive ? '待命中' : '守候中';
+      cls = 'wait';
+      slotTxt = state.passive ? '待命中' : '守候中';
     } else if (state.phase === 'run') {
-      cap.classList.add('on');
-      var left = fmtLeft(state.nextAt - Date.now());
-      key = 'run:' + Math.floor((state.nextAt - Date.now()) / 1000);
-      slot.textContent = left;
+      cls = 'on';
+      slotTxt = fmtLeft(state.nextAt - Date.now());
     } else if (state.phase === 'error') {
-      cap.classList.add('err');
-      key = 'err';
-      slot.textContent = '重试中';
+      cls = 'err';
+      slotTxt = '重试中';
     } else {
-      cap.classList.add('wait');
-      key = 'wait';
-      slot.textContent = '待讲解';
+      cls = 'wait';
+      slotTxt = '待讲解';
     }
-    if (key !== lastCap) {
-      lastCap = key;
+
+    /* 状态类:目标类已在位、且没有别的状态类残留 ⇒ 什么都不写。
+     * ★ 必须把 off 一起清掉:off 的样式写在 on/wait/err 之后,
+     *   残留一个 off 会把已开启时的绿/黄盖回灰色 —— 这正解释了
+     *   「只见过绿色以外的颜色都没见过/关掉再开还是灰」这类现象。 */
+    var CAP_CLS = ['on', 'wait', 'err', 'off'];
+    var needCls = !cap.classList.contains(cls);
+    if (!needCls) {
+      for (var ci = 0; ci < CAP_CLS.length; ci++) {
+        if (CAP_CLS[ci] !== cls && cap.classList.contains(CAP_CLS[ci])) { needCls = true; break; }
+      }
     }
+    if (needCls) {
+      cap.classList.remove('on', 'wait', 'err', 'off');
+      cap.classList.add(cls);
+    }
+    if (slot.textContent !== slotTxt) slot.textContent = slotTxt;
+
+    /* 签名只用来看「这一拍画面到底变没变」,别每次都重建字符串比较 */
+    var key = cls + '|' + slotTxt;
+    if (key !== lastCap) lastCap = key;
     paintReadout();
   }
+  /* 2026-11-10:计时壳(见顶部「就地耗时探针」) */
+  var paint = timeIt('paint', paintBody);
 
   /* ==========================================================
    * 六、循环本体
@@ -3859,13 +4092,37 @@
     }
   }
 
-  function checkNow() {
+  function checkNowBody() {
     // 周期拍点已检查最新 DOM 时，吸收尚未执行的观察器唤醒。
     if (wakeTimer) { clearTimeout(wakeTimer); wakeTimer = 0; }
     if (!state.on) return;
     if (state.busy) return;
+    /* 多源合并:150ms 内的重复调用直接放弃(见 CHECK_MIN_MS 注释)。 */
+    var tGate = Date.now();
+    if (tGate - lastCheckAt < CHECK_MIN_MS) return;
+    lastCheckAt = tGate;
+    perf.checkN += 1;
+    /* ★ 2026-11-10 分段读数(check 从 82ms → 21.5ms 之后):
+     *     找行 16.9ms + 二次遍历 46.8ms(仅「找不到行」时) —— 两段都是「逐行逐元素扫」。
+     *   本版把 getComputedStyle 移出候选循环、并把二次遍历合并进 findLiveRow。
+     *   埋点保留,用于确认没有回退:
+     *     live   = findLiveRow(行集合 + 逐行判态 + 行内标记)
+     *     any    = 已合并,恒 0 —— 变回非 0 就说明又出现两趟遍历
+     *     follow = followCurrentLecture(isLecturing + 身份比对)
+     *   只做 Date.now 差值,不读 DOM。 */
+    var tA = Date.now();
     var row = findLiveRow();
-    if (followCurrentLecture(row || findAnyLecturingRow())) return;
+    ema('live', Date.now() - tA);
+    /* ★ 2026-11-10:不再跑第二趟遍历。
+     *   findLiveRow 已扩展成「任意正在讲的行」(见其注释),原来那句
+     *   `row || findAnyLecturingRow()` 会在「找不到行」时把同样 11 行再扫一遍,
+     *   真机实测那一段单次 46.8ms —— 而「找不到行」恰恰是常态。
+     *   perf.any 字段保留但恒为 0:报告里看到「二次遍历 0 ms」即代表已合并。 */
+    var any = row;
+    var tC = Date.now();
+    var followed = followCurrentLecture(any);
+    ema('follow', Date.now() - tC);
+    if (followed) return;
     /* 无限模式的守夜态单独走一条路:只读探针,不进两档的常规链路。
      * 放在分档之前 —— 守夜是**跨档**的状态,与秒/分无关。 */
     if (state.phase === 'vigil') { vigilTick(); return; }
@@ -4030,6 +4287,8 @@
     if (now < (state.retryAt || 0)) return;
     doCycle(false);
   }
+  /* 2026-11-10:计时壳(见顶部「就地耗时探针」) */
+  var checkNow = timeIt('check', checkNowBody);
 
   /** 认下当前商品并重开计时(2026-10-26:首次识别与确认换品共用一条路径) */
   function commitProduct(key, name, now) {
@@ -4473,7 +4732,15 @@
     state.relocAt = now + VIGIL_FIRST_RELOC_MS;
     state.resumeAt = 0;
     state.resumeFails = 0;
-    if (!state.lastBtnSeen) state.lastBtnSeen = now;
+    /* ★ 2026-11-10 修(用户报「能跟进新的讲解的品,但仍会因 30 分钟找不到品而停止」):
+     *   30 分钟兜底的基准必须是**这一次进守夜**,不能沿用上一次守夜的时刻。
+     *   旧写法 `if (!lastBtnSeen) lastBtnSeen = now` 只在「从没见过按钮」时兜底,
+     *   而正常倒计时阶段从不刷新 lastBtnSeen(它只在守夜探针里更新)——
+     *   于是「正常循环连续跑满 30 分钟 → 某次行被虚拟滚动回收 → 进守夜」,
+     *   第一拍就拿上一次守夜的陈旧时刻判死,商品明明还在讲解也被停掉,
+     *   报的却是「连续 30 分钟没有可讲解的商品」,看起来像真的等满了 30 分钟。
+     *   现在每次进守夜重新起算窗口,语义 = 守夜期内连续 30 分钟见不到任何讲解按钮才真停。 */
+    state.lastBtnSeen = now;
     /* 待命的 30 分钟兜底从「最后一次真动作」起算;从没动过就从现在起算,
      * 否则刚开启就取消会当场被判超时。 */
     if (!state.lastShotAt) state.lastShotAt = now;
@@ -4989,6 +5256,23 @@
   var observer = null;
   var observerTarget = null;
   var wakeTimer = 0;
+  /* 唤醒频率统计(最近 60 秒)。2026-11-10:真机 check 单拍 82ms 时,必须知道
+     「是拍点叫的,还是 DOM 观察器叫的」—— 后者一旦高频,等于把 82ms 乘以次数。 */
+  var wakeAt = [];
+  function noteWake() {
+    wakeAt.push(Date.now());
+    if (wakeAt.length > 300) wakeAt.shift();
+  }
+  function wakeRate() {
+    var t = Date.now(), c = 0;
+    for (var i = wakeAt.length - 1; i >= 0; i--) {
+      if (t - wakeAt[i] <= 60000) c++; else break;
+    }
+    return c;
+  }
+  /* DOM 变更里「与循环有关」的文本信号。提到模块级:这个正则每批变更都要跑一次,
+     没必要在回调里现场构造。 */
+  var MUT_RE = /讲解|商品|待上架|已下架|已售罄/;
 
   function insideOwnUI(node) {
     var el = node && (node.nodeType === 1 ? node : node.parentElement);
@@ -5001,10 +5285,16 @@
 
   function mutationRelevant(record) {
     if (!record || insideOwnUI(record.target)) return false;
-    var lectureRE = /讲解|商品|待上架|已下架|已售罄/;
+    /* ★ 2026-11-10 性能:两条分支都只读**文本节点自身**的 nodeValue,不再 txt(target)。
+     *   characterData 的 target 本来就是文本节点,`txt()` 对它还算便宜;但 childList 里
+     *   的 target 往往是整个容器 —— 在 254 万字的页面上做一次 textContent 要 100ms 级,
+     *   而这个回调每批 DOM 变更都会跑。真机「开了就卡」里有它一份。
+     *   判据语义不变:仍然只看「这段文本里有没有讲解/商品类信号」。 */
+    var lectureRE = MUT_RE;
     if (record.type === 'characterData') {
       // characterData 的旧值也要看：标签由「讲解中」清空时新值本身没有信号。
-      return lectureRE.test(String(record.oldValue || '') + txt(record.target));
+      return lectureRE.test(String(record.oldValue || '') +
+        String(record.target && record.target.nodeValue || ''));
     }
     if (record.type !== 'childList') return false;
     var nodes = Array.prototype.slice.call(record.addedNodes || []).concat(
@@ -5013,7 +5303,7 @@
       if (insideOwnUI(nodes[i])) continue;
       // 保留所有平台结构变动，避免漏掉虚拟行回收、节点替换及尚未填字的占位。
       if (nodes[i].nodeType === 1) return true;
-      if (lectureRE.test(txt(nodes[i]))) return true;
+      if (lectureRE.test(String(nodes[i].nodeValue || ''))) return true;
     }
     return false;
   }
@@ -5027,10 +5317,16 @@
     observer = new MutationObserver(function (records) {
       if (!state.on || state.busy || wakeTimer) return;
       if (!records.some(mutationRelevant)) return;
+      /* ★ 2026-11-10 去抖 300 → 600ms。
+       *   真机 check 单拍 82ms,而平台刷新小黄车时 observer 会连续触发 ——
+       *   300ms 去抖上限是每秒 3.3 次唤醒,等于每秒拿 270ms 主线程去跑同一个检查。
+       *   这条唤醒的用途只是「尽早发现讲解状态变了」,秒档 15 秒 / 分钟档分钟级,
+       *   晚 0.3 秒完全无感;真正的兜底还有 2 秒那个 tick 拍点。 */
       wakeTimer = setTimeout(function () {
         wakeTimer = 0;
+        noteWake();
         checkNow();
-      }, 300);
+      }, 600);
     });
     try {
       observer.observe(target, { childList: true, subtree: true, characterData: true, characterDataOldValue: true });
@@ -5199,6 +5495,9 @@
       passive: state.passive || 0,
       infinite: !!state.infinite,
       secondsLeft: state.nextAt ? Math.round((state.nextAt - Date.now()) / 1000) : null,
+      /* 2026-11-10:三个热函数各自的 EMA 耗时(ms)+ 当前节拍 ——
+       * 「卡不卡、卡在哪一步」以后从报告里直接读,不用再猜。 */
+      perf: perfOut(),
       /* 2026-11-01 统一闹钟活体证据:n = 收过几拍,last = 距今几秒(null = 一拍没收到)。
          切到后台之后循环还动不动,看这两个数就知道,不用再靠猜。 */
       beat: {
@@ -5217,6 +5516,73 @@
   }
 
   /* 自测出口:只暴露纯函数与状态快照,不暴露 DOM 引用 */
+  /**
+   * 现场分段测(诊断报告专用 · 2026-11-10)
+   * ----------------------------------------------------------
+   * EMA 只说明「check 单拍 82ms」,不说明贵在哪一段。用户已经为这条卡顿跑了
+   * 两轮报告,不能再靠猜。这里把每个候选函数各跑两次:
+   *   第一次记「冷」(缓存多半已过期的真实拍点状态),
+   *   第二次记「热」(紧接着再跑一遍,反映纯计算成本)。
+   * 结果形如 { findLiveRow: '38.2/1.1', ... } —— 冷态大说明是它在扫 DOM,
+   * 冷热都小说明瓶颈不在这里,继续往下看。
+   * 只读 DOM、不改状态;整趟约几百毫秒,只在用户主动点「诊断」时跑。
+   */
+  function profile() {
+    var raw = {};
+    function hit(name, fn) {
+      var t0 = Date.now();
+      var v = null;
+      try { v = fn(); } catch (e) { v = null; }
+      var cold = Date.now() - t0;
+      t0 = Date.now();
+      try { fn(); } catch (e2) { /* 忽略 */ }
+      raw[name] = [cold, Date.now() - t0];
+      return v;
+    }
+    function r(v) { return Math.round(v * 10) / 10; }
+
+    hit('rows', function () { return rows().length; });
+    /* ★ 冷缓存的行收集(2026-11-10 第四轮):rows() 吃 locate 的 250ms 缓存,
+     *   诊断那一刻几乎总是命中 ⇒ 上面的 rows 永远是 0ms,看不出真实代价。
+     *   这里显式传 fresh=true 绕过缓存,量「真的去扫一遍 DOM」要多久 ——
+     *   平台每次刷新小黄车之后的第一拍,付的就是这个钱。 */
+    hit('rowsCold', function () {
+      if (typeof getAllProductRows === 'function') return getAllProductRows(true).length;
+      return rows().length;
+    });
+    var row = hit('findLiveRow', function () { return findLiveRow(); });
+    hit('findAnyLecturingRow', function () { return findAnyLecturingRow(); });
+    hit('findAnchor', function () { return findAnchor(); });
+    var pane = hit('findCartPanel', function () { return findCartPanel(); });
+    hit('findMarksIn', function () { return pane ? findMarksIn(pane).length : -1; });
+    hit('findMarksAll', function () { return findAllLecturingMarks().length; });
+    /* 逐行扫按钮 / 逐行扫标记 —— 这两项才是「找行 16.9ms」的内部构成,
+       优化前后对比就看它们(选按钮这一项应该从十几毫秒掉到个位数)。 */
+    hit('btnAll11', function () {
+      var ls = rows();
+      for (var i = 0; i < ls.length; i++) findLectureBtn(ls[i]);
+      return ls.length;
+    });
+    hit('marksInAll', function () {
+      var ls = rows();
+      for (var j = 0; j < ls.length; j++) findMarksIn(ls[j]);
+      return ls.length;
+    });
+    if (row) hit('isLecturing', function () { return isLecturing(row); });
+    hit('scrollHostOfAny', function () { return !!scrollHostOfAny(); });
+    hit('listHeight', function () { return listHeight(); });
+
+    var out = {};
+    for (var k in raw) {
+      if (!Object.prototype.hasOwnProperty.call(raw, k)) continue;
+      out[k] = r(raw[k][0]) + '/' + r(raw[k][1]);
+    }
+    return out;
+  }
+
+  /** 自测出口:关掉最小检查间隔(连续两拍的断言需要) */
+  function setCheckMin(v) { CHECK_MIN_MS = v; }
+
   window.__DYC_AUTO_LOOP__ = {
     pure: {
       pctOf: pctOf, snapMinute: snapMinute, fmtMinute: fmtMinute,
@@ -5323,6 +5689,8 @@
       };
     },
     _start: start, _stop: stop,
+    /* 2026-11-10:诊断「现场分段测」与自测用的限频开关 */
+    profile: profile, _setCheckMin: setCheckMin,
     _locateBySearch: locateBySearch,      // 自测:降级行为(没有搜索框 / 没有 ID)必须安静返回
     /* 自测出口:按态取按钮。需要真实 DOM(尺寸 + 可点判定),jsdom 里用 getBoundingClientRect 补丁验。
      * 2026-11-06 起这是"点错按钮"的唯一防线(#131:把弹卡当取消/开始),必须能被单测直接打到。 */

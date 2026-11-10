@@ -312,7 +312,11 @@ const {
     '㉔ 弹窗不在时绝不点「超级福袋」入口（用户明确不要插件开窗）');
   ok(env.api.snapshot().phase !== 'stopped', '㉔ 弹窗不在也不停机（等你开）');
   ok(env.messages.length === beforeMsg, '㉔ 弹窗不在时一声不响（不刷提示）');
-  ok(env.api.snapshot().badge === '未开始', '㉔ 悬浮窗提示「未开始」');
+  /* 2026-11-10 改：判据未确认在播时，圆钮不再说「未开始」——有排定的下次自查
+   * 就报「等 mm:ss」，没有就报「待确认」。本条要锁的是**没有福袋在跑时
+   * 不声称进行中、不报福袋倒计时**，所以只接受这两种表达。 */
+  ok(/^(?:待确认|等 \d\d:\d\d)$/.test(env.api.snapshot().badge),
+    '㉔ 悬浮窗说「待确认」或等下次自查（不是「未开始」/「进行中」）：' + env.api.snapshot().badge);
 
   /* ---------- ㉕ 悬浮窗本体 ---------- */
   env = await boot({ watch: true, auto: true });

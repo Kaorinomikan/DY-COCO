@@ -119,8 +119,10 @@
  * 【出声分寸(AGENTS.md 第 21 条 三段式,来源词 = 自动刷新)】
  *   · 每 10 秒那次成功刷新 **完全不出声** —— 灯在呼吸就是心跳;
  *   · 点灯换档 → 按目标档说:`强制刷新` / `已暂停` / `恢复自动`(操作回声,不进盒子);
- *   · 开播后自动停 → `已开播，自动停`(**进盒子**);
- *   · 连续 3 次判不出 → `状态未知，已暂停`(只提醒,不进盒子);
+ *   · 开播后自动停 → `已开播，自动停`(**进盒子**,同一场只报一次 ——
+ *     判据抖回 live 不重复报,确认回到未开播才重新武装,见 onLiveChange);
+ *   · 连续 3 次判不出 → `状态未知，已暂停`(只提醒,不进盒子;**本场已确认在播时
+ *     不报也不改口** —— 抖动不算状态异常,灯仍按「已开播，自动停刷」说);
  *   · 转入慢速重试 → `暂时找不到刷新按钮，正在重试`(**进盒子**);
  *   · 慢速重试期间按钮回来了 → `已恢复，自动刷新中`(**进盒子**)。
  *
@@ -217,6 +219,9 @@
 
   /** 「状态未知」只说一次(每次开启功能重置) —— 否则观众每次判定都弹一遍 */
   var unknownSaid = false;
+
+  /** 「已开播，自动停」同一场直播只报一次(确认回到未开播才重新武装，见 onLiveChange) */
+  var liveSaid = false;
 
   /** 慢速重试的提示也只说一次(恢复时再报一次「已恢复」) */
   var retrySaid = false;
@@ -1162,10 +1167,15 @@
     if (liveState === 'prelive' && !autoStopped) {
       return '未开播，自动刷新中（每 10 秒）· 点一下切换到「强制」';
     }
-    if (autoStopped && liveState === 'live') {
+    /* 本场确认过在播 ⇒ 判据一时抖成 unknown 也照「已开播」说
+     * （用户 2026-11-10 要求压掉这种改口）。两个事实支持这么写：
+     *   ① 刷不刷的行为完全一样 —— unknown 与 live 在 auto 档都停；
+     *   ② 改口只会让悬停说明在「已开播」⇄「状态未知」之间来回跳。
+     * 真下播时平台会给 prelive，那时 autoStopped 被清掉、文案自会回到「未开播」。 */
+    if (autoStopped) {
       return '已开播，自动停刷 · 点一下改为强制刷新';
     }
-    // 剩下的就是判不出
+    // 剩下的就是「一上来就判不出」(从没确认过在播)
     return '状态未知，已暂停 · 点一下改为强制刷新';
   }
 
@@ -1372,6 +1382,54 @@
     return true;
   }
 
+  /**
+   * 直播状态跃迁的副作用（主循环确认 prev !== liveState 时才调用）。
+   *
+   * ★ 为什么单独抽出来：跃迁播报是**按场次**的语义，而判据会在 live ⇄ unknown
+   *   之间小幅抖动 —— 平台整块重渲染、侧栏「未开播」字样出现又消失、商品行
+   *   重排，都能让「连续 3 次判不出」凑够一次 unknown，下一拍又判回 live。
+   *   若按跃迁直接播报，每抖回来一次就报一遍「已开播，自动停」
+   *   （用户 2026-11-10 反馈：7 分钟内连报 3 次）。
+   *
+   * 口径 = **一场直播一条消息**：第一次确认在播时报，之后抖动回来不再报；
+   *   只有共享判据**再次确认未开播**（真下播 / 换场）才重新武装。
+   *   消息盒条目另带 histKey 兜底：整页刷新让内存标志归零时，同一场也只在
+   *   原条目上刷新时间，不另起一条。
+   */
+  function onLiveChange() {
+    if (liveState === 'live' && mode === 'auto') {
+      // 开播 ⇒ 自动停(事后会想知道 ⇒ 进盒子)
+      autoStopped = true;
+      if (!liveSaid) {
+        liveSaid = true;
+        say('已开播，自动停', 'success', {
+          source: '自动刷新',
+          histKey: '自动刷新-开播停刷'
+        });
+      }
+    } else if (liveState === 'prelive') {
+      unknownSaid = false;          // 状态恢复 ⇒ 允许下一次失效时再提醒一次
+      liveSaid = false;             // 回到未开播 = 上一场结束,下一场照常报一次
+      if (autoStopped) {
+        autoStopped = false;
+        scheduleNext();
+      }
+    } else if (liveState === 'unknown') {
+      /* 本场已确认在播 ⇒ 这一次 unknown 只是「页面这段时间没给出信号」
+       * （重渲染 / 商品行被虚拟滚动移出 / 侧栏字样轮到别处），不是状态异常：
+       * 不报「状态未知」，否则用户直播中会莫名收到「已暂停」
+       * （2026-11-10 用户要求压掉这种改口）。 */
+      if (autoStopped) return;
+      /* 从没确认过在播才提醒一次。两个条件同时满足才说:
+       *   ① 已过启动延迟(3 秒)—— 页面刚加载时横幅还没渲染,此时判不出属正常;
+       *   ② 这一段失效还没说过 —— 免得每 2 秒重复一遍。 */
+      if (!unknownSaid && now() > startedAt + START_DELAY) {
+        unknownSaid = true;
+        say('状态未知，已暂停', 'info', { source: '自动刷新', keepHistory: false });
+      }
+    }
+  }
+
   function tick() {
     if (!enabled()) return;
 
@@ -1381,29 +1439,7 @@
     if (tickCount % JUDGE_EVERY === 1) {
       var prev = liveState;
       judgeLive();
-
-      if (prev !== liveState) {
-        if (liveState === 'live' && mode === 'auto') {
-          // 开播 ⇒ 自动停(事后会想知道 ⇒ 进盒子)
-          autoStopped = true;
-          say('已开播，自动停', 'success', { source: '自动刷新' });
-        } else if (liveState === 'prelive') {
-          unknownSaid = false;          // 状态恢复 ⇒ 允许下一次失效时再提醒一次
-          if (autoStopped) {
-            autoStopped = false;
-            scheduleNext();
-          }
-        } else if (liveState === 'unknown') {
-          /* 判不出(共享模块已连续 MISS_LIMIT 次判不出)⇒ 停,只提醒不进盒子。
-           * 两个条件同时满足才说:
-           *   ① 已过启动延迟(3 秒)—— 页面刚加载时横幅还没渲染,此时判不出属正常;
-           *   ② 这一段失效还没说过 —— 免得每 2 秒重复一遍。 */
-          if (!unknownSaid && now() > startedAt + START_DELAY) {
-            unknownSaid = true;
-            say('状态未知，已暂停', 'info', { source: '自动刷新', keepHistory: false });
-          }
-        }
-      }
+      if (prev !== liveState) onLiveChange();
     }
 
     // ② 灯该不该在;在就跟着原生按钮走(平台重排 / 滚动 / 缩放都会动它)
@@ -1457,6 +1493,7 @@
     autoStopped = false;
     failCount = 0;
     unknownSaid = false;
+    liveSaid = false;
 
     /* 首判(页面进来 1.2 秒时):只判状态 + 尝试挂灯,**不报「状态未知」**。
      *

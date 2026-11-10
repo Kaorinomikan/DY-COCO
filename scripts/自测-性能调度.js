@@ -69,7 +69,7 @@ function fixture(file, exports) {
 }
 
 const loop = fixture('src/live/auto-loop-lecture.js', `
-  ensureObserver, checkNow, place, onUserCancelClick, fireClick, snapshot,
+  ensureObserver, checkNow, place, onUserCancelClick, fireClick, snapshot, setCheckMin,
   configure: function (f) {
     state.on = true; state.phase = 'wait';
     findCartPanel = function () { return f.doc.body; };
@@ -97,6 +97,9 @@ const loop = fixture('src/live/auto-loop-lecture.js', `
   abortMark: function () { return abortSeq; }
 `);
 loop.api.configure(loop);
+/* 2026-11-10:源码新增「检查最小间隔 150ms」(多源合并)。本用例刻意在同一时刻
+ * 连调两次 checkNow 验证两拍语义,所以把这道闸关掉 —— 否则第二次被吞,断言全错。 */
+loop.api.setCheckMin(0);
 loop.api.ensureObserver();
 const unrelated = loop.el('库存 10');
 for (let i = 0; i < 40; i++) {
@@ -124,15 +127,17 @@ if (!baseline) assert.equal(extensionScans, 0, '扩展子树不唤醒');
 
 loop.counts.rowScan = 0;
 loop.ctx.observer.fn([{ type: 'characterData', target: { nodeType: 3, textContent: '', parentElement: unrelated }, oldValue: '讲解中' }]);
-loop.advance(300);
+/* 2026-11-10:去抖 300 → 600ms(单拍 82ms 时,300ms 去抖等于每秒白跑三次完整检查)。
+ * 断言跟着时序走,语义不变:标记清空必须仍能唤醒一次。 */
+loop.advance(700);
 assert.equal(loop.counts.rowScan, 1, '讲解标记清空仍即时唤醒');
 loop.ctx.observer.fn([{ type: 'childList', target: loop.doc.body, addedNodes: [loop.el('')], removedNodes: [] }]);
-loop.advance(300);
+loop.advance(700);
 assert.equal(loop.counts.rowScan, 2, '尚未填字的平台新节点也保留唤醒');
 loop.api.hide();
 loop.ctx.observer.fn([{ type: 'characterData', target: { nodeType: 3, textContent: '讲解中' }, oldValue: '' }]);
 if (!baseline) assert.equal(loop.pending(), 0, '停用时不排唤醒');
-loop.advance(300);
+loop.advance(700);
 loop.api.configure(loop);
 
 const header = loop.el('标题', { left: 0, top: 100, right: 1000, bottom: 130, width: 1000, height: 30 });
@@ -243,5 +248,16 @@ assert.equal(refresh.api.state().liveState, 'live', '到期拍先确认开播再
 assert.equal(refreshes, 1, '开播确认与到期重合不会多刷新一次');
 refresh.api.onLampClick(); assert.equal(refresh.api.state().mode, 'force', '直播中用户一步接管强制档');
 refresh.advance(601); refresh.api.onLampClick(); assert.equal(refresh.api.state().mode, 'off', '强制档用户立即停刷');
+
+/* 2026-11-10:探针必须能反映**长尾**。第四轮真机就是被 EMA 骗了一次 ——
+ * 平均值 23.8ms,而现场分段里每一步只要 1~2ms,说明是少数几次一百多毫秒被平均掉了。
+ * 以后任何人把「中位/最大/超阈次数」删回只有 EMA,这条会红。 */
+{
+  const pf = loop.api.snapshot().perf || {};
+  assert(pf.checkMed !== undefined, '探针必须给 check 中位数(EMA 会掩盖长尾)');
+  assert(pf.checkMax !== undefined, '探针必须给 check 最大耗时(尖峰有多高)');
+  assert(pf.slow !== undefined, '探针必须给「超 20ms 次数」(尖峰有多频繁)');
+  assert(Array.isArray(pf.ring) && pf.ring.length <= 10, 'check 最近耗时环形最多 10 条');
+}
 
 console.log(JSON.stringify({ mode: baseline ? '整改前 HEAD' : '整改后工作树', fixture: '40 拍，每拍 250ms；无关文本 40 次，每次 500ms；仅内存调用数', unrelated: unrelatedCounts, mergedScans, extensionScans, loopRects, refreshRects, behavior: '定位冻结、真人取消、后台续讲到期、节点替换、开播停刷、输入/浮层/后台让路通过' }, null, 2));
