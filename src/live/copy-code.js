@@ -38,11 +38,19 @@
  *
  * 【取号优先级 —— 三档，逐级兜底】
  *   ① **官方货号**：行内若有平台自己写出的「货号」值，直接用它。最可靠。
- *   ② **名称尾部推算**：从名称末尾截「≥4 位、且含数字」的字母数字串
- *      （NE1C0021W / 10157 / ABC-123 这类）。
+ *   ② **名称尾部推算**：从名称末尾截「≥3 位、且含数字」的字母数字串，
+ *      允许斜杠分段（NE1C0021W / 10157 / ABC-123 / S28 / M609Y0544/0686 这类）。
  *      ⚠️ 这一档是**推算**，不是官方数据 —— 平台没在小黄车展示货号时只能这么取。
  *      名称末尾若不是款号（比如是「夏季新款」），它取不到东西，不会瞎猜。
+ *      2026-11-12 反馈 #137 两处修正：下限 4→3（3 位款号曾被直接丢弃）；
+ *      末尾串允许斜杠（复合款号按旧写法只会抓到半截 `0686`）；同时排除纯尺码写法。
  *   ③ 两档都拿不到 → 按钮点下去只提示「无货号」，**绝不复制半截内容**。
+ *
+ * 【复合款号（2026-11-12 用户提出）】
+ *   两个款式共用同一个链接时，平台为省字数只在名称末尾写一个合成串：
+ *   `M609Y0544/0686`（= M609Y0544 + 同前缀补尾号的 0686）。用户要用的就是**整串**，
+ *   所以斜杠算款号字符、最多 3 段。名称里「燕麦/乌木色」这类中文斜杠靠
+ *   ASCII 字符集天然排除，不需要额外规则。
  *
  * 【名称元素怎么定位 —— 结构锚定（2026-10-15 修反馈 #88 / #85）】
  *   第 ② 档要「名称元素」。原先靠 findNameEl 全行扫「文本最长」——
@@ -143,10 +151,18 @@
 
   /* ---------- 款号识别 ---------- */
 
-  /** 像款号吗：3~30 位的字母数字/连字符/下划线 */
-  function isCodeLike(s) {
-    return !!s && /^[A-Za-z0-9][A-Za-z0-9\-_]{2,29}$/.test(s);
-  }
+  /**
+   * 判据**不在本文件** —— 见 `src/content/item-code.js`（唯一真源，2026-11-12 收敛）。
+   *
+   * 本文件只负责**本页面**的那一半：在哪段文本里找货号。
+   *   · 官方档 readOfficialCode()：先收窄到平台「复制 ID」按钮的父容器，
+   *     输入一律经 textWithoutExt()，把自家按钮的文案挡在外面（反馈 #96）；
+   *   · 推算档 guessFromName()：取商品名文本，交给 dycPickCodeFromName()。
+   *
+   * 形态判据（3 位下限 / 斜杠复合款号 / 纯尺码排除）四个页面共用一份：
+   * 中控台、罗盘商品表、罗盘直播明细、直播大屏。改一次四处同时生效；
+   * 改完必须跑 `node scripts/自测-货号款号形态.js`（含「不许抄回本地」的静态检查）。
+   */
 
   /* ---------- 取值输入：剔除扩展自己注入的节点（反馈 #96，2026-10-18） ---------- */
 
@@ -217,6 +233,7 @@
    *   · 标签取值额外加一道校验：取回的值必须**出现在纯页面文本里**，
    *     否则说明它是从自家节点旁边刮到的，直接丢弃。
    *   · `isCodeLike` 口径**不动** —— 纯数字货号（如 10086）照读（用户明确要保留）。
+   *     （该判据现由 `src/content/item-code.js` 的 `dycIsCodeLike` 提供，四个页面共用）
    */
   function readOfficialCode(row, nameEl) {
     var idBtn = findPlatformIdButton(row);
@@ -239,33 +256,25 @@
           if (!v) continue;
           v = String(v).replace(/^货号\s*[:：]?\s*/, '').trim();
           // 必须能在这两份「纯页面文本」之一里找到 —— 挡掉从自家按钮旁边刮来的值
-          if (isCodeLike(v) && (nearText.indexOf(v) > -1 || rowText.indexOf(v) > -1)) return v;
+          if (dycIsCodeLike(v) && (nearText.indexOf(v) > -1 || rowText.indexOf(v) > -1)) return v;
         } catch (e) { /* 尽力而为 */ }
       }
     }
 
     // 纯页面文本里的「货号 xxx」正则（先收窄范围，再整行）
+    // 正则与字符集都在 item-code.js 里，与另外三个页面同源（#137 收敛）
     try {
-      var m = nearText.match(/货号\s*[:：]?\s*([A-Za-z0-9\-_]{3,30})/)
-           || rowText.match(/货号\s*[:：]?\s*([A-Za-z0-9\-_]{3,30})/);
-      if (m && isCodeLike(m[1])) return m[1];
+      var hit = dycFindOfficialInText(nearText) || dycFindOfficialInText(rowText);
+      if (hit) return hit;
     } catch (e2) { /* 尽力而为 */ }
     return '';
   }
 
   /**
-   * ② 名称尾部推算：末尾「≥4 位且含数字」的字母数字串。
-   *    必须含数字 —— 纯英文字尾（如 "新款" 的拼音、英文词）多半不是款号。
+   * ② 名称尾部推算 —— 本文件只负责取文本，形态判据在 item-code.js。
    */
   function guessFromName(nameEl) {
-    var t = (nameEl && (nameEl.textContent || '') || '').replace(/\s+/g, ' ').trim();
-    if (!t) return '';
-    var m = t.match(/([A-Za-z0-9][A-Za-z0-9\-_]*)\s*$/);
-    if (!m) return '';
-    var cand = m[1];
-    if (cand.length < 4) return '';
-    if (!/\d/.test(cand)) return '';
-    return cand;
+    return dycPickCodeFromName(nameEl && (nameEl.textContent || ''));
   }
 
   /** 取款号 → {code, from:'official'|'guess'|'none'} */

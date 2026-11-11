@@ -63,16 +63,18 @@
   var BUFFER_MAX = 12;          // 「已发出未消费」的分片上限（领先写入指针的最大距离）。
                                 // TS 片约 2~4MB，12 片 ≈ 30~50MB 内存峰值，可接受；
                                 // 再大只会白白攒内存，再小写盘一慢就饿着网络。
+  var BUFFER_BYTES = 32 * 1024 * 1024; // 收包缓存预算；当前顺序片必须能继续，避免互等
+  var BUFFER_RESERVE = 2 * 1024 * 1024; // 首片大小未知时的请求预留量
+  var PREP_MS = 6000;           // 所有候选共享的准备时限
   var SEG_RETRY = 3;            // 单片最多重试次数
+  var SEG_IDLE_MS = 12000;      // 单片连续无数据才超时，持续收包的大分片不会被打断
+  var CONC_SAMPLE_MS = 4000;    // 用真实吞吐量评估升档效果
+  var CONC_PAUSE_MS = 15000;    // 升档无收益时退回并稍后再试
   var GATHER_MS = 3000;         // 收候选的最长等待
   var MIN_COVERAGE = 0.99;      // 「整场齐了」的门槛
   var WARN_COVERAGE = 0.5;      // 低于此值视为明显不是整场，禁止下载
-  var SPEED_WIN_MS = 5000;      // 速度读数的滑动窗口（2026-10-21 用户拍板 5 秒）：
-                                // 把 0.8 秒瞬时窗的忽高忽低摊平成窗口平均，代价是
-                                // 网速真变时要滞后 ~5 秒才跟上（用户认可）
-  var UI_REFRESH_MS = 2500;     // 进度卡与标题进度的显示节流（2026-10-23 #110 用户拍板）：
-                                // 实时读数 2.5 秒统一刷一次，「数字在动」本身就是活信号；
-                                // 用户明确不要呼吸灯 / 计时文字，停滞判定仍走 STALL_MS 不变
+  var SPEED_WIN_MS = 2000;      // 两秒滑动窗，兼顾稳定与对断流的响应
+  var UI_REFRESH_MS = 500;      // 用户要求更快看到速度与剩余时间变化
 
   /* ---------- 下载中防误点（2026-10-21 用户需求）----------
    * 用户原话：正在下载时不小心点到其他网页或同网页的其他分页，
@@ -86,7 +88,7 @@
    * 另有 BUSY_KEY：sessionStorage 记「正在下载」。真导航（刷新 / 跳转）
    * 会杀掉下载但留着这个标记 —— 回来时据此报「上次下载未完成」，
    * 不然用户回来只看到一枚安静的按钮，根本不知道刚才白下了。 */
-  var STALL_MS = 30000;         // 超过这么久无进展判停滞（单分片含重试 ~3.5s 内必有结果）
+  var STALL_MS = 30000;         // 网络收包和写盘均无进展才判停滞
   var STALL_CHECK_MS = 10000;   // 停滞巡检周期
   var BUSY_KEY = '__dycReplayBusy';
 
@@ -168,8 +170,22 @@
 
   function looksAudioUrl(u) { return AUDIO_URL_RE.test(String(u || '')); }
 
-  function sleep(ms) {
-    return new Promise(function (r) { setTimeout(r, ms); });
+  function sleep(ms, signal) {
+    return new Promise(function (resolve, reject) {
+      function abort() {
+        clearTimeout(timer);
+        if (signal) signal.removeEventListener('abort', abort);
+        reject(new Error('已取消'));
+      }
+      var timer = setTimeout(function () {
+        if (signal) signal.removeEventListener('abort', abort);
+        resolve();
+      }, ms);
+      if (signal) {
+        if (signal.aborted) abort();
+        else signal.addEventListener('abort', abort);
+      }
+    });
   }
 
   /** 等新媒体地址出现（最多 GATHER_MS），让候选收齐一点 */
@@ -193,9 +209,9 @@
    * 评估一条候选：拉清单、算总时长、抓档位信息。
    * 失败一律返回 null（不抛），由上层过滤 —— 候选里混着统计接口是常态。
    */
-  function evaluate(cand) {
+  function evaluate(cand, signal) {
     if (cand.kind === 'mp4') {
-      return NET.headSize(cand.url).then(function (size) {
+      return NET.headSize(cand.url, { signal: signal }).then(function (size) {
         return {
           url: cand.url, type: 'mp4', total: 0, segments: [],
           bytes: size, quality: '原始文件', vod: true, key: null, map: null
@@ -204,7 +220,9 @@
     }
     if (cand.kind === 'dash') return Promise.resolve(null);   // DASH 暂不支持
 
-    return M3.load(NET, cand.url).then(function (r) {
+    return M3.load({ fetchText: function (url) {
+      return NET.fetchText(url, { timeoutMs: PREP_MS, signal: signal });
+    } }, cand.url).then(function (r) {
       if (!r || r.kind !== 'media') return null;
       if (!r.segments.length) return null;
       var v = pickVariant(r.variants, r.picked);
@@ -278,16 +296,19 @@
    */
   function pickBest(cands) {
     if (!cands.length) return Promise.resolve({ best: null, ranked: [], unsupported: '' });
+    var ctl = typeof AbortController === 'function' ? new AbortController() : null;
+    var deadline = ctl ? setTimeout(function () { ctl.abort(); }, PREP_MS) : 0;
     return Promise.all(cands.map(function (c) {
-      return evaluate(c).then(function (r) {
+      return evaluate(c, ctl ? ctl.signal : undefined).then(function (r) {
         if (r) r.firstSeen = c.t;
         return r;
       });
     })).then(function (rs) {
+      clearTimeout(deadline);
       var ok = rs.filter(function (r) {
         return r && r.segments && r.segments.length && !r.unsupported;
       });
-      var direct = rs.filter(function (r) { return r && r.type === 'mp4' && r.bytes; });
+      var direct = rs.filter(function (r) { return r && r.type === 'mp4'; });
 
       // 被「加密方式不支持」挡掉的，留一条原因
       var blocked = rs.filter(function (r) { return r && r.unsupported; });
@@ -408,7 +429,7 @@
     if (!plan || plan.type !== 'hls') return Promise.resolve(null);
     var url = (plan.map && plan.map.url) || (plan.segments[0] && plan.segments[0].url);
     if (!url) return Promise.resolve(null);
-    return NET.fetchBuf(url, { range: 'bytes=0-' + (PROBE_BYTES - 1) })
+    return NET.fetchBuf(url, { range: 'bytes=0-' + (PROBE_BYTES - 1), timeoutMs: 3000 })
       .then(function (buf) { return probeContainer(buf); })
       .catch(function () { return null; });          // 探不到不阻断
   }
@@ -486,6 +507,9 @@
   function estimateBytes(plan) {
     if (plan.type === 'mp4') return Promise.resolve(plan.bytes || 0);
     var segs = plan.segments;
+    if (plan.bandwidth > 0 && plan.total > 0) {
+      return Promise.resolve(Math.round(plan.bandwidth * plan.total / 8));
+    }
     var picks = [];
     var n = segs.length;
     var step = Math.max(1, Math.floor(n / 6));
@@ -498,7 +522,7 @@
         var len = parseInt(String(s.byterange).split('@')[0], 10);
         if (isFinite(len) && len > 0) return Promise.resolve(len);
       }
-      return NET.headSize(s.url);
+      return NET.headSize(s.url, { timeoutMs: 1000 });
     })).then(function (sizes) {
       var valid = sizes.filter(function (x) { return x > 0; });
       if (!valid.length) return 0;
@@ -573,11 +597,9 @@
             var pct = Math.round(coverage * 100);
             if (coverage < WARN_COVERAGE) {
               blocked = true;
-              warn = '只覆盖了本场的 ' + pct + '%（' + META.fmtLen(plan.total) + ' / ' + META.fmtLen(expected)
-                + '），明显不是整场，已阻止下载。请把回放从头上播一遍、等清单加载完再试。';
+              warn = '当前只获取到本场约 ' + pct + '% 的内容，暂无法下载。请先播放回放，待清单加载后重试。';
             } else {
-              warn = '清单覆盖 ' + pct + '%（' + META.fmtLen(plan.total) + ' / ' + META.fmtLen(expected)
-                + '），末尾可能缺一小段。可以照常下载，但请知悉。';
+              warn = '当前可下载约 ' + pct + '% 的回放，内容可能不完整。';
             }
           }
         }
@@ -588,22 +610,17 @@
         var vcodec = plan.tracks && plan.tracks.video;
         var trackNote = '';
         if (vcodec === 'h265') {
-          trackNote = '这场是 H.265 编码，'
-            + (plan.passthrough ? '会按原样打包成 .ts' : '已按原样封装成 .mp4')
-            + '（画质零损失、不重新编码）。Windows 自带播放器常常只有声音没画面，'
-            + '用 PotPlayer / VLC / 剪映打开就正常 —— 不是文件坏了。';
+          trackNote = '若打开后没有画面，请换用支持 H.265 的播放器。';
         } else if (plan.passthrough) {
-          trackNote = '这场不是 H.264 编码，会按原样打包成 .ts（画质零损失）。'
-            + 'Windows 自带播放器可能打不开，换 PotPlayer / VLC 试试。';
+          trackNote = '此回放将保存为 TS 文件，请使用支持相应编码的播放器。';
         }
-        if (trackNote) warn = warn ? (warn + ' ' + trackNote) : trackNote;
 
         return estimateBytes(plan).then(function (bytes) {
           dlog('覆盖率 ' + Math.round(coverage * 100) + '%（清单 '
             + Math.round(plan.total) + 's / 本场 ' + Math.round(expected) + 's）'
             + ' · ' + plan.segments.length + ' 段 · 估算 ' + (bytes ? UI.fmtBytes(bytes) : '未知'));
           return { plan: plan, coverage: coverage, expected: expected, bytes: bytes,
-                   blocked: blocked, warn: warn, trackText: trackText(plan.tracks),
+                   blocked: blocked, warn: warn, playbackNote: trackNote, trackText: trackText(plan.tracks),
                    ext: plan.ext || '.mp4' };
         });
       });
@@ -634,9 +651,10 @@
 
   var keyCache = Object.create(null);
 
-  function getKey(url) {
+  function getKey(url, ctl) {
     if (keyCache[url]) return Promise.resolve(keyCache[url]);
-    return NET.fetchBuf(url).then(function (buf) {
+    return NET.fetchBuf(url, { timeoutMs: SEG_IDLE_MS,
+      signal: ctl && ctl.abortCtl ? ctl.abortCtl.signal : undefined }).then(function (buf) {
       // AES-128 的密钥固定 16 字节；不足说明平台用了非常规长度，直接判失败
       if (!buf || buf.byteLength !== 16) throw new Error('密钥长度异常（' + (buf && buf.byteLength) + ' 字节）');
       keyCache[url] = buf;
@@ -662,12 +680,16 @@
   /* ==========================================================
    * 五、取片 → 转封装 → 落盘
    *
-   * 并发窗口 3：同时最多 3 片在飞，但**按序写入**。
-   * 内存峰值 = 3 个分片（约 3~9 MB），与视频时长无关。
+   * 并发 3→10 自适应，按序写入；未消费分片不超过 BUFFER_MAX。
    * ========================================================== */
 
-  function fetchSegment(seg, plan, ctl) {
-    var opts = {};
+  function fetchSegment(seg, plan, ctl, flow) {
+    var opts = { timeoutMs: SEG_IDLE_MS };
+    opts.onData = function (size) {
+      if (flow) flow.onData(size);
+      if (ctl && ctl.onData) ctl.onData(size);
+    };
+    if (flow) opts.beforeRead = flow.beforeRead;
     if (seg.byterange) {
       var parts = String(seg.byterange).split('@');
       var len = parseInt(parts[0], 10);
@@ -680,7 +702,7 @@
 
     return NET.fetchBuf(seg.url, opts).then(function (buf) {
       if (!plan.key || plan.key.method !== 'AES-128') return buf;
-      return getKey(plan.key.url).then(function (k) {
+      return getKey(plan.key.url, ctl).then(function (k) {
         var iv = plan.key.iv ? hexToBytes(plan.key.iv) : ivFromSeq(seg.seq);
         return decryptAes128(buf, k, iv);
       });
@@ -737,6 +759,16 @@
     var stallLast = 0;
     var stallTimer = 0;
     var lastUiAt = 0;         // 上次刷新进度卡 / 标题的时刻（UI_REFRESH_MS 节流用，#110）
+    var progressTimer = 0;
+    var networkBytes = 0;
+    var snapshot = { done: 0, total: plan.type === 'mp4' ? (plan.bytes || 0) : plan.segments.length,
+      bytes: 0, conc: 0 };
+    ctl.phase = '下载数据';
+    ctl.onData = function (size) {
+      if (ctl.aborted || ctl.failed) return;
+      networkBytes += size;
+      stallLast = Date.now();
+    };
 
     /**
      * 停滞巡检：写盘真正开始后才启动 —— 挑保存位置的对话框可能开很久，
@@ -745,6 +777,8 @@
      */
     function startStallWatch() {
       stallLast = Date.now();
+      samples.push({ t: stallLast, b: networkBytes });
+      progressTimer = setInterval(renderProgress, UI_REFRESH_MS);
       stallTimer = setInterval(function () {
         if (!state.running || ctl.aborted) return;
         if (Date.now() - stallLast < STALL_MS) return;
@@ -758,6 +792,7 @@
     /** 收尾三件事（成功 / 失败 / 取消都要走）：停巡检、摘守护、清「正在下载」标记 */
     function cleanup() {
       if (stallTimer) { clearInterval(stallTimer); stallTimer = 0; }
+      if (progressTimer) { clearInterval(progressTimer); progressTimer = 0; }
       if (GUARD) GUARD.end();
       state.dlName = null;
       try { sessionStorage.removeItem(BUSY_KEY); } catch (e) { /* 尽力而为 */ }
@@ -770,45 +805,29 @@
      * @param {number} [conc] 当前并发档位（HLS 才有）
      */
     function onProgress(done, total, bytes, conc) {
+      snapshot = { done: done, total: total, bytes: bytes, conc: conc };
+      stallLast = Date.now();
+      renderProgress(done === total && total > 0);
+    }
+
+    // 固定时钟采样网络收包；无新数据时速度会降下来，不冻结上一次读数。
+    function renderProgress(force) {
+      if (ctl.aborted || ctl.failed) return;
+      var done = snapshot.done, total = snapshot.total, bytes = snapshot.bytes, conc = snapshot.conc;
       var ratio = total ? done / total : 0;
       var now = Date.now();
 
-      // 停滞计时：任何真实进展都算「活着」。⚠️ 这一行必须在下面的显示节流
-      // 闸门之外 —— 每次回调都要刷新，否则闸门静默的 2.5 秒会被误判成停滞。
-      stallLast = now;
-
-      // 【速度读数 = 最近 SPEED_WIN_MS 的滑动平均】
-      // 2026-10-21 用户：「下载速度不够稳定，跳动比较快」。
-      //   旧写法 0.8 秒瞬时窗有两个毛病：① 分片落盘是「写完一片涌一大块」，
-      //   0.8 秒一会儿撞突发、一会儿撞空窗，算出来的瞬时速度天然忽高忽低；
-      //   ② 每 0.8 秒跳一次数字，再稳也显得「跳得快」。改成 5 秒滑动窗口：
-      //   每次回调都用「窗口最老样本 → 现在」的字节差 ÷ 时长重算，波动摊平、
-      //   读数连续；仍是真实网速的反映，只是网速真变时要滞后 ~5 秒跟上。
-      // ⚠️ 样本太短（刚开头 span < 0.8s）不重算，保持上一档读数（开头为 0，
-      //    右栏空着 —— 与旧行为一致，不放一个虚高的开屏速度骗人）。
-      // ⚠️ 读数不能每回调都清零重算：分片回调可能每 0.2 秒来一次（用户
-      //    2026-10-18 反馈「指示器不对」就包含整行空白），lastSpeed 保持上值。
-      samples.push({ t: now, b: bytes });
-      while (samples.length > 2 && now - samples[0].t > SPEED_WIN_MS) samples.shift();
+      if (!force && now - lastUiAt < UI_REFRESH_MS) return;
+      lastUiAt = now;
+      // 收包速度取最近两秒平均，计时器继续刷新时空窗会自然回落到零。
+      samples.push({ t: now, b: networkBytes });
+      while (samples.length > 2 && samples[1].t <= now - SPEED_WIN_MS) samples.shift();
       var s0 = samples[0];
       var span = now - s0.t;
-      if (span >= 800) {
-        lastSpeed = (bytes - s0.b) / (span / 1000);
+      if (span >= UI_REFRESH_MS) {
+        lastSpeed = (networkBytes - s0.b) / (span / 1000);
       }
 
-      // 【#110 · 显示节流 2.5 秒】（2026-10-23 用户拍板）
-      //   问「活信号要不要呼吸灯 / 秒数计时」时用户拍板：都不要，
-      //   「把下载速度等实时信息，调整到2.5s刷新一次，让我看到动态的变化就可以了」。
-      //   原写法每次回调（最快 0.2s 一次）都重绘进度卡，数字糊成一团，
-      //   反而看不出「这一轮比上一轮多了多少」；统一节流到 2.5s 后，
-      //   速度 / 字节 / 段数 / 标题进度一起跳，静止与前进一眼可辨 ——
-      //   「数字还在动」本身就是活信号，不用再加任何指示物。
-      //   ⚠️ 只节流显示，不节流采样：samples / lastSpeed 上面每回调照算，
-      //      闸门打开时用的总是最新值；停滞计时同样不受闸门影响。
-      //   ⚠️ 闸门 return 也会跳过诊断日志的中间台阶（最后一块在下面），
-      //      下次刷新会按当时的整十百分比补打，只滞后不缺失终点值。
-      if (now - lastUiAt < UI_REFRESH_MS) return;
-      lastUiAt = now;
       if (GUARD) GUARD.progress(total > 0 ? ratio * 100 : -1);
 
       // 左栏：已下载字节 + 段进度。**两个数都来自实际，不再放体积估算**。
@@ -817,25 +836,17 @@
       //   百分比是按段数算的，两者口径不同，并排放会出现「10% 却只有
       //   10 MB / 6.8 GB」这种自相矛盾的读数（用户 2026-10-18 截图反馈）。
       var left = UI.fmtBytes(bytes);
-      if (total) left += ' · ' + done + '/' + total + ' 段';
+      if (total && plan.type !== 'mp4') left += ' · ' + done + '/' + total + ' 段';
 
-      // 右栏：速度 · 还剩（剩余量按「已完成片的平均大小」外推，比按时间估稳）
-      var right = '';
-      if (lastSpeed > 0) {
-        right = UI.fmtBytes(lastSpeed) + '/s';
-        if (total > done && done > 0) {
-          var remaining = (bytes / done) * (total - done);
-          var eta = remaining / lastSpeed;
-          if (isFinite(eta) && eta > 0) right += ' · 还剩 ' + fmtEta(eta);
-        }
-      }
-      // 提速生效时把档位亮出来，用户能确认「多线程真的开了」。
-      // ⚠️ 档位不再塞进右栏：右栏已经有三段（速度 / 还剩 / 线程），拼一起在 340px 卡里
-      //    会被挤成两行（用户 2026-10-18 截图：「6 线程」掉到下一行，很难看）。
-      //    现在走独立的 badge，挂在标题行右侧。
-      var badge = (conc && conc > CONC_START) ? conc + ' 线程' : '';
+      // 下载和顺序处理可重叠：扣掉已收缓存，取网络与处理两个瓶颈中较慢的耗时。
+      var speedText = lastSpeed > 0 ? UI.fmtBytes(lastSpeed) + '/s' : '0 B/s';
+      var eta = remainingSeconds(ctl.transfer, lastSpeed);
+      var etaText = eta === null ? '剩余时间估算中' : '剩余 ' + fmtEta(eta);
+      if (ctl.phase === '保存文件') etaText = '正在保存文件';
+      // 状态与并发放标题行，速度与剩余时间保持一行。
+      var badge = ctl.phase + (conc ? ' · ' + conc + ' 线程' : '');
 
-      UI.setProgress(ratio, { left: left, right: right, badge: badge });
+      UI.setProgress(ratio, { left: left, speed: speedText, eta: etaText, badge: badge });
 
       // 诊断日志：每跨过 10% 记一条（含并发档位），排查「怎么这么慢」时够用
       var pct10 = Math.floor(ratio * 10) * 10;
@@ -863,13 +874,18 @@
         : Promise.resolve(null)
       ).catch(function () { return null; }).then(function (size0) {
         preSize = (size0 === null || size0 === undefined) ? -1 : size0;
-        return W.openSink(target.handle).then(function (sink) {
+        return W.openSink(target.handle, function (phase) { ctl.phase = phase; }).then(function (sink) {
           startStallWatch();
-          return doWrite(sink, plan, ctl, onProgress).then(function (bytes) {
+          return Promise.resolve().then(function () {
+            return doWrite(sink, plan, ctl, onProgress);
+          }).then(function (bytes) {
+            if (ctl.aborted) throw new Error('已取消');
             return sink.close().then(function (written) {
               return { bytes: written || bytes, name: target.name || (fileName + ext), how: target.how };
             });
           }).catch(function (err) {
+            ctl.failed = true;
+            if (ctl.abortCtl) ctl.abortCtl.abort();
             return sink.abort().then(function () { throw err; });
           });
         });
@@ -928,25 +944,53 @@
   }
 
   function fmtEta(sec) {
-    var s = Math.round(sec);
-    if (s >= 3600) return Math.floor(s / 3600) + ' 小时 ' + Math.floor((s % 3600) / 60) + ' 分';
-    if (s >= 60) return Math.floor(s / 60) + ' 分 ' + (s % 60) + ' 秒';
-    return s + ' 秒';
+    var s = Math.max(1, Math.ceil(sec));
+    var h = Math.floor(s / 3600);
+    var m = Math.floor(s % 3600 / 60);
+    return (h ? h + '时' : '') + (h || m ? m + '分' : '') + (s % 60) + '秒';
+  }
+
+  function remainingSeconds(t, networkRate) {
+    if (!t || !t.expected) return null;
+    var networkLeft = t.complete ? 0 : Math.max(0, t.expected - t.received);
+    var writeLeft = Math.max(0, t.expected - t.written);
+    if (networkLeft > 0 && networkRate <= 0) return null;
+    if (writeLeft > 0 && (!t.written || !t.writeMs)) return null;
+    var writeMs = t.writeMs + (t.writeStartedAt ? Date.now() - t.writeStartedAt : 0);
+    return Math.max(networkLeft ? networkLeft / networkRate : 0,
+      writeLeft ? writeLeft * writeMs / (t.written * 1000) : 0);
   }
 
   /** 真正写盘：按 plan 类型分流 */
   function doWrite(sink, plan, ctl, onProgress) {
+    var transfer = ctl.transfer = { received: 0, expected: plan.bytes || 0,
+      written: 0, writeMs: 0, complete: false };
+    function wrote(size, since) {
+      transfer.written += size;
+      transfer.writeMs += Math.max(1, Date.now() - since);
+      transfer.writeStartedAt = 0;
+    }
     if (plan.type === 'mp4') {
       // 整场就是一个文件：流式读、边读边写
       var got = 0;
       var total = plan.bytes || 0;
-      return NET.streamTo(plan.url, function (chunk) {
+      return NET.streamTo(plan.url, function (chunk, received, length) {
         if (ctl.aborted) throw new Error('已取消');
+        if (length) { total = length; transfer.expected = length; }
+        var since = Date.now();
+        transfer.writeStartedAt = since;
         return sink.write(chunk).then(function () {
+          wrote(chunk.byteLength, since);
           got += chunk.byteLength;
           onProgress(got, total || 0, got);
+          ctl.phase = '下载数据';
         });
-      }, ctl.abortCtl ? ctl.abortCtl.signal : undefined).then(function (n) {
+      }, ctl.abortCtl ? ctl.abortCtl.signal : undefined, function (size) {
+        transfer.received += size;
+        if (ctl.onData) ctl.onData(size);
+      }).then(function (n) {
+        transfer.complete = true;
+        transfer.expected = n || got;
         onProgress(1, 1, n || got);
         return n || got;
       });
@@ -978,40 +1022,94 @@
     var n = plan.segments.length;
     var inflight = Object.create(null);
     var bytesWritten = 0;
+    var heldBytes = 0;
+    var segmentBytes = Object.create(null);
+    var fetchedBytes = 0, fetchedCount = 0;
+    var waiting = [];
 
-    /* ---- 并发档位（自适应升降）----
-     * 用户 2026-10-18：「下载好慢，能不能多线程加速」；
-     * 2026-10-21 追加「实打实优化下载速度」—— 上限 6→10，爬档 12 片/次→6 片/次。
-     *
-     * 为什么上限能越过 6：
-     *   旧注释「浏览器对同源并发连接的上限就是 6，再高只是排队」是 HTTP/1.1
-     *   时代的规则；抖音 CDN 走 HTTP/2，单条连接多路复用，fetch 并发不再被 6
-     *   封顶 —— 提到 10 是实打实多开请求抢带宽，不是排队假象。
-     *
-     * 升降策略仍是「从安全值起步、好了再往上探、撞了就立刻退」：
-     *     · 起点仍是 3（已验证不触发限流）；
-     *     · 连续 CONC_UP_AFTER 片都成功 ⇒ 试探 +1，最多到 CONC_MAX(10)；
-     *     · 任一请求回 429 / 503 / 509 ⇒ 立刻 -1，并进入 CONC_COOLDOWN 冷却，
-     *       冷却期内不许再升档 —— 免得「升一档、撞一次、再升」反复挠服务器。
-     *   链路好的时候跑满 10 条，链路一紧自动收回来，不需要用户操心。
-     */
+    function estimateSegment(i) {
+      var seg = plan.segments[i];
+      var range = seg.byterange && parseInt(String(seg.byterange).split('@')[0], 10);
+      return range > 0 ? range : (fetchedCount ? fetchedBytes / fetchedCount
+        : plan.bandwidth && seg.duration ? plan.bandwidth * seg.duration / 8 : BUFFER_RESERVE);
+    }
+
+    function updateTransfer() {
+      transfer.received = transfer.written + heldBytes;
+      transfer.expected = fetchedCount ? fetchedBytes / fetchedCount * n : 0;
+      transfer.complete = fetchedCount === n;
+    }
+
+    function wakeReaders() { waiting.slice().forEach(function (wake) { wake(); }); }
+
+    function releaseSegment(i) {
+      heldBytes -= segmentBytes[i] || 0;
+      segmentBytes[i] = 0;
+      updateTransfer();
+      wakeReaders();
+    }
+
+    function waitForSpace(i, signal) {
+      // 顺序片始终可读，否则后片占满缓存时会和写入端互等。
+      // 单个超大顺序片与每个请求的一块收包可临时超预算；禁止整场积攒。
+      if (heldBytes < BUFFER_BYTES || i === writePtr || !signal || signal.aborted) return;
+      return new Promise(function (resolve) {
+        function wake() {
+          signal.removeEventListener('abort', wake);
+          waiting.splice(waiting.indexOf(wake), 1);
+          resolve();
+        }
+        waiting.push(wake);
+        signal.addEventListener('abort', wake);
+      }).then(function () { return waitForSpace(i, signal); });
+    }
+
+    // 每档至少观察四秒、六片；升档吞吐量未提高 5% 就退回并冷却。
+    // 限流立刻降档，并保留九十秒冷却。
     var conc = CONC_START;
     var okStreak = 0;
     var hitAt = 0;
+    var sampleAt = Date.now();
+    var sampleBytes = 0;
+    var baselineRate = 0;
+    var trialFrom = 0;
+    var pauseUntil = 0;
 
     function onRateLimited() {
       hitAt = Date.now();
       okStreak = 0;
       if (conc > CONC_MIN) conc--;
+      trialFrom = 0;
+      baselineRate = 0;
+      sampleBytes = 0;
+      sampleAt = hitAt;
+      pauseUntil = hitAt + CONC_COOLDOWN;
     }
 
-    function onSegmentOk() {
+    function onSegmentOk(size) {
       okStreak++;
-      if (okStreak < CONC_UP_AFTER) return;
+      sampleBytes += size;
+      var now = Date.now();
+      var elapsed = now - sampleAt;
+      if (okStreak < CONC_UP_AFTER || elapsed < CONC_SAMPLE_MS) return;
+      var rate = sampleBytes * 1000 / elapsed;
       okStreak = 0;
-      if (conc >= CONC_MAX) return;
-      if (hitAt && Date.now() - hitAt < CONC_COOLDOWN) return;
+      sampleBytes = 0;
+      sampleAt = now;
+      if (trialFrom && rate < baselineRate * 1.05) {
+        dlog('并发 ' + conc + '→' + trialFrom + '：升档吞吐量无明显收益，暂缓加速');
+        conc = trialFrom;
+        trialFrom = 0;
+        baselineRate = 0;
+        pauseUntil = now + CONC_PAUSE_MS;
+        return;
+      }
+      trialFrom = 0;
+      baselineRate = rate;
+      if (conc >= CONC_MAX || now < pauseUntil) return;
+      trialFrom = conc;
       conc++;
+      dlog('并发 ' + trialFrom + '→' + conc + '：当前吞吐量 ' + UI.fmtBytes(rate) + '/s，试探升档');
     }
 
     /**
@@ -1025,13 +1123,23 @@
     function fetchOne(i) {
       var attempt = 0;
       function go() {
-        return fetchSegment(plan.segments[i], plan, ctl).catch(function (err) {
-          if (ctl.aborted) throw err;
+        if (ctl.aborted || ctl.failed) return Promise.reject(new Error('已取消'));
+        return fetchSegment(plan.segments[i], plan, ctl, {
+          onData: function (size) {
+            segmentBytes[i] = (segmentBytes[i] || 0) + size;
+            heldBytes += size;
+            updateTransfer();
+          },
+          beforeRead: function (signal) { return waitForSpace(i, signal); }
+        }).catch(function (err) {
+          releaseSegment(i);
+          if (ctl.aborted || ctl.failed) throw err;
           var st = err && err.status;
           if (st === 429 || st === 503 || st === 509) onRateLimited();
+          if (st === 401 || st === 403 || st === 404) throw err;
           if (attempt >= SEG_RETRY) throw err;
           attempt++;
-          return sleep(250 * attempt * attempt).then(go);
+          return sleep(250 * attempt * attempt, ctl.abortCtl ? ctl.abortCtl.signal : undefined).then(go);
         });
       }
       return go();
@@ -1056,7 +1164,12 @@
       nInflight++;
       inflight[i] = fetchOne(i).then(function (buf) {
         nInflight--;
-        onSegmentOk();
+        // 兼容仅能回报整片大小的取片实现。
+        if (!segmentBytes[i]) { segmentBytes[i] = buf.byteLength; heldBytes += buf.byteLength; }
+        fetchedBytes += segmentBytes[i];
+        fetchedCount++;
+        updateTransfer();
+        onSegmentOk(buf.byteLength);
         schedule();          // 一片到手腾出一个在飞名额（升档后也能立刻多补）
         return { ok: true, v: buf };
       }, function (err) {
@@ -1079,13 +1192,15 @@
      *   · writeLoop(i) 只管按序消费：等 inflight[i] 到手 → 写 → 推进。
      *     写入多慢都不拖累取片。
      *
-     * 失败如何冒泡：某片重试耗尽后 inflight[i] 是 rejected promise，
+     * 失败如何冒泡：某片重试耗尽后 inflight[i] 保存失败结果，
      * writeLoop 消费到它就整体 reject —— 取片失败一定会打断下载，
      * 不会因为解耦而被吞掉。
      */
     function schedule() {
-      if (ctl.aborted) return;
+      if (ctl.aborted || ctl.failed) return;
       while (nextFetch < n && nextFetch - writePtr < BUFFER_MAX && nInflight < conc) {
+        var reserve = estimateSegment(nextFetch);
+        if (nextFetch !== writePtr && heldBytes + (nInflight + 1) * reserve > BUFFER_BYTES) break;
         get(nextFetch++);
       }
     }
@@ -1093,12 +1208,21 @@
     function writeLoop(i) {
       if (ctl.aborted) return Promise.reject(new Error('已取消'));
       if (i >= n) return stream.end().then(function (b) { return b || bytesWritten; });
+      ctl.phase = '下载分片';
+      var since = 0;
+      var inputSize = 0;
       return Promise.resolve(inflight[i]).then(function (r) {
+        if (ctl.aborted) throw new Error('已取消');
         if (!r.ok) throw r.e;          // 失败片在这里冒泡打断整场下载
+        inputSize = segmentBytes[i];
+        since = Date.now();
+        transfer.writeStartedAt = since;
         return stream.write(r.v);
       }).then(function () {
+        wrote(inputSize, since);
         inflight[i] = null;
         writePtr = i + 1;
+        releaseSegment(i);
         bytesWritten = sink.bytes;
         onProgress(i + 1, n, bytesWritten, conc);
         schedule();          // 写完腾出缓冲名额，立刻补发
@@ -1193,13 +1317,14 @@
       var expected = res.expected || res.plan.total || 0;
 
       UI.showCard({
-        timeText: (t.y + '-' + pad2(t.m) + '-' + pad2(t.d) + ' ' + pad2(t.hh) + ':' + pad2(t.mm))
-          + (st.fromPage ? '' : '（页面未显示开播时间，用今天日期）'),
+        timeText: st.fromPage ? (t.y + '-' + pad2(t.m) + '-' + pad2(t.d) + ' ' + pad2(t.hh) + ':' + pad2(t.mm)) : '未获取',
         durationSec: expected || res.plan.total,
         bytes: res.bytes,
         segCount: res.plan.segments.length,
-        qualityText: res.plan.quality + (res.plan.key && res.plan.key.method === 'AES-128' ? ' · 已加密，下载时解密' : ''),
-        trackText: res.trackText || '',
+        qualityText: res.plan.height ? res.plan.height + 'P' : '',
+        tracks: res.plan.tracks,
+        encrypted: !!(res.plan.key && res.plan.key.method === 'AES-128'),
+        playbackNote: res.playbackNote,
         ext: res.ext || '.mp4',
         fileName: baseFileName(),
         warn: res.warn,
@@ -1458,6 +1583,10 @@
   if (window.__DYC_REPLAY_DEBUG__) {
     window.__DYC_REPLAY_TEST__ = {
       doWrite: doWrite,
+      remainingSeconds: remainingSeconds,
+      fmtEta: fmtEta,
+      estimateBytes: estimateBytes,
+      buildSession: buildSession,
       runDownload: runDownload,
       fetchSegment: fetchSegment,
       pageKind: pageKind,

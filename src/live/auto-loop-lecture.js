@@ -163,8 +163,12 @@
    *   不必等满间隔。最坏情况(一直探不到)与旧行为完全一致,纯增益。 */
   var PEEK_MIN_MS = 3000;    // 点完取消后至少等这么久再探(平台还没处理完时探没意义)
   var PEEK_MS = 1000;        // 两次探测的最小间隔
-  /* 补讲轮"界面没翻"最多探几次,之后强制点一次(空操作也不亏,绝不死等)。
-   * nap11 起每次间隔 BLIND_TICK_MS(3 秒):5 次 ≈ 15 秒。 */
+  /* 补讲轮"界面没翻"最多探几次之后**只等、不点按钮**(2026-11-12)。
+   *   nap11 起每次间隔 BLIND_TICK_MS(3 秒):5 次 ≈ 15 秒。
+   *   ⚠ 这里原来是"到顶就强制补讲一次"—— 那一拍按钮还写着「取消讲解」,
+   *   点下去是又一次取消,正是用户报的「只取消、不继续讲解」。
+   *   ⚠ 「催刷新列表」也一并删了(用户 2026-11-12 实机:「在后台点刷新列表没用,
+   *   生效不了」)—— 隐藏标签里平台自己的刷新都排不上队,点它一样不生效。 */
   var BLIND_WAIT_MAX = 5;
   /* nap11:盲模式**密探节奏**。取消之后每 3 秒看一眼界面翻没翻 ——
    *   实测平台翻盘时间在 5~31 秒之间浮动,固定的 15 秒间隔经常刚好错过窗口。
@@ -226,6 +230,31 @@
   var ID_CONFIRM_TICKS = 2;     // 换品要连续两拍同键才认(去抖,防重渲染误判)
   var USER_BUSY_MS = 1500;      // 用户手势后让路时长(找款期间不抢滚动)
 
+  /* ★ 2026-11-12 外部重启账本(用户报:两台电脑同控一个后台,
+   *   另一台对**同一商品**「取消讲解 → 再讲解」后,本机计时没变,
+   *   到点仍按原节奏把这个刚讲过的品再讲一遍)。
+   * ----------------------------------------------------------
+   * 语义:**同一个商品被外部中断讲解又重新开始 = 一次新的讲解开始** ⇒ 计时从头走。
+   * 判据只有一条:off → on 的翻转,且 off 必须晚于本轮 startedAt、距今 ≤ 本常量。
+   * 为什么只认翻转、不认「看到在讲」:平台重渲染按钮文案始终是「取消讲解」,
+   *   **不会产生 off 态**,所以「无中断的重新渲染」永远不会误刷计时。
+   * 15 秒窗口给多端同步留余量(实测 1~3 秒),同时挡住「滚走十几秒后找回来」
+   *   被误当重启 —— 那种情况本来也不该重置计时。 */
+  var LECT_REFRESH_MS = 15000;
+  /* observer 当批轻探的限频。off 态只存在于「取消 → 再讲」之间那一两秒,
+   * 等 600ms 去抖后的拍点去采常常已经恢复 ⇒ 必须在变更当批读一次。
+   * 300ms = 每秒最多 3.3 次单行读,比人手两次点击的间隔快得多,足够抓到 off;
+   * 同时把「平台频繁重渲染」时的额外开销压到 3ms/s 量级(见下方成本说明)。 */
+  var LECT_PROBE_MS = 300;
+  /* 我们自己写的状态行停留多久。
+   * ★ 2026-11-12 用户定:不要挂 8 秒,**跟自动轮次那条消息一样长** ——
+   *   轮次提示走 toast → setStatus 的 DYC_STATUS_TTL = 3000(src/content/dialog.js)。
+   *   这里是独立模块,拿不到那个 const,所以照同一个数值写死;真要改口径,
+   *   两处一起改(自测里有一条断言盯着「必须用这个常量、不许再写字面量」)。
+   * 实际可见时长 = 3~4 秒:状态行由 checkNow 每 2 秒一拍清理,3 秒那一刻若还没
+   *   赶上拍点,下一拍(≤4 秒)就清掉,与轮次消息的 3 秒观感一致。 */
+  var STATUS_TTL_MS = 3000;
+
   var state = {
     on: false,              // 用户当面开关(胶囊上的那枚)
     minutes: DEF_MIN,
@@ -273,12 +302,17 @@
      *   永远点取消,商品被取消后空着,表现为「切页面就再也不循环」。
      *   补讲落实与否交给下一轮读到「在讲」时销账,本轮不确认。 */
     cancelPending: 0,
-    /* nap10:盲模式补讲轮「界面还没翻」已经探了几次(到 BLIND_WAIT_MAX 强制点一次) */
+    /* nap10:盲模式补讲轮「界面还没翻」已经探了几次(到 BLIND_WAIT_MAX 归零继续等) */
     blindWaits: 0,
     /* nap11:补讲的时刻 —— 之后 BLIND_SETTLE_MS 内读到「不在讲」只当界面没翻,不乱点 */
     blindSettled: 0,
-    /* nap12:上一次主动点「刷新列表」的时刻(20 秒限频,别连刷) */
+    /* nap12:上一次主动点「刷新列表」的时刻 —— 2026-11-12 起这个动作已删除
+     *   (用户实机:后台点它不生效),字段保留仅为旧存档/诊断兼容,不再写入。 */
     blindRefreshAt: 0,
+    /* ★ 2026-11-12:最后一次「判定为后台」的时刻 + 静默期诊断去重标记。
+     *   用途见 VISIBLE_GRACE_MS / inVisibleGrace():切回前台的 2.5 秒只读不点。 */
+    hiddenAt: 0,
+    graceLoggedAt: 0,
     fails: 0,
     retryAt: 0,
     busy: false,            // 动作互斥锁
@@ -323,7 +357,20 @@
      *   而待命是"这个品我不看了",补讲等于把用户刚关掉的讲解又点开。
      *   等页面出现**任意**正在讲解的商品(主播自己开的/平台连的)才接管。 */
     passive: 0,
-    vigilPaintAt: 0         // 守夜文案上次刷新时刻(秒级刷新,不另开定时器)
+    vigilPaintAt: 0,        // 守夜文案上次刷新时刻(秒级刷新,不另开定时器)
+    /* ★ 2026-11-12 外部重启账本(配合 LECT_REFRESH_MS):
+     *   lectOn      当前认定的讲解态:-1 未知 / 1 在讲 / 0 不在讲
+     *   lectOffAt   「第一次看到不在讲」的时刻,0 = 没有;窗口起点只用它,不被后续 off 刷新
+     *   lectRowEl   缓存的目标行元素(observer 轻探只读它,不做整页查找)
+     *   lectProbeAt 轻探上次时刻(限频)
+     *   extRestarts 本次开启以来判成外部重启的次数(诊断用,不参与逻辑)
+     *   statusTtlAt 我们自己写的状态行何时自动消失(其他来源不设,见 setStatusLine) */
+    lectOn: -1,
+    lectOffAt: 0,
+    lectRowEl: null,
+    lectProbeAt: 0,
+    extRestarts: 0,
+    statusTtlAt: 0
   };
 
   var host = null;          // Shadow DOM 宿主(fixed)
@@ -624,11 +671,38 @@
     } catch (e) { /* 忽略 */ }
   })();
 
+  /* 「刚从后台回到前台」的静默期(2026-11-12)。
+   * ----------------------------------------------------------
+   * 用户实机:「切后台能取消讲解,但不会点继续讲解,切回来发现是无讲解状态」。
+   * 除了后台那一轮的账本错乱(见盲模式那段注释),还有第二刀:**切回来头一拍**。
+   * 页面刚可见时平台还没重绘,rAF 刚恢复,我们读到的仍是冻结时的旧文案 ——
+   * 那一拍若「看见在讲」就点取消,等于把用户切回来看到的一幕又取消一次。
+   * ⇒ 从后台回来的头 2.5 秒只读不点,让平台先把界面刷新过来。
+   * 为什么是 2.5 秒:实测 rAF 恢复后 0.3~1.2 秒内平台完成一次重绘(用户切回即见新界面),
+   * 2.5 秒留了近一倍余量,又远小于平台 16~31 秒的"翻盘"时间。 */
+  var VISIBLE_GRACE_MS = 2500;
+
   function pageHidden() {
     if (typeof document === 'undefined') return false;
-    if (document.visibilityState === 'hidden') return true;
-    if (lastRafAt && Date.now() - lastRafAt > RAF_STALE_MS) return true;
+    if (document.visibilityState === 'hidden') { rememberHidden(); return true; }
+    if (lastRafAt && Date.now() - lastRafAt > RAF_STALE_MS) { rememberHidden(); return true; }
     return false;
+  }
+
+  /** 记下「最后一次判定为后台」的时刻 —— 它就是回到前台的起点。 */
+  function rememberHidden() {
+    if (state) state.hiddenAt = Date.now();
+    return true;
+  }
+
+  /** 刚从后台回来、界面还没刷新完的那一小段:只读不点。 */
+  function inVisibleGrace() {
+    if (!state) return false;
+    /* 顺序很重要:**先问一次 pageHidden**,它是唯一记录 hiddenAt 的地方;
+     *   反过来先判 hiddenAt 是否为空,第一次进后台就永远记不上(自测抓到的坑)。 */
+    if (pageHidden()) return false;                       // 还在后台,走盲模式那条路
+    if (!state.hiddenAt) return false;
+    return (Date.now() - state.hiddenAt) < VISIBLE_GRACE_MS;
   }
 
   /* 后台一律改走拍子驱动(见下面 nap),前台仍用 setTimeout 保精度。
@@ -2619,6 +2693,9 @@
 
   function setStatusLine(text, kind) {
     state.status = text ? { text: text, kind: kind || '' } : null;
+    /* 任何新提示都取消上一条的「自动消失」计时 —— 否则我们那条几秒后会把
+     * 别人刚写上去的「重试中 / 守候中」一起清掉。 */
+    state.statusTtlAt = 0;
     paintStatusLine();
   }
 
@@ -3421,6 +3498,9 @@
       state.blindWaits = 0;
       state.blindSettled = 0;
       state.blindRefreshAt = 0;
+      /* 重开是新的开始:不继承上一轮的"刚从后台回来"时刻,否则刚开就被静默期挡住。 */
+      state.hiddenAt = 0;
+      state.graceLoggedAt = 0;
       state.softFails = 0;
     }
     /* 守夜账本一起清:重开是新的开始,不继承上一轮的探针节奏与配额。
@@ -3517,6 +3597,13 @@
     }
     state.pendingKey = '';
     state.pendingTicks = 0;
+
+    /* ★ 2026-11-12:秒档也要认外部重启。秒档本来没有「行在但不在讲」这条链,
+     *   live 为空时按 key 把目标行找回来判一次,否则隔壁取消的那一两秒完全采不到。
+     *   只在 live 为空时才多这一次按 key 查找(11 行比对,与 findLiveRow 同量级)。 */
+    var lectRow = live || null;
+    if (!lectRow) { try { lectRow = findRowByKey(); } catch (e) { lectRow = null; } }
+    if (sampleLecture(lectRow, now)) return;
 
     /* 绝对兜底:从第一次失败起算 5 分钟仍没成功过一次 ⇒ 停。
      * 防的是「每轮都在给用户让路、失败计数永远不涨」这条路径。 */
@@ -3753,6 +3840,18 @@
 
   async function doFastCycle() {
     if (!state.on || state.busy || state.group !== 'sec') return;
+    /* ★ 2026-11-12:刚从后台回来 —— 先给平台 2.5 秒把界面刷过来再判断。
+     *   隐藏标签的 DOM 是冻住的快照,切回来头一招就动手,很可能把"已经翻好的
+     *   「讲解」"读成「取消讲解」又点一次(用户:切回来还是没讲解)。 */
+    if (inVisibleGrace()) {
+      if (state.hiddenAt !== state.graceLoggedAt) {
+        state.graceLoggedAt = state.hiddenAt;
+        noteDiag('刚回到前台 ⇒ 先等平台刷新界面,本拍只读不点');
+      }
+      state.nextAt = Date.now() + 1000;
+      paint();
+      return;
+    }
     if (followCurrentLecture()) return;
     var mark = abortSeq;
     state.busy = true;
@@ -3828,7 +3927,10 @@
        *   盲模式下"界面说在讲"可能只是因为 DOM 冻结,此时账上还挂着那笔取消,
        *   若在此销账,下一轮界面翻成「不在讲」就成了"不欠账却不在讲" ⇒ 误停表。
        *   (nap8 自测里就是这么停的:轮4 读在讲→销账→同轮补讲,轮5 读到不在讲→停。) */
-      if (lecturing && !state.cancelPending) state.owedResume = 0;
+      /* ★ 2026-11-12:盲模式下**不许销账** —— 隐藏标签的「在讲」可能只是冻住的快照。
+       *   一销账,下一拍读到「不在讲」就成了"不欠账却不在讲",前台恢复时直接判
+       *   「找回的商品已未讲解」停表(用户看到的又一版「切回来就不循环了」)。 */
+      if (lecturing && !state.cancelPending && !blind) state.owedResume = 0;
 
       /* ★ nap8(2026-11-01 用户:「一切换页面就再也不循环了」):
        *   后台不再拿 DOM 当「该取消还是该补讲」的判据(冻结的 DOM 会让它永远答"还在讲")。
@@ -3840,7 +3942,9 @@
        *   后台看到「不在讲」只有三种来源:平台自停 / 我方取消的后果 / DOM 假阴性
        *   —— **三种都该补讲,没有一种是该停表的**。用户切后台就是为了让它继续跑,
        *   停表是这里最坏的结果(比空转一轮差得多)。
-       *   所以盲模式只剩三个动作:补讲 → 点取消开新一轮 → 再补讲,永不自行退出。 */
+       *   所以盲模式只剩三个动作:**补讲 → 点「弹出讲解卡」→ 再补讲**,永不自行退出。
+       *   ★ 2026-11-12 用户定(选项 2):「取消 → 等界面刷回「讲解」→ 再讲」这条后台不再走,
+       *   见下面 `if (lecturing)` 段末的说明 —— 空窗压不掉,那就别在后台制造空窗。 */
       if (blind) {
         if (state.cancelPending) {
           /* ★ nap10/nap11:补讲轮只在按钮真的变回「讲解」时才点 ——
@@ -3872,37 +3976,40 @@
             return;
           }
           state.blindWaits = (state.blindWaits || 0) + 1;
-          if (state.blindWaits < BLIND_WAIT_MAX) {
-            /* ★ nap12:等了 6 秒还没翻,**主动请平台刷一次列表**,别干等。
-             *   隐藏标签的 DOM 不翻,根因是平台自己没去拉新数据(它的定时器被节流),
-             *   不是我们读得不够勤。既然干等只能拿 16~31 秒,那不如催它一下。
-             *   限 20 秒一次,且每轮最多一次,不会刷屏。 */
-            if (state.blindWaits === 2 && Date.now() - (state.blindRefreshAt || 0) > 20000) {
-              var rf = findListRefreshBtn();
-              if (rf) {
-                fireClick(rf);
-                state.blindRefreshAt = Date.now();
-                noteDiag('盲模式:界面 6 秒没翻 ⇒ 点「刷新列表」催一次');
-              } else {
-                noteDiag('盲模式:想催刷新但找不到「刷新列表」按钮');
-              }
-            }
-            noteDiag('盲模式:等界面翻(按钮「' + (rl2raw || '无') + '」)· 3 秒后再看');
-            state.nextAt = Date.now() + BLIND_TICK_MS;
-            paint();
-            return;
+          /* ★ 2026-11-12(用户实机:「在后台点刷新列表没用,生效不了」):
+           *   原来的「催刷新」整段删掉 —— 隐藏标签里平台连自己都刷不动,
+           *   我们点它那一下同样进不了队列,只是多一个无效点击 + 一条假日志。
+           *   后台唯一有效的事就是**等界面自己翻**(实测 16~31 秒),密探每 3 秒读一次。
+           * ★ 2026-11-12 修(用户实机:「切后台能取消讲解,但不会点下一步继续讲解,
+           *   切回来发现是无讲解状态」)——
+           *   旧写法等满 BLIND_WAIT_MAX 拍就「强制补讲」,可它点的仍是
+           *   `findLectureBtn(row)`:**那一拍按钮还写着「取消讲解」**(隐藏标签的 DOM
+           *   要 16~31 秒才翻),点下去等于再取消一次;点完还无条件清账 + 记一笔
+           *   "刚补讲过"的观察期,下一拍读到冻结快照"还在讲"就再走「看见在讲 ⇒ 点取消」。
+           *   于是整场只在取消,一次「讲解」都没点 —— 就是用户说的"只循环了一半"。
+           *   11-10 那批性能优化把 check 从 82ms 降到 21ms,5 拍只要 15 秒就撞满,
+           *   而平台翻盘要 16~31 秒 ⇒ 这个坑从"偶尔"变成"每次切后台必中"。
+           *   现在:**不到 start 态就绝不点按钮**(后台空转远好过点错);
+           *   账本(cancelPending / owedResume)一直留着,界面一翻或回到前台立刻补讲。 */
+          if (state.blindWaits >= BLIND_WAIT_MAX) {
+            state.blindWaits = 0;              // 归零后继续等下一轮,不清账、不点按钮
           }
-          noteDiag('盲模式:界面 ' + state.blindWaits + ' 次没翻 ⇒ 强制补讲一次');
-          if (rb2) fireClick(rb2);
-          state.cancelPending = 0;
-          state.blindWaits = 0;
-          state.blindSettled = Date.now();
-          finishFastCycle(row, name);
+          noteDiag('盲模式:等界面翻(按钮「' + (rl2raw || '无') + '」)· 3 秒后再看');
+          state.nextAt = Date.now() + BLIND_TICK_MS;
+          paint();
+          return;
+        }
+        /* ★ 2026-11-12:我方已点过取消、界面却仍报「讲解中」= 冻结快照,不是真在讲。
+         *   这一档绝不点按钮:再点一次取消只会把"已取消"落实得更彻底。只等界面翻。 */
+        if (lecturing && owesResume()) {
+          noteDiag('盲模式:我方已取消,界面仍冻在「讲解中」⇒ 只等,不再点');
+          state.nextAt = Date.now() + BLIND_TICK_MS;
+          paint();
           return;
         }
         if (lecturing) {
-          /* ★ 2026-11-06:后台也优先弹卡。DOM 冻着照样能派发点击,而弹卡**不需要**
-           *   等"界面翻回来"——正好绕开隐藏标签 16~31 秒的翻盘等待。
+          /* ★ 2026-11-06:后台优先弹卡 —— 弹卡**不需要**取消,也就没有
+           *   "取消之后等界面刷过来"的空窗;DOM 冻着照样能派发点击。
            *   下一拍密探(3 秒)读一次:还在讲就继续,真掉线了就走下面的补讲。 */
           var pb = findPopBtn(row) || findPopBtnPage();
           if (pb && clickable(pb)) {
@@ -3917,16 +4024,18 @@
             state.nextAt = Date.now() + BLIND_TICK_MS;
             return;
           }
-          var cb = findStopBtn(row) || findLectureBtn(row);
-          if (cb) fireClick(cb);
-          noteDiag('盲模式:看见在讲 ⇒ 点「' + (cb ? txt(cb) : '无按钮') + '」开新一轮');
-          state.cancelPending = Date.now();
-          state.owedResume = Date.now();     // 记一笔,前台恢复时能接上
-          state.blindWaits = 0;
-          finishFastCycle(row, name);
-          /* ★ nap11:取消后进入**密探**节奏(3 秒一次),不再等满间隔 ——
-           *   界面一翻就补讲,一轮总时长由平台翻盘速度决定而不是由设定间隔决定。 */
-          state.nextAt = Date.now() + BLIND_TICK_MS;
+          /* ★ 2026-11-12 用户定(选项 2)：「后台不做取消。」
+           *   没有「弹出讲解卡」这枚按钮时,后台**不再发起「取消讲解」**。
+           *   理由:取消之后平台要 16~31 秒才把界面刷回「讲解」,这段商品一直是空的,
+           *   后台点得再多也补不上(而且旧写法连点取消,用户看到的就是"只循环了一半")。
+           *   这段空窗无法压缩 ⇒ 干脆不在后台取消,留到回到前台再做完整一轮
+           *   (前台界面是活的,取消→续讲一步到位,不会停在半截)。
+           *   代价:后台不再有"重新开讲"的动作,只有「弹出讲解卡」会继续点;
+           *   收益:后台零空窗,商品一直在讲。 */
+          noteDiag('盲模式:在讲但没有「弹出讲解卡」⇒ 后台不取消,留到回前台再做');
+          state.startedAt = Date.now();
+          state.nextAt = state.startedAt + intervalMs();
+          paint();
           return;
         }
         /* 不在讲。两种情况要分开:
@@ -3941,11 +4050,21 @@
           paint();
           return;
         }
-        /* 补讲只认 start 态:pop 按钮点一百次也开不了讲解 */
-        var rb = findStartBtn(row) || findLectureBtn(row);
-        if (rb) fireClick(rb);
-        noteDiag('盲模式补讲:看不见讲解 ⇒ 点「' + (rb ? txt(rb) : '无按钮') + '」');
+        /* 补讲只认 start 态:pop 按钮点一百次也开不了讲解。
+         * ★ 2026-11-12:找不到「讲解」就继续等,**绝不拿 findLectureBtn 兜底** ——
+         *   兜底那一枚很可能正是「取消讲解」,点下去又是一次取消(用户报的那半截循环),
+         *   而且旧写法无论点没点都会清账 + 记"刚补讲过",把下一轮也一起挡住。 */
+        var rb = findStartBtn(row);
+        if (!rb) {
+          noteDiag('盲模式:没看到「讲解」按钮 ⇒ 继续等,不点其它态的按钮');
+          state.nextAt = Date.now() + BLIND_TICK_MS;
+          paint();
+          return;
+        }
+        fireClick(rb);
+        noteDiag('盲模式补讲:点「' + txt(rb) + '」');
         state.owedResume = 0;
+        state.cancelPending = 0;
         state.blindSettled = Date.now();
         finishFastCycle(row, name);
         return;
@@ -3956,6 +4075,9 @@
         noteDiag('秒档:商品不在讲解 ⇒ 补点讲解');
         if (!(await clickLectureAndVerify(mark))) { if (!aborted(mark)) softSkipFast('补讲未确认'); return; }
         state.owedResume = 0;                // 补讲确认成功 ⇒ 销账
+        /* 2026-11-12:后台"等界面翻"期间挂下的取消账,到这里才算真清了 ——
+         * 不清的话下一轮切后台会立刻被它当成"我方已取消、界面还没翻"而空等。 */
+        state.cancelPending = 0;
         finishFastCycle(row, name, 're');
         return;
       }
@@ -4069,6 +4191,7 @@
       if (aborted(mark)) return;
       if (!ok) { softSkipFast('续讲未确认'); return; }
       state.owedResume = 0;                  // 续讲确认成功 ⇒ 销账(nap7)
+      state.cancelPending = 0;               // 2026-11-12:同 4004,取消账一并清
 
       finishFastCycle(row, name);
     } catch (e) {
@@ -4101,6 +4224,24 @@
     var tGate = Date.now();
     if (tGate - lastCheckAt < CHECK_MIN_MS) return;
     lastCheckAt = tGate;
+    /* ★ 2026-11-12:我们自己写的「外部已重讲」只在状态行留 3 秒(STATUS_TTL_MS,
+     * 与轮次消息同长)—— 它解释的是「为什么计时忽然变了」,不是常驻状态。
+     * 零成本判断,不另开定时器。 */
+    if (state.statusTtlAt && tGate > state.statusTtlAt) {
+      state.statusTtlAt = 0;
+      setStatusLine(null);
+    }
+    /* ★ 2026-11-12:刚从后台回来、界面还没刷新完 ⇒ 连"状态判定"都先停,
+     *   免得拿冻结快照误判成「换了商品 / 有人取消」而白跑一轮。
+     *   只刷一下画面(倒计时照走),2.5 秒后自然恢复。 */
+    if (inVisibleGrace()) {
+      if (state.hiddenAt !== state.graceLoggedAt) {
+        state.graceLoggedAt = state.hiddenAt;
+        noteDiag('刚回到前台 ⇒ 先等平台刷新界面,本拍只读不点');
+      }
+      paint();
+      return;
+    }
     perf.checkN += 1;
     /* ★ 2026-11-10 分段读数(check 从 82ms → 21.5ms 之后):
      *     找行 16.9ms + 二次遍历 46.8ms(仅「找不到行」时) —— 两段都是「逐行逐元素扫」。
@@ -4137,6 +4278,12 @@
        *   连续两拍都命中 (a) 才转 wait,避免平台重渲染瞬间的假阴性。 */
       var sameRow = findRowByKey() || (state.product ? findRowByName(state.product) : null);
       if (sameRow) {
+        /* ★ 2026-11-12:行还在、只是不讲了 —— 先记一笔 off。
+         *   隔壁电脑十几秒内又把它讲起来时,这条账就是「计时重来」的唯一前提;
+         *   真取消(按钮翻成「讲解」)照旧 2 拍后 resetToWait,本机手动取消另有
+         *   onUserCancelClick(isTrusted)即时停表的独立通道,不受这里影响。
+         *   只认按钮明确翻成「讲解」的那种 off,重渲染假阴性不记账。 */
+        if (lectureCancelled(sameRow)) noteLectureOff(now);
         state.cancelSeen = (state.cancelSeen || 0) + 1;
         if (state.cancelSeen >= 2) {
           diagOnce('cancel', '行还在但讲解中没了 ⇒ 判定手动取消');
@@ -4268,6 +4415,12 @@
 
     if (state.phase !== 'run') { state.phase = 'run'; paint(); }
 
+    /* ★ 2026-11-12:目标行就在眼前、且确认在讲 —— 采一次讲解态。
+     *   能走到这里说明 rowKey 没变(没换品),所以「刚被取消又讲回来」只可能来自
+     *   另一台设备/平台自己 ⇒ 判成外部重启,把计时推到 now + 间隔并结束本拍,
+     *   绝不在它刚讲过的下一秒再点一次取消→再讲。 */
+    if (sampleLecture(row, now)) return;
+
     // 睡眠/锁屏醒来:过期太久不补点,直接重新计时
     if (state.lastShotAt && now - state.lastShotAt > state.minutes * 60000 + 120000) {
       state.nextAt = now + state.minutes * 60000;
@@ -4317,6 +4470,11 @@
      *   结果是「飞到上一个商品那儿看一眼、再开始扫」—— 白花一档,画面还会明显跳一下。 */
     state.rowAnchor = null;
     state.anchorHits = 0;            // 换品 ⇒ 记忆命中计数归零
+    /* 2026-11-12:换品 ⇒ 外部重启账本作废。新商品可能本来就在讲,
+     * 沿用旧商品的 off 时刻会把「第一次看见它在讲」错判成外部重启。 */
+    state.lectOn = -1;
+    state.lectOffAt = 0;
+    state.lectRowEl = null;
     endScan();                       // 新商品 ⇒ 断点/圈数清零;若之前停在半路,顺手把视口还回去
     paint();
   }
@@ -4347,8 +4505,124 @@
     state.failSince = 0;
     state.status = null;
     state.busyLabel = '';
+    /* 2026-11-12:停表 ⇒ 讲解态回到「未知」,连同 off 时刻与缓存行一起清。
+     * 留着它们,下一轮第一次采到 on 时会被错认成「外部重启」。 */
+    state.lectOn = -1;
+    state.lectOffAt = 0;
+    state.lectRowEl = null;
+    state.statusTtlAt = 0;
     endScan();                       // 停表 ⇒ 断点清零,并把用户原来的滚动位置还回去
     paint();
+  }
+
+  /* ==========================================================
+   * 外部重启账本(2026-11-12)
+   * ----------------------------------------------------------
+   * 场景:同一后台在两台电脑上同时操作。另一台对当前商品点了
+   *   「取消讲解」再点「讲解」,本机没有任何本机点击,但页面状态会同步过来。
+   * 旧行为:只认「换品」为新的计时起点(rowKey 变) ⇒ 同品重讲后 nextAt 不变,
+   *   到点仍按原节奏取消→再讲一遍,用户看到的就是「刚讲过的品又被讲一遍」。
+   * 新行为:把「off → on」认成一次新的讲解开始,nextAt 推到 now + 间隔。
+   *
+   * 三条防误判(缺一条就会让计时永远不到点):
+   *   ① 自家动作期间不采(state.busy / owedResume / cancelPending) ——
+   *      doCycle 自己就点「取消 → 再讲」,那是要做的动作,不是外部事件;
+   *   ② 必须有真实 off 前置:平台重渲染不会产生 off(按钮文案一直是取消讲解);
+   *   ③ off 必须晚于本轮 startedAt 且 ≤ LECT_REFRESH_MS ——
+   *      自家点完取消后 finishSlowCycle / finishFastCycle 会把 startedAt 推到 now,
+   *      于是之前那一拍的 off 自动失效;滚走十几秒再找回也不认。
+   * ========================================================== */
+
+  /** 记一次「确定不在讲」。只在首次翻转时写时刻,后续 off 不刷新窗口起点。 */
+  function noteLectureOff(now) {
+    if (state.lectOn === 0 && state.lectOffAt) return;
+    state.lectOn = 0;
+    state.lectOffAt = now;
+  }
+
+  /**
+   * 目标行是不是**有明确证据**显示已被取消:按钮真的翻成了「讲解 / 开始讲解」。
+   * 为什么要这道闸:平台重渲染那一瞬按钮会缺失或置灰(kind 为空),那不是取消。
+   * 若不区分,一次重渲染就会被当成「外部重启」把计时刷掉 —— 反复重渲染时
+   * 计时永远到不了点,表现就是「循环开了但一直不动作」,比原 bug 更糟。
+   */
+  function lectureCancelled(row) {
+    var b = null;
+    try { b = findLectureBtn(row); } catch (e) { return false; }
+    if (!b) return false;
+    var k = '';
+    try { k = kindOf(b); } catch (e) { return false; }
+    return k === 'start';
+  }
+
+  /**
+   * 采一次目标商品的讲解态。**返回 true = 判成外部重启**(调用方据此结束本拍,
+   * 不再往下走到点逻辑)。只读一个已知行:不找行、不滚、不点。
+   */
+  function sampleLecture(row, now) {
+    if (!state.on || state.busy) return false;
+    if (state.owedResume || state.cancelPending) return false;   // ① 自家取消在途
+    if (!row) return false;
+    var on = false;
+    try { on = isLecturing(row); } catch (e) { return false; }
+    state.lectRowEl = row;
+    if (!on) {
+      /* 只有按钮明确翻成「讲解」才记账;重渲染造成的短暂假阴性不记(见 lectureCancelled)。 */
+      if (lectureCancelled(row)) noteLectureOff(now);
+      return false;
+    }
+    var prevOff = state.lectOffAt;
+    state.lectOn = 1;
+    state.lectOffAt = 0;
+    if (!prevOff) return false;                        // 只见过 on ⇒ 不是重启
+    if (prevOff < state.startedAt) return false;       // ③ 中断在本轮开始之前
+    if (now - prevOff > LECT_REFRESH_MS) return false; // ③ 太久 ⇒ 当找回,不重置
+    refreshByExternal(now, prevOff);
+    return true;
+  }
+
+  /** 外部重启 ⇒ 计时从头走。轮次不动(还是同一个品、还是这一轮)。 */
+  function refreshByExternal(now, offAt) {
+    var gap = Math.round((now - offAt) / 1000);
+    state.startedAt = now;
+    state.nextAt = now + intervalMs();
+    state.lastShotAt = now;
+    state.extRestarts = (state.extRestarts || 0) + 1;
+    /* 这一刻的失败账全部作废:计时都重来了,没有"重试中"这回事。
+     * cancelSeen/missingSince 一起清 —— 否则隔壁重讲之后本机还会按旧缺失时长判"找不回来"。 */
+    state.fails = 0;
+    state.retryAt = 0;
+    state.softFails = 0;
+    state.skips = 0;
+    state.cancelSeen = 0;
+    state.missingSince = 0;
+    state.pendingKey = '';
+    state.pendingTicks = 0;
+    noteDiag('外部重新讲解 ⇒ 计时重来(中断 ' + gap + ' 秒,累计第 ' +
+      state.extRestarts + ' 次)');
+    /* 用户 2026-11-12 定:只改状态行,**不弹消息盒子** —— 另一个设备点一下,
+     * 这台不该每次都往消息堆里留一条。停留时长与轮次消息同为 3 秒(见 STATUS_TTL_MS)。 */
+    setStatusLine('外部已重讲 · 计时重来', 'warn');
+    state.statusTtlAt = now + STATUS_TTL_MS;
+    paint();
+  }
+
+  /** observer 当批轻探:只看缓存的目标行,确认它是不是刚被取消。
+   *  成本 = 单行 querySelectorAll 一次(LECT_PROBE_MS 限频),不找行、不读矩形宽高。
+   *  只在「本机认为它正在讲」时探 —— 已经判成不在讲就没有可探的东西。 */
+  function probeLectureFlip() {
+    if (!state.on || state.busy) return;
+    if (state.owedResume || state.cancelPending) return;
+    if (state.lectOn !== 1) return;
+    var now = Date.now();
+    if (now - (state.lectProbeAt || 0) < LECT_PROBE_MS) return;
+    var el = state.lectRowEl;
+    if (!el) return;
+    if (!el.isConnected) { state.lectRowEl = null; return; }   // 行被虚拟滚动回收 ⇒ 交拍点判
+    state.lectProbeAt = now;
+    var on = false;
+    try { on = isLecturing(el); } catch (e) { return; }
+    if (!on && lectureCancelled(el)) noteLectureOff(now);
   }
 
   /** 取消讲解 → 等 1.2 秒 → 再点讲解 */
@@ -4383,6 +4657,15 @@
 
   async function doCycle(isSlowRetry) {
     if (state.busy) return;
+    /* ★ 2026-11-12:与秒档同一口径 —— 刚从后台回来先让平台刷新 2.5 秒(只读不点)。 */
+    if (inVisibleGrace()) {
+      if (state.hiddenAt !== state.graceLoggedAt) {
+        state.graceLoggedAt = state.hiddenAt;
+        noteDiag('刚回到前台 ⇒ 先等平台刷新界面,本拍只读不点');
+      }
+      state.retryAt = Date.now() + 1000;
+      return;
+    }
     if (followCurrentLecture()) return;
     /* 2026-10-26(#117):用户在滚/点 ⇒ 让路,顺延 1.2 秒,不发消息、不累计失败 */
     if (userBusy()) { state.retryAt = Date.now() + 1200; return; }
@@ -4780,6 +5063,12 @@
     state.failSince = 0;
     state.status = null;
     state.probeAt = 0;
+    /* 2026-11-12:守夜结束 ⇒ 讲解态重设为「未知」。**不能直接写 1**:
+     * 补讲刚点下去、DOM 还没翻,这时若认成「在讲」,observer 立刻探到「不在讲」
+     * 就会记一笔 off,等界面真翻回来时又被判成外部重启,白刷一次计时。 */
+    state.lectOn = -1;
+    state.lectOffAt = 0;
+    state.lectRowEl = null;
     noteDiag('守夜结束 ⇒ 恢复计时(' + why + ')');
     paint();
   }
@@ -5315,7 +5604,12 @@
     if (!target) return;
     observerTarget = target;
     observer = new MutationObserver(function (records) {
-      if (!state.on || state.busy || wakeTimer) return;
+      if (!state.on || state.busy) return;
+      /* ★ 2026-11-12:外部取消的那一瞬间只存在于「取消 → 再讲」之间,
+       *   等 600ms 去抖后的拍点去采,往往已经恢复成「取消讲解」⇒ 漏采。
+       *   所以在变更当批先轻探一次:只读缓存的那一行、200ms 限频、判成不在讲就停。 */
+      probeLectureFlip();
+      if (wakeTimer) return;
       if (!records.some(mutationRelevant)) return;
       /* ★ 2026-11-10 去抖 300 → 600ms。
        *   真机 check 单拍 82ms,而平台刷新小黄车时 observer 会连续触发 ——
@@ -5493,6 +5787,9 @@
       pop: { tries: state.popTries || 0, ok: state.popOk || 0, none: state.popNone || 0 },
       /* 2026-11-08:0 = 没在待命;1 = 手动取消后待命(等下一个讲解的商品,期间绝不点讲解)。 */
       passive: state.passive || 0,
+      /* 2026-11-12:另一台设备把同一个品「取消 → 再讲」的次数,以及当前认定的讲解态
+       * （-1 未知 / 1 在讲 / 0 不在讲）。计时忽然被推后时,看这两个数就知道是不是外部重启。 */
+      ext: { restarts: state.extRestarts || 0, lect: state.lectOn },
       infinite: !!state.infinite,
       secondsLeft: state.nextAt ? Math.round((state.nextAt - Date.now()) / 1000) : null,
       /* 2026-11-10:三个热函数各自的 EMA 耗时(ms)+ 当前节拍 ——

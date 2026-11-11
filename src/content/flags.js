@@ -319,6 +319,12 @@ function dycPlatformGroups(platId) {
  *   key         在 dybFeatures 对象里的键名;也是弹窗控件 id 的来源
  *               (控件 id 统一为 flag-<key>)
  *   group       归属分组,取值见 DYC_FLAG_GROUPS
+ *   platforms   (可选)平台白名单,取值见 DYC_PLATFORMS 的 id。
+ *               默认不写 = 随分组显隐(分组归哪个平台就在哪个平台露)。
+ *               写了 = **只管这一行的显隐**,与分组归属无关 ——
+ *               用于「分组只归一个平台,但这一行两个平台都要用」的情形
+ *               (现仅 goodsImagePaste:落在抖音专属的「其他」组,
+ *                但微信小店商品编辑页也要它)。见 popup.js 的 applyPlatform()。
  *   label       弹窗里显示的功能名
  *   desc        弹窗里显示的一句话说明
  *   default     默认值(true = 默认开)
@@ -931,10 +937,17 @@ var DYC_FLAGS_META = [
    *   以后新加功能一律追加到 DYC_FLAGS_META 末尾,不要往中间插)。 */
   {
     key: 'goodsImagePaste',
-    group: 'shared',
+    /* 分组:2026-11-12 用户定「这个功能放到【其他】里面去」(原在「通用」)。
+     * 为什么给平台豁免:「其他」组只归抖音侧,而本功能两个平台都要用
+     *   (pages 含 wxGoodsEdit)。只改 group 会让微信段弹窗里这一行整条消失
+     *   —— 开关仍默认开、功能照跑,用户却没有关它的入口。
+     * 所以另挂 platforms:它不随分组显隐,自己声明在两个平台都露。
+     * 详见 src/popup/popup.js 的 applyPlatform()。 */
+    group: 'other',
+    platforms: ['dy', 'wx'],
     label: '粘贴图片',
     desc: '在上传入口和商详工具栏添加「粘贴图片」按钮。',
-    note: '支持规格图；无图片或上传失败时提示。',
+    note: '无图片或上传失败时提示。',
     default: true,
     pages: ['goodsEdit', 'wxGoodsEdit']
   },

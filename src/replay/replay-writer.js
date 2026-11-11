@@ -7,7 +7,7 @@
  *   1. **绝不攒 Blob。**  1 小时 1080p 约 1~2 GB，`new Blob([...])` 累积到
  *      几百 MB 就会把标签页搞崩（这不是优化项，是可用性底线）。
  *      所以 `showSaveFilePicker` 拿到句柄后就用 `createWritable()` 边下边写，
- *      内存峰值只压着「在飞的 3 个分片」。
+ *      只保留调度器限定的分片窗口，内存不随整场时长累积。
  *   2. **写入必须串行。**  `FileSystemWritableFileStream.write()` 返回 Promise，
  *      并发调用不保证顺序。视频字节顺序错了 = 文件报废，
  *      所以这里用一个 promise 链把写入串起来。
@@ -43,11 +43,12 @@
   /**
    * @param {FileSystemWritableFileStream} writable
    */
-  function SerialSink(writable) {
+  function SerialSink(writable, onPhase) {
     this.w = writable;
     this.chain = Promise.resolve();
     this.bytes = 0;      // 已交给 write 的累计字节（含仍在队列里的）
     this.closed = false;
+    this.onPhase = onPhase || function () {};
   }
 
   SerialSink.prototype.write = function (chunk) {
@@ -57,6 +58,7 @@
     this.bytes += buf.byteLength;
     var self = this;
     this.chain = this.chain.then(function () {
+      self.onPhase('写入文件');
       return self.w.write(buf);
     });
     return this.chain;
@@ -68,6 +70,7 @@
     return this.chain.then(function () {
       if (self.closed) return self.bytes;
       self.closed = true;
+      self.onPhase('保存文件');
       return self.w.close().then(function () { return self.bytes; });
     });
   };
@@ -126,9 +129,9 @@
     ));
   }
 
-  function openSink(handle) {
+  function openSink(handle, onPhase) {
     return handle.createWritable({ keepExistingData: false }).then(function (w) {
-      return new SerialSink(w);
+      return new SerialSink(w, onPhase);
     });
   }
 
@@ -216,6 +219,7 @@
       init: function () { return Promise.resolve(); },   // TS 的 init 由 mux.js 自己生成
       write: function (buf) {
         if (fatal) return Promise.reject(fatal);
+        sink.onPhase('转封装');
         tm.push(buf);
         tm.flush();
         // 返回「本片产生的字节都写完了」的 promise，调用方据此推进度

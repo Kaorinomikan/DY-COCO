@@ -51,6 +51,7 @@ var DYC_INJECT_GROUPS = {
       'src/live/search.js',
       'src/live/hide-elements.js',
       'src/live/name-wrap.js',
+      'src/content/item-code.js',
       'src/live/copy-code.js',
       'src/live/auto-refresh.js',
       'src/content/stock-net-probe.js',
@@ -174,6 +175,7 @@ var DYC_INJECT_GROUPS = {
       'src/content/anchor.js',
       'src/content/dialog.js',
       'src/content/debug-panel.js',
+      'src/content/item-code.js',
       'src/live/live-detail.js',
       'src/live/live-detail-tab.js',
       'src/live/live-detail-jump.js',
@@ -197,6 +199,7 @@ var DYC_INJECT_GROUPS = {
       'src/content/debug-panel.js',
       'src/live/hide-elements.js',
       'src/replay/replay-ui.js',
+      'src/content/item-code.js',
       'src/live/live-screen.js',
       'src/replay/replay-link.js'
     ],
@@ -217,6 +220,7 @@ var DYC_INJECT_GROUPS = {
       'src/content/anchor.js',
       'src/content/dialog.js',
       'src/content/debug-panel.js',
+      'src/content/item-code.js',
       'src/live/compass-table.js',
       'src/live/hide-elements.js'
     ],

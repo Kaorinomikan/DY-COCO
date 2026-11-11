@@ -61,6 +61,9 @@ source = source.replace('  dycReadFlags().then', [
     updateProgress() {},
     debugLog() {}
   };
+  /* 款号判据是共享的（src/content/item-code.js 单一真源）——
+     必须在被测脚本之前注入同一个上下文，否则 parseCode 里调 dyc* 会 ReferenceError。 */
+  vm.runInNewContext(fs.readFileSync('src/content/item-code.js', 'utf8'), c);
   vm.runInNewContext(source, c);
 
   /* 造一个装满 n 个的购物车；firstId 放在第 1 位，用来验「已在车内」优先于「车满」 */

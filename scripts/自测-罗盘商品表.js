@@ -27,6 +27,10 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 const SRC_PATH = path.join(ROOT, 'src/live/compass-table.js');
+/* 款号判据是共享的（src/content/item-code.js 单一真源），装配时一并注入 */
+const SHARED = fs.readFileSync(path.join(ROOT, 'src/content/item-code.js'), 'utf8');
+/* 判据断言直接打共享实现：它才是四个页面共用的那一份 */
+const J = new Function(SHARED + '\nreturn { isCodeLike: dycIsCodeLike };')();
 
 /* ============================================================
  * 1. 最小 DOM 垫片（只实现被测函数用到的那一小撮 API）
@@ -437,10 +441,11 @@ function buildModule(fnNames, varNames, extra) {
 }
 
 const M = buildModule(
-  ['isCodeLike', 'isExtNode', 'textWithoutExt', 'infoCellOf', 'readOfficialCode',
+  ['isExtNode', 'textWithoutExt', 'infoCellOf', 'readOfficialCode',
    'guessFromName', 'readCode', 'hasDirectText', 'looksLikeName', 'pickNameIn',
    'imageCellOf', 'findNameEl', 'getRows'],
-  ['EXT_MARKS', 'NAME_MAX_SCAN', 'NOT_NAME', 'ONLY_NUM', 'HINT_TEXT']
+  ['EXT_MARKS', 'NAME_MAX_SCAN', 'NOT_NAME', 'ONLY_NUM', 'HINT_TEXT'],
+  SHARED
 );
 
 /* ============================================================
@@ -606,17 +611,32 @@ console.log('\n=========== C. 行识别（剔除测量行 / 表头 / 嵌套小�
 /* ---------- D. 款号口径 ---------- */
 console.log('\n=========== D. 款号口径 ===========');
 {
-  eq('纯数字官方货号算合法款号', M.isCodeLike('10086'), true);
-  eq('三个字符起步', M.isCodeLike('A12'), true);
-  eq('两个字符不算', M.isCodeLike('A1'), false);
-  eq('含空格不算', M.isCodeLike('A1 2'), false);
+  eq('纯数字官方货号算合法款号', J.isCodeLike('10086'), true);
+  eq('三个字符起步', J.isCodeLike('A12'), true);
+  eq('两个字符不算', J.isCodeLike('A1'), false);
+  eq('含空格不算', J.isCodeLike('A1 2'), false);
 
   const nameEl = new FakeEl('p', {}, [new FakeText('某款外套 NE1C1091W')]);
   eq('名称末尾款号可推算', M.guessFromName(nameEl), 'NE1C1091W');
   const pureText = new FakeEl('p', {}, [new FakeText('某款夏季外套')]);
   eq('名称末尾不是款号时不瞎猜', M.guessFromName(pureText), '');
   const short = new FakeEl('p', {}, [new FakeText('某款外套 A1')]);
-  eq('末尾不足 4 位不猜', M.guessFromName(short), '');
+  eq('末尾不足 3 位不猜', M.guessFromName(short), '');
+
+  // 2026-11-12 与中控台对齐（反馈 #137）：3 位款号、复合款号、纯尺码
+  const three = new FakeEl('p', {}, [new FakeText('黑色丝毛侧拉链半身裙（有内衬）S28')]);
+  eq('3 位款号可推算（#137）', M.guessFromName(three), 'S28');
+  const composite = new FakeEl('p', {}, [
+    new FakeText('【KiKi】【金绒流年】燕麦/乌木色羊毛老钱风背心外套 M609Y0544/0686')
+  ]);
+  eq('复合款号取整串', M.guessFromName(composite), 'M609Y0544/0686');
+  eq('复合款号算合法款号', J.isCodeLike('M609Y0544/0686'), true);
+  const size2xl = new FakeEl('p', {}, [new FakeText('某连衣裙 2XL')]);
+  eq('尺码 2XL 不当款号', M.guessFromName(size2xl), '');
+  const sizePair = new FakeEl('p', {}, [new FakeText('某连衣裙 2XL/3XL')]);
+  eq('尺码对 2XL/3XL 不当款号', M.guessFromName(sizePair), '');
+  const sixXl25 = new FakeEl('p', {}, [new FakeText('杏色连帽抽绳拉链外套 6XL25')]);
+  eq('6XL25 不被尺码规则误杀', M.guessFromName(sixXl25), '6XL25');
 
   // 名称元素里裹着平台的「复制 ID」小按钮（2026-10-14 商品列表页踩过的形状）
   const withIdBtn = new FakeEl('p', {}, [
@@ -644,7 +664,7 @@ console.log('\n=========== E. 按钮注入与点击（落点 / 复制 / 无货�
   // CSS 这段是数组拼接的样式串，没必要抠出来 —— 用桩顶掉 ensureStyle，
   // 其余函数仍是源文件里的真实实现。
   const M2 = buildModule(
-    ['isCodeLike', 'isExtNode', 'textWithoutExt', 'infoCellOf', 'readOfficialCode',
+    ['isExtNode', 'textWithoutExt', 'infoCellOf', 'readOfficialCode',
      'guessFromName', 'readCode', 'hasDirectText', 'looksLikeName', 'pickNameIn',
      'imageCellOf', 'findNameEl', 'flash', 'press', 'release', 'makeButton', 'injectIntoRow',
      // 2026-10-19 二改：落点版本标记（防补涂抖动）
@@ -676,7 +696,7 @@ console.log('\n=========== E. 按钮注入与点击（落点 / 复制 / 无货�
      'BADGE_PAD_BOTTOM', 'BADGE_TOL', 'PAD_VER',
      // dbg 的去重缓冲（源码里是模块级 var，抠函数时必须一起带上）
      'logPending', 'logTimer', 'LOG_MERGE_MS'],
-    'var ensureStyle = function () {};'
+    SHARED + '\nvar ensureStyle = function () {};'
   );
 
   // E1. 徽标落点：按钮挂进商品信息单元格、脱离文档流

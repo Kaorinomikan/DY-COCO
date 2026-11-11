@@ -157,17 +157,16 @@
    * 取文本（清单）。
    * @returns {Promise<string>}
    */
-  function fetchText(url) {
-    return request(url).then(function (r) {
-      if (!r.ok) throw new Error('清单请求失败 HTTP ' + r.status);
-      return r.text();
+  function fetchText(url, opts) {
+    return fetchBuf(url, opts || { timeoutMs: 6000 }).then(function (buf) {
+      return new TextDecoder('utf-8').decode(buf);
     });
   }
 
   /**
    * 取二进制。
    * @param {string} url
-   * @param {{range?:string, signal?:AbortSignal}} [opts]
+   * @param {{range?:string, signal?:AbortSignal, timeoutMs?:number, onData?:function}} [opts]
    * @returns {Promise<Uint8Array>}
    */
   function fetchBuf(url, opts) {
@@ -175,6 +174,28 @@
     var init = {};
     if (opts.range) init.headers = { Range: opts.range };
     if (opts.signal) init.signal = opts.signal;
+    if (opts.method) init.method = opts.method;
+    var local = opts.timeoutMs && typeof AbortController === 'function' ? new AbortController() : null;
+    var timer = 0;
+    var timedOut = false;
+    function abort() { local.abort(); }
+    function touch() {
+      if (!local) return;
+      clearTimeout(timer);
+      timer = setTimeout(function () { timedOut = true; local.abort(); }, opts.timeoutMs);
+    }
+    function cleanup() {
+      clearTimeout(timer);
+      if (local && opts.signal) opts.signal.removeEventListener('abort', abort);
+    }
+    if (local) {
+      init.signal = local.signal;
+      if (opts.signal) {
+        if (opts.signal.aborted) local.abort();
+        else opts.signal.addEventListener('abort', abort);
+      }
+      touch();
+    }
     return request(url, init).then(function (r) {
       // 206 是字节范围请求的正常响应，不能当失败
       if (!r.ok && r.status !== 206) {
@@ -184,9 +205,55 @@
         e.status = r.status;
         throw e;
       }
-      return r.arrayBuffer();
+      if (opts.onResponse) opts.onResponse(r);
+      if (opts.method === 'HEAD') return new Uint8Array(0);
+      // 分片内流式收包：慢连接持续有数据就续期，不把正常的大分片误判为超时。
+      if (!r.body || typeof r.body.getReader !== 'function') {
+        return r.arrayBuffer().then(function (buf) {
+          if (opts.onData) opts.onData(buf.byteLength);
+          return new Uint8Array(buf);
+        });
+      }
+      var reader = r.body.getReader();
+      var chunks = [];
+      var size = 0;
+      function readNext() {
+        return reader.read().then(function (part) {
+          if (part.done) {
+            var out = new Uint8Array(size);
+            var offset = 0;
+            chunks.forEach(function (ch) { out.set(ch, offset); offset += ch.byteLength; });
+            return out;
+          }
+          touch();
+          chunks.push(part.value);
+          size += part.value.byteLength;
+          if (opts.onData) opts.onData(part.value.byteLength);
+          return pump();
+        });
+      }
+      function pump() {
+        if (!opts.beforeRead) return readNext();
+        // 主动等写盘腾空间时暂停网络超时；恢复读取后重新计时。
+        clearTimeout(timer);
+        return Promise.resolve(opts.beforeRead(init.signal)).then(function () {
+          if (init.signal && init.signal.aborted) throw new DOMException('已取消', 'AbortError');
+          touch();
+          return readNext();
+        });
+      }
+      return pump();
     }).then(function (buf) {
-      return new Uint8Array(buf);
+      cleanup();
+      return buf;
+    }, function (err) {
+      cleanup();
+      if (timedOut) {
+        var timeout = new Error('分片连续无数据，接收超时');
+        timeout.name = 'TimeoutError';
+        throw timeout;
+      }
+      throw err;
     });
   }
 
@@ -194,13 +261,14 @@
    * 用 HEAD 探体积。有些 CDN 不放行 HEAD，失败就返回 0 —— 调用方按 0 处理。
    * @returns {Promise<number>}
    */
-  function headSize(url) {
-    return request(url, { method: 'HEAD' })
-      .then(function (r) {
-        if (!r.ok) return 0;
+  function headSize(url, opts) {
+    var size = 0;
+    return fetchBuf(url, Object.assign({ timeoutMs: 1500 }, opts || {}, {
+      method: 'HEAD', onResponse: function (r) {
         var n = parseInt(r.headers.get('content-length') || '0', 10);
-        return isFinite(n) ? n : 0;
-      })
+        size = isFinite(n) && n > 0 ? n : 0;
+      }
+    })).then(function () { return size; })
       .catch(function () { return 0; });
   }
 
@@ -208,13 +276,14 @@
    * 直链 MP4 的流式读取：边读边把字节交给 onChunk，内存里不攒整个文件。
    * @returns {Promise<number>} 总字节数
    */
-  function streamTo(url, onChunk, signal) {
+  function streamTo(url, onChunk, signal, onData) {
     return request(url, { signal: signal }).then(function (r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
       var total = parseInt(r.headers.get('content-length') || '0', 10) || 0;
       if (!r.body || typeof r.body.getReader !== 'function') {
         // 拿不到流就退回整块（大文件会吃内存，但不至于直接失败）
         return r.arrayBuffer().then(function (b) {
+          if (onData) onData(b.byteLength);
           return onChunk(new Uint8Array(b), b.byteLength, total).then(function () { return b.byteLength; });
         });
       }
@@ -225,6 +294,7 @@
           if (res.done) return got;
           var ch = res.value;
           got += ch.byteLength;
+          if (onData) onData(ch.byteLength);
           return onChunk(ch, got, total).then(pump);
         });
       }

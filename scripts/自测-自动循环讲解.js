@@ -545,28 +545,42 @@ ok('一轮成功统一走 finishFastCycle 记账(前台弹卡/重讲 + 盲模式
   /* 秒档函数体内不许再手写轮次自增 —— 那样会绕过消息与计时重置 */
   !/state\.round \+= 1;/.test(src.slice(src.indexOf('async function doFastCycle'),
     src.indexOf('function checkNow'))));
-/* nap8(2026-11-01 用户:「一切换页面就再也不循环了」):
-   旧盲模式用 cancelPending + TTL 复看,而隐藏标签的 DOM 冻结在「取消讲解」⇒
-   lecturing 恒真 ⇒ 永远点取消、永远不补讲 ⇒ 商品空着,看着像"停了"。
-   现在改阶段账本:发过取消就下一轮无条件补讲,不问 DOM。 */
-ok('盲模式一轮只做一个动作:先取消、再补讲(靠账本推进,不看 DOM)',
+/* ★ 2026-11-12 用户定(选项 2)：「后台不做取消。」
+   后台只允许两种动作:点「弹出讲解卡」(不需要取消)、或对**历史欠账**补讲。
+   绝不再发起「取消讲解」—— 因为取消后平台要 16~31 秒才刷回「讲解」,
+   那段商品一直空着,后台点再多也补不上(用户报的"只循环了一半"就是它)。 */
+ok('盲模式不再发起「取消讲解」:只点弹卡 / 只补讲(用户 2026-11-12 定,选项 2)',
   /var blind = pageHidden\(\);/.test(src) &&
   /if \(state\.cancelPending\) \{[\s\S]{0,900}?var rb2 = findLectureBtn\(row\);/.test(src) &&
-  /state\.cancelPending = Date\.now\(\);\s*\n\s*state\.owedResume = Date\.now\(\);/.test(src));
+  /盲模式:在讲但没有「弹出讲解卡」⇒ 后台不取消/.test(src) &&
+  !/state\.cancelPending = Date\.now\(\);/.test(src) &&
+  !/盲模式:看见在讲 ⇒ 点/.test(src));
 /* nap10(实机 03:35:06):界面没翻时点一下是白费 —— DOM 冻着,按钮还写「取消讲解」,
    点下去等于再取消一次,把一次真循环拖成 3 轮 48 秒。改成只在按钮真变回「讲解」时点。 */
 ok('盲模式补讲只在界面真的翻回「讲解」时才点,没翻就 3 秒后再看',
   /if \(rb2 && rl2 === 'start'\) \{/.test(src) &&
   /盲模式:等界面翻\(按钮「/.test(src) &&
   /var BLIND_TICK_MS = 3000;/.test(src));
-ok('界面 6 秒没翻就主动点一次「刷新列表」催平台更新(20 秒限频)',
+/* ★ 2026-11-12 用户实机:「在后台点刷新列表没用,生效不了」——
+   原来的「催刷新」断言整体反转:盲模式里**不许**再出现这个无效动作。
+   注意 findListRefreshBtn() 本身要留着(前台跟位落点还要认这枚按钮),
+   只断言"盲模式那段不点它"。 */
+ok('盲模式不再点「刷新列表」催平台(后台点它不生效,用户 2026-11-12 实机确认)',
   /function findListRefreshBtn\(\) \{/.test(src) &&
-  /state\.blindWaits === 2 && Date\.now\(\) - \(state\.blindRefreshAt \|\| 0\) > 20000/.test(src) &&
+  !/var BLIND_REFRESH_GAP_MS/.test(src) &&
+  !/fireClick\(rf\d?\)/.test(src) &&
   /t\.indexOf\('刷新列表'\) !== 0/.test(src));
-ok('界面多次没翻仍有兜底强制点一次,绝不死等',
+/* ★ 2026-11-12(用户实机:「切后台只取消讲解,不会点下一步继续讲解」):
+   旧写法等满 5 拍就「强制补讲」,可那一拍点的还是 findLectureBtn —— 按钮写着
+   「取消讲解」,点下去等于再取消一次;点完还清账 + 记观察期,下一拍读到冻结快照
+   "还在讲"又走「看见在讲 ⇒ 点取消」⇒ 整场只在取消。
+   现在到顶也不点按钮,只催刷新、账本留着,等界面真的翻成「讲解」。 */
+ok('界面多次没翻也不再拿「取消讲解」当补讲点,只等界面翻或催刷新(2026-11-12 实机 bug)',
   /var BLIND_WAIT_MAX = 5;/.test(src) &&
-  /if \(state\.blindWaits < BLIND_WAIT_MAX\)/.test(src) &&
-  /盲模式:界面 ' \+ state\.blindWaits \+ ' 次没翻 ⇒ 强制补讲一次/.test(src));
+  /if \(state\.blindWaits >= BLIND_WAIT_MAX\)/.test(src) &&
+  /* 防回潮:不许再出现「到顶就点那枚按钮」的代码与诊断文案(注释里的历史说明不算) */
+  !/if \(rb2\) fireClick\(rb2\)/.test(src) &&
+  !/noteDiag\('盲模式:界面 ' \+ state\.blindWaits/.test(src));
 /* nap10:检查绑在 15 秒间隔上,常常刚好卡在「还没翻」那一侧 → 白等一整轮。
    改成每秒拍子探一次按钮文案,界面一翻就补讲(实测一次循环 48 秒 → 只受 DOM 延迟限制)。 */
 ok('盲模式有「提前补讲探测」:界面一翻就补,不必等满间隔',
@@ -575,9 +589,10 @@ ok('盲模式有「提前补讲探测」:界面一翻就补,不必等满间隔',
   /state\.nextAt = now;/.test(src));
 /* nap10 第二处 → nap11 修正:曾经让间隔"从点取消起算",结果补讲刚点完就抢跑下一轮,
    读到的是补讲前的界面(不在讲)⇒ 又点一次讲解,白推后一个间隔(实机 03:45:54)。
-   现在两个阶段各按各的节奏:取消后 3 秒密探,补讲后老实等满间隔。 */
-ok('取消后走 3 秒密探、补讲后等满间隔(两个阶段不再互相抢跑)',
-  /state\.cancelPending = Date\.now\(\);[\s\S]{0,900}?state\.nextAt = Date\.now\(\) \+ BLIND_TICK_MS;/.test(src) &&
+   ★ 2026-11-12:后台不再发起取消,这条"取消后 3 秒密探"只剩**历史欠账**那一段
+   (前台点完取消就切后台)。断言它仍然每 3 秒看一次、补讲后老实等满间隔。 */
+ok('历史欠账(已发取消)走 3 秒密探、补讲后等满间隔(两个阶段不互相抢跑)',
+  /if \(state\.cancelPending\) \{[\s\S]{0,2600}?state\.nextAt = Date\.now\(\) \+ BLIND_TICK_MS;/.test(src) &&
   !/function seatBlindNextAt/.test(src));
 ok('补讲后有「等界面反映」观察期,期内读到不在讲也不乱点',
   /var BLIND_SETTLE_MS = 30000;/.test(src) &&
@@ -585,12 +600,13 @@ ok('补讲后有「等界面反映」观察期,期内读到不在讲也不乱点
 ok('盲模式补讲不再"等界面翻":REFLECT/CANCEL_TTL 那套复看机制整体删除',
   !/var REFLECT_MS = /.test(src) && !/var CANCEL_TTL_MS = /.test(src) &&
   !/state\.startedAt \+ REFLECT_MS/.test(src));
-ok('盲模式补讲本轮不确认成败,留给下一轮读到「在讲」时销账',
-  /if \(state\.cancelPending\) \{[\s\S]{0,1800}?state\.cancelPending = 0;\s*\n\s*state\.blindWaits = 0;\s*\n\s*state\.blindSettled = Date\.now\(\);/.test(src));
+ok('盲模式补讲后进入"等界面反映"观察期(本轮不确认成败,留给下一拍读真实状态)',
+  /if \(rb2 && rl2 === 'start'\) \{[\s\S]{0,400}?state\.blindSettled = Date\.now\(\);/.test(src));
 /* nap8 实机回归抓到的真 bug:盲模式下"界面说在讲"可能只是 DOM 冻结,账上那笔取消还在。
-   若此时销账,下一轮界面翻成「不在讲」就成了"不欠账却不在讲" ⇒ 误停表。 */
-ok('销账必须等"界面在讲 + 没有待反映的取消"两个条件同时成立(nap8 误停表的根因)',
-  /if \(lecturing && !state\.cancelPending\) state\.owedResume = 0;/.test(src) &&
+   若此时销账,下一轮界面翻成「不在讲」就成了"不欠账却不在讲" ⇒ 误停表。
+   ★ 2026-11-12:盲模式**一律不销账**(冻住的「在讲」不是证据),所以条件里多一条 !blind。 */
+ok('销账必须等"界面在讲 + 没有待反映的取消 + 不是盲模式"三个条件同时成立(nap8 误停表的根因)',
+  /if \(lecturing && !state\.cancelPending && !blind\) state\.owedResume = 0;/.test(src) &&
   !/if \(lecturing\) state\.owedResume = 0;/.test(src));
 /* nap9(2026-11-01 实机 03:27:18):后台那次停表的现场是「按钮「讲解」· 欠账无」——
    界面已经翻成讲解、补讲机会就在眼前,却因为账上没钱而停表。
@@ -604,12 +620,14 @@ ok('盲模式里不允许出现任何停表出口(停表是切后台最坏的结
     const seg = src.slice(i, j);
     return !/stopByNoLecture\(/.test(seg) && !/stopFast\(/.test(seg);
   })());
-ok('盲模式「不在讲」直接补讲,不再拿欠账当拦路条件',
-  /不在讲。两种情况要分开:[\s\S]{0,2000}?noteDiag\('盲模式补讲:看不见讲解/.test(src));
+ok('盲模式「不在讲」直接补讲,不再拿欠账当拦路条件;补讲只认 start 态',
+  /不在讲。两种情况要分开:[\s\S]{0,2400}?var rb = findStartBtn\(row\);/.test(src) &&
+  /* 2026-11-12:补讲绝不许用 findLectureBtn 兜底 —— 那一枚可能就是「取消讲解」 */
+  !/findStartBtn\(row\) \|\| findLectureBtn\(row\)/.test(src));
 ok('后台找不到商品行也不熔断(隐藏标签回收行 ≠ 商品没了)',
   /if \(pageHidden\(\)\) \{\s*\n\s*noteDiag\('盲模式:这一轮看不到商品行,跳过\(不停表\)'\);/.test(src));
 ok('owedResume 只在「读到正在讲解且无待反映取消」与「补讲/续讲确认成功」时销账,finishFastCycle 不销',
-  /if \(lecturing && !state\.cancelPending\) state\.owedResume = 0;/.test(src) &&
+  /if \(lecturing && !state\.cancelPending && !blind\) state\.owedResume = 0;/.test(src) &&
   !/state\.status = null;\s*[\r\n]+\s*state\.owedResume = 0;/m.test(src));
 
 ok('熔断门槛 3 轮:第 2 次跳过触发搜索兜底,第 3 次才熔断(重渲染抖动留足余量)',
@@ -686,9 +704,19 @@ ok('按 200 品上限推演:整表 ≈58 档,每段 ≈17 档 ⇒ 4 段、总跨
   })());
 ok('新商品 / 停表都走 endScan():断点清零 + 视口还回去',
   (function () {
-    const a = src.slice(src.indexOf('function commitProduct'), src.indexOf('function commitProduct') + 1400);
-    const b = src.slice(src.indexOf('function resetToWait()'), src.indexOf('function resetToWait()') + 900);
-    const f = src.slice(src.indexOf('function endScan()'), src.indexOf('function endScan()') + 700);
+    /* ★ 2026-11-12:原来用 src.slice(…, +1400 / +900) 的定长切片取函数体,
+     *   函数里加几行注释就会切偏 ⇒ 断言变成假红(和「绑死行号」是同一类错)。
+     *   改成按「下一个顶层函数声明」取体,长度怎么变都不影响判定。 */
+    const bodyOf = function (name) {
+      const i = src.indexOf('function ' + name);
+      if (i < 0) return '';
+      const rest = src.slice(i + 10);
+      const m = rest.match(/\n  (?:async )?function /);
+      return m ? rest.slice(0, m.index) : rest;
+    };
+    const a = bodyOf('commitProduct');
+    const b = bodyOf('resetToWait');
+    const f = bodyOf('endScan');
     return /endScan\(\);/.test(a) && /endScan\(\);/.test(b) &&
            /state\.scanC\.scrollTop = state\.scanPrev/.test(f) &&
            /state\.scanPos = -1;/.test(f) && /state\.scanDone = false;/.test(f);

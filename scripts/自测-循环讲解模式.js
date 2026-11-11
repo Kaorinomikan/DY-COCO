@@ -109,29 +109,27 @@ function setup(store = {}, extraHook = '') {
   await f.api.doFastCycle();await flush();
   check(!f.api.state.on&&f.clicks()===2,'第 3 轮未找到即熔断停止');
   f.mount(true);f.api.checkNow();check(!f.api.state.on,'商品重新出现仍等待手动开启');
-  /* ★ nap8 实机回归(2026-11-01 用户:「一切换页面就再也不循环了」):
-     隐藏标签的 DOM 会冻结在「取消讲解」十几秒。旧盲模式拿这份冻住的 DOM 判断
-     "该取消还是该补讲",于是永远认为还在讲、永远点取消 —— 商品被取消后空着,
-     表现就是"切页面就不循环"。这里把冻结→解冻的全过程跑一遍。 */
+  /* ★ 2026-11-12 用户定(选项 2)：「后台不做取消。」
+     旧版后台是「看见在讲 ⇒ 点取消 → 等界面刷回「讲解」→ 再点讲」，
+     可隐藏标签里平台要 16~31 秒才刷回来，这段商品一直空着 —— 用户看到的
+     就是"切后台只取消、不继续讲解"。现在后台**根本不发起取消**：
+     有「弹出讲解卡」就点弹卡，没有就什么都不做，留到回前台再做完整一轮。
+     这条用例跑冻结期：断言一次按钮都不点（包括不再点取消）。 */
   const bg=setup({dybAutoLoopSeconds:15,dybAutoLoopGroup:'sec',dybAutoLoopEnabled:false});
   bg.api.apply({autoLoopLecture:true});await flush();
   bg.api.setOn(true,true);await flush();
   try { Object.defineProperty(bg.w.document,'visibilityState',{value:'hidden',configurable:true}); } catch(e) { /* 忽略 */ }
-  const seq=[];let frozen=true;
-  bg.w.__clickHook=el=>{
-    seq.push(el.textContent);
-    if (frozen) return;                                  // 冻结:点了界面不翻
-    bg.row.dataset.live=bg.row.dataset.live==='1'?'0':'1';
-    el.textContent=bg.row.dataset.live==='1'?'取消讲解':'讲解';
-  };
-  for(let i=0;i<3;i++){await bg.api.doFastCycle();await flush();}   // 冻结期:只能靠账本推进
-  frozen=false;
-  bg.row.dataset.live='0';bg.button.textContent='讲解';              // 平台把界面刷成"已取消"
-  bg.advance(60000);                                                 // 越过"等界面反映"观察期
-  for(let i=0;i<8;i++){await bg.api.doFastCycle();await flush();}   // 界面恢复后必须补上
-  check(seq.includes('讲解'),'DOM 从冻结恢复后必须补讲,不能一直点取消(旧盲模式就是死在这里)');
+  const seq=[];
+  bg.w.__clickHook=el=>{ seq.push(el.textContent); };   // 冻结:点了界面不翻
+  for(let i=0;i<3;i++){await bg.api.doFastCycle();await flush();}
+  check(seq.length===0,'后台在讲且没有「弹出讲解卡」⇒ 一次都不点(不再发起取消)');
   check(bg.api.state.on,'盲模式推进全程不停表');
-  check(bg.api.state.round>=1,'盲模式也在正常记账,轮次往前走');
+  /* 回到前台、商品仍在讲 ⇒ 前台按正常节奏做一轮(取消 → 续讲都做),不再受后台口径影响。 */
+  try { Object.defineProperty(bg.w.document,'visibilityState',{value:'visible',configurable:true}); } catch(e) { /* 忽略 */ }
+  bg.row.dataset.live='1';bg.button.textContent='取消讲解';
+  bg.advance(4000);                                     // 越过回到前台那 2.5 秒静默期
+  await bg.api.doFastCycle();await flush();
+  check(seq[seq.length-1]==='取消讲解','回前台后照旧做完整一轮(取消→续讲),后台口径不外溢');
   /* 最坏情况:DOM 全程冻结(标签页被系统挂起 / DOM 永不更新)。
      nap9 的立场是**永不停表** —— 用户切后台就是为了让它继续跑,
      宁可这一轮空转,也不能自己退出(切回来立刻能恢复)。 */
@@ -142,18 +140,70 @@ function setup(store = {}, extraHook = '') {
   frozenAll.w.__clickHook=()=>{};          // 点了界面永不翻
   for(let i=0;i<12;i++){await frozenAll.api.doFastCycle();await flush();}
   check(frozenAll.api.state.on,'DOM 全程冻结也不得自行停表(nap9:后台没有停表出口)');
-  /* nap10:界面在第 2 轮就翻好时,必须**直接补讲**,不能再白点一次「取消讲解」。
-     实机 03:35:06 那一行就是这么白费的 —— 一次循环被拖成 3 轮 48 秒。 */
+  /* ★ 2026-11-12 选项 2 的核心路径：后台有「弹出讲解卡」⇒ 只点它，绝不取消。
+     弹卡不需要取消，也就没有"等界面刷回来"的空窗，这是后台唯一该做的动作。 */
+  const popOnly=setup({dybAutoLoopSeconds:15,dybAutoLoopGroup:'sec',dybAutoLoopEnabled:false},
+    'findPopBtn=function(r){return r.querySelector("[data-pop]")||null;};');
+  popOnly.api.apply({autoLoopLecture:true});await flush();
+  popOnly.api.setOn(true,true);await flush();
+  const popBtn=popOnly.w.document.createElement('button');
+  popBtn.setAttribute('data-pop','1');popBtn.textContent='弹出讲解卡';
+  popOnly.row.appendChild(popBtn);
+  try { Object.defineProperty(popOnly.w.document,'visibilityState',{value:'hidden',configurable:true}); } catch(e) { /* 忽略 */ }
+  const seq3=[];
+  popOnly.w.__clickHook=el=>{ seq3.push(el.textContent); };
+  for(let i=0;i<3;i++){await popOnly.api.doFastCycle();await flush();}
+  check(seq3.length>=1&&seq3.every(t=>t==='弹出讲解卡'),
+    '后台在讲 ⇒ 只点「弹出讲解卡」,一次「取消讲解」都不发(这一轮点了:'+seq3.join('/')+')');
+  /* 冻结期还有一种怪现场:行标记说"在讲",但那枚按钮写的是「讲解」。
+     旧写法 `findStopBtn(row) || findLectureBtn(row)` 会点它 —— 先开讲再记一笔取消账,
+     下一拍又补讲一次(双重点击)。开新一轮必须只认取消态。 */
+  const mixed=setup({dybAutoLoopSeconds:15,dybAutoLoopGroup:'sec',dybAutoLoopEnabled:false});
+  mixed.api.apply({autoLoopLecture:true});await flush();
+  mixed.api.setOn(true,true);await flush();
+  try { Object.defineProperty(mixed.w.document,'visibilityState',{value:'hidden',configurable:true}); } catch(e) { /* 忽略 */ }
+  const seq4=[];
+  mixed.w.__clickHook=el=>{ seq4.push(el.textContent); };
+  mixed.button.textContent='讲解';        // 标记说在讲,按钮却是"开始讲解"
+  await mixed.api.doFastCycle();await flush();
+  check(seq4.length===0,'界面报在讲但按钮写「讲解」时不乱点(开新一轮只认取消态)');
+  /* ★ 2026-11-12 用户实机:「在后台点刷新列表没用,生效不了」——
+     盲模式里不许再出现"点刷新列表催平台"这条无效动作(它是隐藏标签里的死路)。 */
+  check(!/fireClick\(rf/.test(source) && !/盲模式:.*催.*刷新/.test(source),
+    '盲模式不再点「刷新列表」催平台(后台点它不生效,用户 2026-11-12 实机确认)');
+  /* ★ 2026-11-12:切回前台的头一拍不能立刻动手 —— 隐藏标签的 DOM 是冻结快照,
+     那一拍常把"已经翻好的「讲解」"读成「取消讲解」又点一次。
+     断言:后台待过之后立刻跑一拍,不许有任何点击;过了静默期必须恢复动作。 */
+  const grace=setup({dybAutoLoopSeconds:15,dybAutoLoopGroup:'sec',dybAutoLoopEnabled:false});
+  grace.api.apply({autoLoopLecture:true});await flush();
+  grace.api.setOn(true,true);await flush();
+  grace.w.__clickHook=()=>{};                        // 点了界面不翻,保持状态不变
+  try { Object.defineProperty(grace.w.document,'visibilityState',{value:'hidden',configurable:true}); } catch(e) { /* 忽略 */ }
+  grace.api.checkNow();await flush();                // 后台这一拍(记录"最后一次在后台")
+  const beforeGrace=grace.clicks();
+  try { Object.defineProperty(grace.w.document,'visibilityState',{value:'visible',configurable:true}); } catch(e) { /* 忽略 */ }
+  await grace.api.doFastCycle();await flush();       // 刚回来:静默期内
+  check(grace.clicks()===beforeGrace,'刚回到前台的第一拍只读不点(旧快照容易把讲解读成取消)');
+  grace.advance(3000);                               // 越过静默期
+  await grace.api.doFastCycle();await flush();
+  check(grace.clicks()>beforeGrace,'静默期过后恢复动作,不会一直不干活');
+  /* ★ 2026-11-12:账上还挂着"已发取消"(前台点完立刻切后台 / 断点续接),
+     这时界面已经刷回「讲解」⇒ 下一拍必须直接补讲,不再空等一次。
+     这是选项 2 之后**唯一**还走"取消后补讲"的路径,必须保证它不空转。 */
   const quick=setup({dybAutoLoopSeconds:15,dybAutoLoopGroup:'sec',dybAutoLoopEnabled:false});
   quick.api.apply({autoLoopLecture:true});await flush();
   quick.api.setOn(true,true);await flush();
   try { Object.defineProperty(quick.w.document,'visibilityState',{value:'hidden',configurable:true}); } catch(e) { /* 忽略 */ }
   const seq2=[];
-  quick.w.__clickHook=el=>{ seq2.push(el.textContent); };   // 第一次点击不翻界面
-  await quick.api.doFastCycle();await flush();              // 轮1:点取消
-  quick.row.dataset.live='0';quick.button.textContent='讲解'; // 模拟平台 16 秒后把界面翻好
-  await quick.api.doFastCycle();await flush();              // 轮2:应当直接补讲
-  check(seq2.join('|')==='取消讲解|讲解','界面翻好后下一轮直接点「讲解」,不再空点一次取消');
+  quick.w.__clickHook=el=>{ seq2.push(el.textContent); };
+  quick.api.state.cancelPending=Date.now();      // 模拟"前台已点取消,随即切到后台"
+  quick.api.state.owedResume=Date.now();
+  quick.api.state.blindWaits=0;
+  await quick.api.doFastCycle();await flush();   // 后台但按钮仍写着「取消讲解」
+  check(seq2.length===0,'按钮还没翻回「讲解」⇒ 后台不点(点下去又是一次取消)');
+  quick.row.dataset.live='0';quick.button.textContent='讲解'; // 平台把界面刷好
+  await quick.api.doFastCycle();await flush();   // 这一拍应当直接补讲
+  check(seq2.join('|')==='讲解','界面刷好后下一拍直接补讲,账本清干净');
   const restart=setup({...f.store});restart.api.apply({autoLoopLecture:true});await flush();
   check(!restart.api.state.on,'失败停止后刷新或重开仍停止');
   f.api.setOn(true,true);await flush();
@@ -287,6 +337,70 @@ function setup(store = {}, extraHook = '') {
   check(oldFix.clicks()-beforeOld===2 && oldFix.api.state.on && oldFix.api.state.round===1,
     '没有弹卡按钮 ⇒ 照旧「取消+续讲」各一次,循环不停(clicks='+(oldFix.clicks()-beforeOld)+')');
   oldFix.dom.window.close();
+
+  /* ★ 2026-11-12 外部重启(用户报:两台电脑同控一个后台,另一台对**同一商品**
+     点了「取消讲解」再「讲解」,本机计时没变,到点仍把这个刚讲过的品再讲一遍)。
+     口径:off → on 的翻转 = 一次新的讲解开始 ⇒ 计时从头走;只改状态行、不发消息。 */
+  const extFix = setup({dybAutoLoopMinutes:5,dybAutoLoopGroup:'min',dybAutoLoopEnabled:false});
+  extFix.api.apply({autoLoopLecture:true});await flush();
+  extFix.api.setOn(true,true);await flush();
+  const baseNext = extFix.api.state.nextAt;
+  check(extFix.api.state.on && baseNext===extFix.now()+300000,'分钟档开启后按完整 5 分钟计时');
+  extFix.advance(10000);                                   // 已跑 10 秒
+  extFix.row.dataset.live='0'; extFix.button.textContent='讲解';   // 隔壁点了取消
+  extFix.api.checkNow();
+  check(extFix.api.state.nextAt===baseNext,'外部取消只记 off:计时纹丝不动(不提前也不重置)');
+  check(extFix.api.state.lectOn===0,'取消已入账(lectOn=0)');
+  extFix.advance(3000);                                    // 3 秒后隔壁又点讲解
+  extFix.row.dataset.live='1'; extFix.button.textContent='取消讲解';
+  extFix.api.checkNow();
+  check(extFix.api.state.nextAt===extFix.now()+300000,'外部重讲 ⇒ 计时从头走(完整 5 分钟,不是剩余时间)');
+  check(extFix.api.state.extRestarts===1,'外部重启计数 +1(诊断能看出来)');
+  check(!!extFix.api.state.status && extFix.api.state.status.kind==='warn',
+    '状态行给出提示(warn 档;具体措辞不绑死,改文案不该让这条红)');
+  check(extFix.api.state.round===0,'同一个品、同一轮:轮次不因外部重启而累加');
+  extFix.dom.window.close();
+
+  /* 窗口上限:off 持续超过 15 秒才讲回来 ⇒ 当「找回」处理,不重置计时。
+     否则隔壁关掉讲解十几秒再开,这边也会被判成重启,逻辑上说不通。 */
+  const secFix = setup({dybAutoLoopSeconds:60,dybAutoLoopGroup:'sec',dybAutoLoopEnabled:false});
+  secFix.api.apply({autoLoopLecture:true});await flush();
+  secFix.api.setOn(true,true);await flush();
+  const secBase = secFix.api.state.nextAt;
+  secFix.advance(2000);
+  secFix.row.dataset.live='0'; secFix.button.textContent='讲解';
+  secFix.api.checkNow();
+  check(secFix.api.state.lectOn===0,'秒档也能采到 off(原来这条链根本不存在)');
+  secFix.advance(20000);                                   // 累计 22 秒 > 15 秒窗口
+  secFix.row.dataset.live='1'; secFix.button.textContent='取消讲解';
+  secFix.api.checkNow();
+  check(secFix.api.state.nextAt===secBase,'超过 15 秒窗口不认外部重启,计时不变');
+  check(secFix.api.state.extRestarts===0,'窗口外不计外部重启次数');
+  secFix.dom.window.close();
+
+  /* 源码纪律:三条防误判必须在场,且「只改状态行」不许被后续改动悄悄破坏。 */
+  const bodyOf = function (name) {
+    const i = source.indexOf('function ' + name); if (i < 0) return '';
+    const rest = source.slice(i + 10);
+    const m = rest.match(/\n  (?:async )?function /);
+    return m ? rest.slice(0, m.index) : rest;
+  };
+  const bodySample = bodyOf('sampleLecture'), bodyRefresh = bodyOf('refreshByExternal');
+  check(/state\.busy\)\s*return false/.test(bodySample) &&
+    /state\.owedResume\s*\|\|\s*state\.cancelPending/.test(bodySample),
+    '自家动作期间不采样(否则自家「取消→再讲」会被认成外部重启)');
+  check(/prevOff\s*<\s*state\.startedAt/.test(bodySample) && /LECT_REFRESH_MS/.test(bodySample),
+    '「off 晚于本轮起点」与「窗口上限」两道闸都在');
+  check(/lectureCancelled\(/.test(bodySample),
+    'off 必须有明确证据(按钮真的翻成「讲解」),重渲染假阴性不记账');
+  check(!/boxNote\(/.test(bodyRefresh) && /setStatusLine\(/.test(bodyRefresh),
+    '外部重启只改状态行,不往消息盒子发消息(用户 2026-11-12 定)');
+  /* ★ 2026-11-12 用户定:停留时长跟「自动轮次」那条消息一样(3 秒),
+     不许再挂 8 秒;而且要引用常量,免得下次改口径只改一处。
+     轮次消息的 3 秒来源 = src/content/dialog.js 的 DYC_STATUS_TTL。 */
+  check(/statusTtlAt\s*=\s*now\s*\+\s*STATUS_TTL_MS/.test(bodyRefresh) &&
+    /var\s+STATUS_TTL_MS\s*=\s*3000/.test(source),
+    '状态行停留 3 秒(与轮次消息同长),且走 STATUS_TTL_MS 常量而不是字面量');
 
   for(const fixture of [f,restart,resume,race,defaults,dragFix,popFix]) fixture.dom.window.close();
   console.log('循环讲解模式行为自测：'+passed+'/'+passed+' 通过');

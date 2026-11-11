@@ -110,6 +110,7 @@
   var HOTSPOT_ACTIVE_Y = 20;
 
   var MARK_ATTR = 'data-dyc-cursor-fix';
+  var DRAG_ATTR = 'data-dyc-cursor-dragging';
 
   /**
    * 当前生效的光标值(悬停态 / 按下态各一)。
@@ -248,6 +249,10 @@
       }
     }
 
+    // rbd 拖动会切到全页光标/临时浮层，不能只依赖原手柄的 :active。
+    parts.push('html[' + DRAG_ATTR + '] body, html[' + DRAG_ATTR + '] body * { '
+      + cursorDecls(REPLACE_CURSOR_ACTIVE, REPLACE_CURSOR_HIDPI_ACTIVE) + ' }');
+
     return parts.join('\n');
   }
 
@@ -275,10 +280,10 @@
    * 于是 :hover 规则与跨域样式表都能被准确识别。
    * ========================================================== */
 
-  function probe(el) {
+  function probe(el, force) {
     if (!enabled) return;
     if (!el || el.nodeType !== 1) return;
-    if (hovered.has(el)) return;
+    if (!force && hovered.has(el)) return;
     hovered.add(el);
 
     if (el.hasAttribute(MARK_ATTR)) return;
@@ -286,7 +291,50 @@
   }
 
   function onProbe(e) {
-    probe(e.target);
+    probe(e.target, e.type === 'mousedown');
+  }
+
+  var dragPoint = null;
+  var dragTimer = 0;
+
+  function endCursorDrag(e) {
+    if (e && e.isTrusted === false) return;
+    if (e && e.pointerId != null && dragPoint && e.pointerId !== dragPoint.id) return;
+    dragPoint = null;
+    if (dragTimer) clearTimeout(dragTimer);
+    dragTimer = 0;
+    document.documentElement.removeAttribute(DRAG_ATTR);
+    window.removeEventListener('pointermove', moveCursorDrag, true);
+    window.removeEventListener('pointerup', endCursorDrag, true);
+    window.removeEventListener('pointercancel', endCursorDrag, true);
+    window.removeEventListener('dragend', endCursorDrag, true);
+    window.removeEventListener('blur', endCursorDrag, true);
+  }
+
+  function moveCursorDrag(e) {
+    if (e.isTrusted === false || !dragPoint || e.pointerId !== dragPoint.id) return;
+    if (document.documentElement.hasAttribute(DRAG_ATTR)) return;
+    var dx = e.clientX - dragPoint.x;
+    var dy = e.clientY - dragPoint.y;
+    if (dx * dx + dy * dy < 25) return;
+    document.documentElement.setAttribute(DRAG_ATTR, '');
+  }
+
+  function startCursorDrag(e) {
+    if (!enabled || e.isTrusted === false || e.button !== 0
+        || (e.pointerType && e.pointerType !== 'mouse')) return;
+    var target = e.target;
+    if (!target || !target.closest) return;
+    if (!target.closest('[data-rbd-drag-handle-draggable-id]')) return;
+    if (target.closest('button,input,textarea,select,a,[contenteditable="true"]')) return;
+    endCursorDrag();
+    dragPoint = { id: e.pointerId, x: e.clientX, y: e.clientY };
+    window.addEventListener('pointermove', moveCursorDrag, true);
+    window.addEventListener('pointerup', endCursorDrag, true);
+    window.addEventListener('pointercancel', endCursorDrag, true);
+    window.addEventListener('dragend', endCursorDrag, true);
+    window.addEventListener('blur', endCursorDrag, true);
+    dragTimer = setTimeout(endCursorDrag, 60000);
   }
 
   /* ==========================================================
@@ -586,6 +634,7 @@
     // 捕获阶段监听,抢在平台自身处理之前拿到目标元素
     document.addEventListener('mouseover', onProbe, true);
     document.addEventListener('mousedown', onProbe, true);
+    document.addEventListener('pointerdown', startCursorDrag, true);
   }
 
   function enable() {
@@ -617,6 +666,8 @@
 
     document.removeEventListener('mouseover', onProbe, true);
     document.removeEventListener('mousedown', onProbe, true);
+    document.removeEventListener('pointerdown', startCursorDrag, true);
+    endCursorDrag();
 
     // 观察器也要断开（2026-11-01 体检 P1）：原来只把 enabled 拍成 false、
     // 回调首行拦一下 —— observer 仍挂在 documentElement（childList+attributes

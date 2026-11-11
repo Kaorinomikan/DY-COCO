@@ -69,30 +69,38 @@
        两个方向都靠 placePop() 用实测矩形再判一次：右边放不下就右对齐、
        下方放不下就翻上去 —— 所以按钮无论落在哪个角，卡片都不会出屏。
        改这里的默认值只影响「placePop 尚未跑」的一瞬，别把它当成唯一依据。 */
-    '.card{position:absolute;top:38px;right:0;left:auto;z-index:2147483001;width:302px;',
-    '  background:#fff;color:#1f2329;border-radius:8px;',
-    '  box-shadow:0 6px 26px rgba(0,0,0,.30);overflow:hidden;',
-    '  font:400 12.5px/1.7 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}',
+    '.card{position:absolute;top:38px;right:0;left:auto;z-index:2147483001;width:400px;',
+    '  background:#fff;color:#252a33;border:1px solid #e9edf2;border-radius:14px;',
+    '  box-shadow:0 12px 40px rgba(39,51,75,.15);max-height:calc(100vh - 16px);overflow-y:auto;overflow-x:hidden;',
+    '  font:400 14px/1.6 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif}',
     '.card[hidden]{display:none}',
-    '.hd{padding:11px 14px 9px;font-size:13px;font-weight:600;border-bottom:1px solid #f0f1f3}',
-    '.bd{padding:10px 14px 12px}',
-    '.kv{display:flex;gap:8px;padding:2px 0}',
-    '.kv .k{width:60px;flex:none;color:#86909c}',
+    '.hd{padding:20px 22px 16px;font-size:17px;font-weight:500}',
+    '.bd{display:flex;flex-direction:column;gap:18px;padding:0 22px 20px}',
+    '.kv{display:flex;gap:16px;padding:4px 0}',
+    '.kv .k{width:78px;flex:none;color:#737d8b}',
     '.kv .v{flex:1;min-width:0;word-break:break-all;font-variant-numeric:tabular-nums}',
-    '.kv .v b{font-weight:600}',
-    '.nm{display:flex;gap:4px;align-items:center;margin-top:8px;padding-top:8px;border-top:1px dashed #eceef1}',
-    '.nm input{flex:1;min-width:0;height:26px;padding:0 7px;border:1px solid #d9dce1;border-radius:5px;',
-    '  font:400 12px/1 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:#1f2329;background:#fff}',
-    '.nm input:focus{outline:none;border-color:#165dff}',
-    '.nm .ext{flex:none;color:#86909c}',
-    '.warn{margin-top:9px;padding:7px 9px;background:#fff7e8;border-radius:5px;',
-    '  color:#a05a00;font-size:11.5px;line-height:1.65}',
+    '.field-label{display:block;color:#737d8b;font-size:13px;margin-bottom:7px}',
+    '.nm{display:flex;gap:8px;align-items:center;padding:0 11px;border:1px solid #e9edf2;border-radius:8px}',
+    '.nm:focus-within{border-color:#165dff}',
+    '.nm input{flex:1;min-width:0;height:40px;padding:9px 0;border:0;',
+    '  font:400 14px/1.5 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;color:#252a33;background:#fff}',
+    '.nm input:focus-visible{outline:2px solid #165dff;outline-offset:2px}',
+    '.nm .ext{flex:none;color:#737d8b;font-size:13px}',
+    '.compat,.warn{padding:11px 12px;border-radius:8px;font-size:13px;line-height:1.65}',
+    '.compat{background:#f4f7fb;color:#737d8b}',
+    '.warn{background:#fff8e9;color:#936009}',
     '.warn.bad{background:#ffece8;color:#cb2634}',
-    '.ft{display:flex;gap:8px;justify-content:flex-end;padding:0 14px 12px}',
-    '.ft button{height:28px;padding:0 14px;border-radius:5px;border:1px solid #d9dce1;',
-    '  background:#fff;color:#4e5969;font:500 12px/1 inherit;cursor:pointer}',
+    '.card-details{border-top:1px solid #e9edf2;padding-top:12px;color:#737d8b;font-size:13px}',
+    '.card-details summary{width:fit-content;cursor:pointer}',
+    '.card-details .detail-list{padding-top:12px}',
+    '.card-details .kv{padding:2px 0;font-size:12px}',
+    '.card-footer{padding:16px 22px 20px;border-top:1px solid #e9edf2}',
+    '.card-hint{font-size:12px;color:#737d8b;margin-bottom:13px}',
+    '.ft{display:flex;gap:10px;justify-content:flex-end}',
+    '.ft button{min-height:38px;padding:7px 16px;border-radius:8px;border:1px solid #e9edf2;',
+    '  background:#fff;color:#252a33;font:400 14px/1.5 -apple-system,"Segoe UI","Microsoft YaHei",sans-serif;cursor:pointer}',
     '.ft button:hover{background:#f7f8fa}',
-    '.ft button.go{background:#165dff;border-color:#165dff;color:#fff}',
+    '.ft button.go{background:#165dff;border-color:#165dff;color:#fff;font-weight:500}',
     '.ft button.go:hover{background:#0e42d2}',
     '.ft button:disabled{opacity:.5;cursor:not-allowed}',
 
@@ -143,11 +151,14 @@
     '.pc-fl{height:100%;width:0;border-radius:4px;',
     '  background:linear-gradient(90deg,#2fd44b,#00b42a);',
     '  transition:width .3s cubic-bezier(.25,.8,.4,1)}',
-    '.pc-meta{display:flex;justify-content:space-between;align-items:baseline;gap:10px;',
-    '  margin-top:8px;font:400 11px/1.5 inherit;color:#4e5969;',
+    '.pc-meta{display:grid;grid-template-columns:minmax(0,1fr);row-gap:4px;',
+    '  margin-top:8px;font-size:13px;line-height:1.5;font-weight:400;color:#4e5969;',
     '  font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden}',
-    '.pc-meta span{flex:none;overflow:hidden;text-overflow:ellipsis}',
-    '.pc-meta .r{text-align:right;margin-left:auto}',
+    '.pc-meta span{min-width:0;overflow:hidden;text-overflow:ellipsis}',
+    '.pc-meta .r{display:grid;grid-template-columns:80px minmax(0,1fr);column-gap:8px}',
+    '.pc-speed,.pc-eta{text-align:left;font-variant-numeric:tabular-nums;',
+    '  font-feature-settings:"tnum";white-space:nowrap}',
+    '.pc-eta{text-align:right}',
     '.pc-ft{display:flex;gap:8px;margin-top:10px}',
     '.pc-ft button{height:27px;padding:0 12px;border-radius:6px;border:1px solid rgba(255,255,255,.42);',
     '  background:rgba(255,255,255,.10);color:#fff;font:500 11.5px/1 inherit;cursor:pointer;',
@@ -755,7 +766,8 @@
    * 用 left/top 而不是 transform：shadow 内 fixed 宿主已被页面 transform
    * 劫过一次，这里只改定位属性，最不容易再生变。
    */
-  var POP_W = 302;        // .card / .toast 的固定宽度（与 CSS 一致）
+  var POP_W = 302;        // 提示条宽度
+  var CARD_W = 400;       // 简洁确认卡宽度，与 CSS 保持一致
   var POP_OFF = 38;       // 与按钮的间距：按钮高 32 + 6
   var POP_GAP = 8;        // 与视口边缘的安全距离
 
@@ -799,6 +811,16 @@
       el.style.top = POP_OFF + 'px';
       el.style.bottom = 'auto';
     }
+    if (el === ui.card) {
+      // 确认卡展开详情后仍须留在视口内，窄窗不能从按钮左缘继续向外溢出。
+      var actual = el.getBoundingClientRect();
+      var x = Math.max(POP_GAP, Math.min(actual.left, vw - POP_GAP - actual.width));
+      var y = Math.max(POP_GAP, Math.min(actual.top, vh - POP_GAP - actual.height));
+      el.style.left = (x - r.left) + 'px';
+      el.style.right = 'auto';
+      el.style.top = (y - r.top) + 'px';
+      el.style.bottom = 'auto';
+    }
 
     // 展开动效从「贴着按钮的那条边」长出来：朝下展开从顶边起、朝上翻从底边起；
     // 横向同理（右对齐从右边起）。不然卡片会像从半空里冒出来。
@@ -808,7 +830,7 @@
 
   /** 弹层开着时，宿主挪了位置就跟着挪（滚动 / 缩放 / 换场次都会触发） */
   function placePops() {
-    if (ui.card && !ui.card.hidden) placePop(ui.card, POP_W);
+    if (ui.card && !ui.card.hidden) placePop(ui.card, CARD_W);
     if (ui.toast && !ui.toast.hidden) placePop(ui.toast, POP_W);
     if (ui.prog && !ui.prog.hidden) placePop(ui.prog, PROG_W);
   }
@@ -836,47 +858,61 @@
   }
 
   /**
-   * @param {object} info { timeText, durationSec, bytes, segCount, qualityText, fileName, warn }
+   * @param {object} info { timeText, durationSec, bytes, segCount, qualityText, tracks, encrypted, fileName, warn, playbackNote }
    * @param {function} onGo (fileName) => void
    * @param {function} onCancel () => void
    */
   function showCard(info, onGo, onCancel) {
     if (!ui.card) return;
+    function row(label, value) {
+      return '<div class="kv"><span class="k">' + esc(label) + '</span><span class="v">' + esc(value) + '</span></div>';
+    }
+    var quality = /^(\d{2,5})P\b/i.exec(info.qualityText || '');
+    var tracks = info.tracks || {};
+    var video = tracks.video === 'h264' ? 'H.264' : tracks.video === 'h265' ? 'H.265' : '';
+    var details = row('视频格式', String(info.ext || '.mp4').replace(/^\./, '').toUpperCase())
+      + (video ? row('视频编码', video) : '')
+      + (tracks.audio ? row('音频编码', 'AAC') : '')
+      + (info.encrypted ? row('加密方式', 'AES-128') : '')
+      + (info.segCount ? row('分片数量', info.segCount + ' 段') : '');
     var warn = '';
     if (info.warn) {
       warn = '<div class="warn' + (info.warnBad ? ' bad' : '') + '">' + esc(info.warn) + '</div>';
     }
 
     ui.card.innerHTML =
-      '<div class="hd">下载这场直播回放</div>'
+      '<div class="hd">下载直播回放</div>'
       + '<div class="bd">'
       /* 2026-10-19 用户取消账号名前缀后，这里**不再显示「账号」行**：
          它只服务于命名，名字不拼了就无需展示；而且抓错时显示一行错名字
          比不显示更容易误导（三次抓错都是这一行暴露的）。 */
-      + '<div class="kv"><span class="k">场次</span><span class="v">' + esc(info.timeText || '未知') + '</span></div>'
-      + '<div class="kv"><span class="k">时长</span><span class="v"><b>' + esc(fmtDur(info.durationSec)) + '</b></span></div>'
-      + '<div class="kv"><span class="k">体积</span><span class="v"><b>' + (info.bytes ? '约 ' + esc(fmtBytes(info.bytes)) : '未知') + '</b>'
-      + (info.segCount ? '（' + info.segCount + ' 段）' : '') + '</span></div>'
-      + '<div class="kv"><span class="k">清晰度</span><span class="v">' + esc(info.qualityText || '默认最高') + '</span></div>'
-      + (info.trackText
-        ? '<div class="kv"><span class="k">编码</span><span class="v">' + esc(info.trackText) + '</span></div>'
-        : '')
-      + '<div class="nm"><input type="text" id="dyc-name" value="' + esc(info.fileName || '') + '">'
-      + '<span class="ext">' + esc(info.ext || '.mp4') + '</span></div>'
+      + '<div class="card-info">'
+      + row('开播时间', info.timeText || '未获取')
+      + row('回放时长', fmtDur(info.durationSec))
+      + row('预计大小', info.bytes ? fmtBytes(info.bytes) : '暂无法估算')
+      + (quality ? row('清晰度', quality[1] + 'P') : '') + '</div>'
+      + '<label><span class="field-label">文件名</span><span class="nm">'
+      + '<input type="text" id="dyc-name" aria-label="回放文件名" value="' + esc(info.fileName || '') + '">'
+      + '<span class="ext">' + esc(info.ext || '.mp4') + '</span></span></label>'
       + warn
+      + (info.playbackNote ? '<div class="compat">' + esc(info.playbackNote) + '</div>' : '')
+      + '<details class="card-details"><summary>更多信息</summary><div class="detail-list">' + details + '</div></details>'
       + '</div>'
+      + '<div class="card-footer"><div class="card-hint">下载期间请保持本页开启。</div>'
       + '<div class="ft">'
       + '<button type="button" data-act="cancel">取消</button>'
-      + '<button type="button" class="go" data-act="go">开始下载</button>'
-      + '</div>';
+      + '<button type="button" class="go" data-act="go">选择位置并下载</button>'
+      + '</div></div>';
 
     ui.card.hidden = false;
     // 先显形再量：hidden 时 offsetHeight 为 0，量不出高度也就判不了「下方够不够」
-    placePop(ui.card, POP_W);
+    placePop(ui.card, CARD_W);
+    ui.card.querySelector('details').ontoggle = function () { placePop(ui.card, CARD_W); };
 
     var input = ui.card.querySelector('#dyc-name');
     var goBtn = ui.card.querySelector('[data-act="go"]');
     var cancelBtn = ui.card.querySelector('[data-act="cancel"]');
+    goBtn.disabled = !!info.blocked;
 
     function readName() {
       // 清洗规则在 cleanFileName 里（纯函数，可离线自测）
@@ -896,17 +932,6 @@
       hideCard();
       if (onCancel) onCancel();
     };
-
-    // 体积很大时补一句实话，让用户知道要等多久
-    if (!info.warn && info.bytes > 3 * 1024 * 1024 * 1024) {
-      // 3GB 以上：把提示挂在按钮上方，不覆盖原有信息
-      var ft = ui.card.querySelector('.ft');
-      var tip = document.createElement('div');
-      tip.className = 'warn';
-      tip.style.margin = '0 14px 10px';
-      tip.textContent = '文件较大（' + fmtBytes(info.bytes) + '），下载期间请保持本页开着。';
-      ft.parentNode.insertBefore(tip, ft);
-    }
   }
 
   function hideCard() {
@@ -1041,7 +1066,8 @@
       /* 白色内衬：进度条 + 数值都在这块「纸面」上，与蓝色外壳形成蓝白层次 */
       + '<div class="pc-body">'
       +   '<div class="pc-tr"><div class="pc-fl"></div></div>'
-      +   '<div class="pc-meta"><span class="l"></span><span class="r"></span></div>'
+      +   '<div class="pc-meta"><span class="l"></span><span class="r">'
+      +     '<span class="pc-speed"></span><span class="pc-eta"></span></span></div>'
       + '</div>'
       + '<div class="pc-ft">'
       +   '<button type="button" data-act="fold">收起</button>'
@@ -1107,7 +1133,7 @@
 
   /**
    * @param {number} ratio 0~1
-   * @param {string|{left?:string,right?:string}} [meta] 副行；字符串则整行放左侧
+   * @param {string|{left?:string,right?:string,speed?:string,eta?:string}} [meta] 下载量、速度与剩余时间
    */
   function setProgress(ratio, meta) {
     if (!ui.prog) return;
@@ -1121,13 +1147,23 @@
     var pct = ui.prog.querySelector('.pc-pct');
     var l = ui.prog.querySelector('.pc-meta .l');
     var rr = ui.prog.querySelector('.pc-meta .r');
+    var speed = ui.prog.querySelector('.pc-speed');
+    var eta = ui.prog.querySelector('.pc-eta');
 
     if (fl) fl.style.width = (r * 100).toFixed(1) + '%';
     if (pct) pct.innerHTML = pctNum + '<i>%</i>';
 
     if (meta && typeof meta === 'object') {
       if (l && meta.left != null) l.textContent = meta.left;
-      if (rr && meta.right != null) rr.textContent = meta.right;
+      if (speed && eta && (meta.speed != null || meta.eta != null)) {
+        if (meta.speed != null) speed.textContent = meta.speed;
+        if (meta.eta != null) eta.textContent = meta.eta;
+        speed.title = speed.textContent;
+        eta.title = eta.textContent;
+      } else if (speed && eta && meta.right != null) {
+        speed.textContent = meta.right;
+        eta.textContent = '';
+      } else if (rr && meta.right != null) rr.textContent = meta.right;
       // 并发档位徽标：有就亮，没升档就藏（不占位、不换行）
       var bd = ui.prog.querySelector('.pc-badge');
       if (bd && meta.badge != null) {
@@ -1172,6 +1208,10 @@
     if (t2) t2.textContent = line2 || '';
     if (pct) pct.innerHTML = state === 'ok' ? '100<i>%</i>' : '—';
     if (state === 'ok' && fl) fl.style.width = '100%';
+    var speed = ui.prog.querySelector('.pc-speed');
+    var eta = ui.prog.querySelector('.pc-eta');
+    if (speed) speed.textContent = '';
+    if (eta) eta.textContent = '';
 
     if (ft) {
       ft.innerHTML = '<button type="button" class="pri" data-act="close">关闭</button>';

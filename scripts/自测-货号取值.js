@@ -122,7 +122,10 @@ function sliceFunction(src, name) {
 }
 
 function sliceVar(src, name) {
-  const re = new RegExp('var\\s+' + name + '\\s*=\\s*[^;]+;');
+  // 只吃「本行内」的声明：原写法 [^;]+ 会贪婪跨行，一旦声明后面紧跟带分号的语句
+  // （例如 var SIZE_ONLY 后面就是 function isSizeOnly，函数体里有分号），
+  // 就会把后续代码一并卷进来。2026-11-12 #137 新增 SIZE_ONLY 时踩到过。
+  const re = new RegExp('var\\s+' + name + '\\s*=\\s*[^\\n;]+;');
   const m = src.match(re);
   if (!m) throw new Error('源文件里找不到 var ' + name);
   return m[0];
@@ -184,7 +187,9 @@ function buildLiveCtrlRow(rightText) {
  * 4. 跑两条取值路径，断言「永远是款号，绝不是右列数字」
  * ============================================================ */
 
-const NAME = sliceFunction(fs.readFileSync(path.join(ROOT, 'src/live/live-detail.js'), 'utf8'), 'isCodeLike');
+/* 款号判据是共享的（src/content/item-code.js 单一真源），装配时一并注入 */
+const SHARED = fs.readFileSync(path.join(ROOT, 'src/content/item-code.js'), 'utf8');
+
 const EXPECT_CODE = 'NE1C1091W';
 
 let pass = 0, fail = 0;
@@ -202,8 +207,9 @@ console.log('\n=========== A. src/live/live-detail.js（罗盘直播明细）===
 
 const LD = buildModule(
   path.join(ROOT, 'src/live/live-detail.js'),
-  ['isCodeLike', 'isExtNode', 'textWithoutExt', 'infoCellOf', 'readOfficialCode', 'guessFromName', 'readCode'],
-  ['EXT_MARKS']
+  ['isExtNode', 'textWithoutExt', 'infoCellOf', 'readOfficialCode', 'guessFromName', 'readCode'],
+  ['EXT_MARKS'],
+  SHARED
 );
 
 const DEALS = ['0', '7', '42', '99', '100', '340', '999', '1,000', '1,234', '12,345', '340.5', '340件', '-'];
@@ -286,9 +292,9 @@ function extractValueAfterLabel(root, label) {
 
 const CC = buildModule(
   path.join(ROOT, 'src/live/copy-code.js'),
-  ['isCodeLike', 'isExtNode', 'textWithoutExt', 'readOfficialCode', 'guessFromName', 'readCode'],
+  ['isExtNode', 'textWithoutExt', 'readOfficialCode', 'guessFromName', 'readCode'],
   ['EXT_MARKS'],
-  stubs
+  SHARED + '\n' + stubs
 );
 
 for (const d of ['340', '1234', '340.5', '5', '42']) {

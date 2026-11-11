@@ -458,13 +458,12 @@
   }
 
   /* ==========================================================
-   * 二、款号识别(三档,与 live-detail.js / copy-code.js 同一口径)
+   * 二、款号识别
+   *
+   * 判据**不在本文件** —— 见 `src/content/item-code.js`（唯一真源，2026-11-12 收敛）。
+   * 本文件只负责本页面那一半：在哪段文本里找货号（罗盘表格要先剥掉名称块里
+   * 平台「复制 ID」按钮的字样，见下方 guessFromName）。
    * ========================================================== */
-
-  /** 像款号吗:3~30 位的字母数字/连字符/下划线 */
-  function isCodeLike(s) {
-    return !!s && /^[A-Za-z0-9][A-Za-z0-9\-_]{2,29}$/.test(s);
-  }
 
   /* ---------- 取值输入:剔除扩展自己注入的节点(AGENTS 第 23 条) ---------- */
 
@@ -551,19 +550,19 @@
         if (rt) t = rt;
       }
       if (!t) return '';
-      var m = t.match(/货号\s*[:：]?\s*([A-Za-z0-9\-_]{3,30})/);
-      if (m && isCodeLike(m[1])) return m[1];
+      return dycFindOfficialInText(t);
     } catch (e) { /* 尽力而为 */ }
     return '';
   }
 
   /**
-   * ② 名称尾部推算:末尾「≥4 位且含数字」的字母数字串。
-   *    必须含数字 —— 纯英文字尾(英文词 / 拼音)多半不是款号。
+   * ② 名称尾部推算 —— 本文件只负责取文本并剥掉平台按钮字样，
+   *    形态判据（3 位下限 / 斜杠复合款号 / 纯尺码排除）在 item-code.js。
    *
    * ⚠️ 先剥掉末尾的「ID」/「复制」字样 —— 平台的「复制 ID」小按钮常被
    *    包在名称元素里(26.10.14.4 在商品列表页踩过:商品名行尾带 ID 文案,
    *    名称段与匹配范围不同源)。不剥的话末尾 token 恒为「ID」⇒ 永远取不到款号。
+   *    这一层是**罗盘表格独有**的（另外三处的名称块结构不同），不宜进共享文件。
    */
   function guessFromName(nameEl) {
     if (!nameEl) return '';
@@ -586,12 +585,7 @@
       if (t === before) break;
     }
     if (!t) return '';
-    var m = t.match(/([A-Za-z0-9][A-Za-z0-9\-_]*)\s*$/);
-    if (!m) return '';
-    var cand = m[1];
-    if (cand.length < 4) return '';
-    if (!/\d/.test(cand)) return '';
-    return cand;
+    return dycPickCodeFromName(t);
   }
 
   /** 取款号 → {code, from:'official'|'guess'|'none'} */

@@ -125,9 +125,87 @@ console.log('\n【二】微信侧两个新功能：必须落在 wx 组里');
     assert.ok((meta.pages || []).indexOf('wxGoodsList') !== -1, key + ' 的作用页应含 wxGoodsList');
   });
 });
+/* 可见性的**唯一口径**（2026-11-12 起分两级）：分组归属 ∪ 单行 platforms。
+   凡是「某平台看得见某开关」的断言都走这里，别各写一套 ——
+   两套口径一旦分家，就会出现「测试说看得见、弹窗里却没有」。 */
+const visibleKeys = (pid) => META.filter((m) => !m.hidden && !m.inFooter &&
+  (groupsOf(pid).indexOf(m.group) !== -1 || (m.platforms || []).indexOf(pid) !== -1)
+).map((m) => m.key);
+
 check('微信平台下确实有可显示的开关（不是空组）', () => {
-  const wxKeys = META.filter((m) => groupsOf('wx').indexOf(m.group) !== -1);
+  const wxKeys = visibleKeys('wx');
   assert.ok(wxKeys.length >= 2, '微信平台应至少 2 个开关，实际 ' + wxKeys.length);
+});
+
+console.log('\n【二·五】「其他」组里的跨平台开关（用户 2026-11-12 定）');
+check('粘贴图片排在「其他」组（用户要求从「通用」搬过来）', () => {
+  const meta = META.filter((m) => m.key === 'goodsImagePaste')[0];
+  assert.ok(meta, 'DYC_FLAGS_META 里没有 goodsImagePaste');
+  assert.equal(meta.group, 'other', 'group 应为 other，实际 ' + meta.group);
+});
+check('「其他」组只归抖音 ⇒ 这一行必须自带 platforms，否则微信段整行消失', () => {
+  const meta = META.filter((m) => m.key === 'goodsImagePaste')[0];
+  assert.ok(groupsOf('dy').indexOf('other') !== -1, '前提变了：「其他」组不再归抖音');
+  assert.equal(groupsOf('wx').indexOf('other'), -1, '前提变了：「其他」组若也归微信，这行白名单就多余了');
+  assert.equal(Array.from(meta.platforms || []).sort().join(','), 'dy,wx',
+    '粘贴图片应在两个平台都可见，实际 ' + (meta.platforms || []).join(','));
+  assert.ok(visibleKeys('dy').indexOf('goodsImagePaste') !== -1, '抖音段看不到它');
+  assert.ok(visibleKeys('wx').indexOf('goodsImagePaste') !== -1, '微信段看不到它');
+});
+check('白名单是逐行的：不给「其他」组的抖音专属功能带进微信', () => {
+  const wxKeys = visibleKeys('wx');
+  ['hideElements', 'replayDownload', 'servicePlatformJump'].forEach((key) => {
+    assert.equal(wxKeys.indexOf(key), -1, key + ' 不该出现在微信段');
+  });
+});
+check('弹窗按行判显隐、零可露行的组框自动收起（不然「通用」剩个空壳）', () => {
+  const body = bodyOf(js, 'applyPlatform');
+  assert.ok(/data-flag-row/.test(body), 'applyPlatform 没按行判显隐');
+  assert.ok(/meta\.platforms/.test(body), 'applyPlatform 没读单行 platforms 白名单');
+  assert.ok(/box\.hidden\s*=\s*shownRows\s*===\s*0/.test(body), '零可露行的组框不会被收起');
+});
+check('行与面板都挂了 key 把手，切平台才能逐行对位', () => {
+  assert.ok(/dataset\.flagRow\s*=\s*meta\.key/.test(js), '行上缺 data-flag-row');
+  assert.ok(/dataset\.flagPanel\s*=\s*meta\.key/.test(js), '面板上缺 data-flag-panel');
+});
+
+check('平台初始化与切换保留子面板折叠态，只有点名字才展开', () => {
+  const page = new JSDOM('<div id="flags-root"><section data-gid="other"><div data-flag-row="hideElements"><span class="name"></span><input type="checkbox"></div><div data-flag-panel="hideElements" hidden></div></section></div>', { runScripts: 'outside-only' });
+  const w = page.window;
+  w.DYC_PLATFORMS = PLATS;
+  w.dycPlatformGroups = groupsOf;
+  w.chrome = { storage: { local: { set() {} } } };
+  w.eval('const FLAG_META_BY_KEY = { hideElements: {} }; let currentPlatform; let platInitDone; const PLAT_STORE_KEY = "test";\n' +
+    bodyOf(js, 'attachSubPanelToggle') + '\n}\n' + bodyOf(js, 'applyPlatform') + '\n}');
+  const row = w.document.querySelector('[data-flag-row]');
+  const el = w.document.querySelector('[data-flag-panel]');
+  const input = row.querySelector('input');
+  const name = row.querySelector('.name');
+  const panel = { el };
+  w.attachSubPanelToggle({ row, input, name }, panel);
+  input.checked = true;
+  panel.setGate(true);
+  w.applyPlatform('dy');
+  assert.equal(el.hidden, true, '打开助手时面板必须收起');
+  assert.equal(row.classList.contains('open'), false);
+  name.click();
+  assert.equal(el.hidden, false, '点名字才展开');
+  w.applyPlatform('wx');
+  assert.ok(el.hidden || el.style.display === 'none', '微信不显示抖音专属面板');
+  w.applyPlatform('dy');
+  assert.equal(el.hidden, false, '切回平台保留手动展开态');
+  assert.notEqual(el.style.display, 'none');
+  name.click();
+  w.applyPlatform('wx');
+  w.applyPlatform('dy');
+  assert.equal(el.hidden, true, '切回平台保留手动收起态');
+  input.checked = false;
+  input.dispatchEvent(new w.Event('change'));
+  input.checked = true;
+  input.dispatchEvent(new w.Event('change'));
+  w.applyPlatform('dy');
+  assert.equal(el.hidden, true, '重新开启开关也不能自动展开');
+  page.window.close();
 });
 
 console.log('\n【三】网址判定：两个微信域都要认，仿冒后缀不能认');
@@ -283,6 +361,30 @@ check('两个福袋子开关已从 META 删除', () => {
   assert.equal(META.find((m) => m.key === 'luckyBagAuto'), undefined,
     '「福袋自动开始下一轮」应删（开关挪进悬浮面板，存本地键 dycBagAuto）');
   assert.equal(META.filter((m) => m.foldHost === 'bag').length, 0, 'bag 折叠组不应残留');
+});
+
+check('回放入口用新标签页打开复盘页，点击不改变开关', () => {
+  win.hasSubPanel = () => false;
+  win.attachHelpBadge = () => {};
+  const buildRow = win.eval('(' + bodyOf(js, 'buildToggleRow') + '\n})');
+  const meta = META.find((m) => m.key === 'replayDownload');
+  const { row, input } = buildRow(meta);
+  const link = row.querySelector('a');
+  assert.ok(link, '回放行应有网页入口');
+  assert.equal(link.href, 'https://anchor.douyin.com/anchor/review');
+  assert.equal(link.target, '_blank');
+  assert.ok(link.relList.contains('noopener'));
+  assert.ok(link.getAttribute('aria-label'));
+  assert.ok(link.querySelector('svg'), '入口使用外链图标');
+  link.addEventListener('click', (e) => e.preventDefault());
+  for (const enabled of [true, false]) {
+    input.checked = enabled;
+    link.click();
+    assert.equal(input.checked, enabled);
+    assert.equal(link.hasAttribute('disabled'), false);
+  }
+  const ordinary = buildRow(META.find((m) => m.key === 'servicePlatformJump'));
+  assert.equal(ordinary.row.querySelector('a'), null, '不在其他开关旁重复添加入口');
 });
 
 console.log('');

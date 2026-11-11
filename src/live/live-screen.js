@@ -344,12 +344,12 @@
     return (nameEl && nameEl.parentElement) || nameEl;
   }
 
-  /* ---------- 款号识别(三档) ---------- */
+  /* ---------- 款号识别(判据见 src/content/item-code.js) ---------- */
 
-  /** 像款号吗:3~30 位的字母数字/连字符/下划线 */
-  function isCodeLike(s) {
-    return !!s && /^[A-Za-z0-9][A-Za-z0-9\-_]{2,29}$/.test(s);
-  }
+  /**
+   * 判据**不在本文件** —— 见 `src/content/item-code.js`（唯一真源，2026-11-12 收敛）。
+   * 本文件只负责本页面那一半：在哪段文本里找货号（见下方两个函数）。
+   */
 
   /**
    * ① 官方货号:在**剔除扩展节点**后的文本里找「货号 xxx」。
@@ -362,25 +362,16 @@
       // 单元格里没有「货号」二字时，再退整行（两处都已剔除扩展节点）
       if (!/货号/.test(t)) t = textWithoutExt(row) || t;
       if (!t) return '';
-      var m = t.match(/货号\s*[:：]?\s*([A-Za-z0-9\-_]{3,30})/);
-      if (m && isCodeLike(m[1])) return m[1];
+      return dycFindOfficialInText(t);
     } catch (e) { /* 尽力而为 */ }
     return '';
   }
 
   /**
-   * ② 名称尾部推算:末尾「≥4 位且含数字」的字母数字串。
-   *    必须含数字 —— 纯英文字尾多半不是款号。
+   * ② 名称尾部推算 —— 本文件只负责取文本，形态判据在 item-code.js。
    */
   function guessFromName(nameEl) {
-    var t = (nameEl && (nameEl.textContent || '') || '').replace(/\s+/g, ' ').trim();
-    if (!t) return '';
-    var m = t.match(/([A-Za-z0-9][A-Za-z0-9\-_]*)\s*$/);
-    if (!m) return '';
-    var cand = m[1];
-    if (cand.length < 4) return '';
-    if (!/\d/.test(cand)) return '';
-    return cand;
+    return dycPickCodeFromName(nameEl && (nameEl.textContent || ''));
   }
 
   /** 取款号 → {code, from:'official'|'guess'|'none'} */

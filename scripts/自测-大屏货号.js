@@ -29,6 +29,10 @@ const path = require('path');
 
 const ROOT = path.resolve(__dirname, '..');
 const SRC_PATH = path.join(ROOT, 'src/live/live-screen.js');
+/* 款号判据是共享的（src/content/item-code.js 单一真源），装配时一并注入 */
+const SHARED = fs.readFileSync(path.join(ROOT, 'src/content/item-code.js'), 'utf8');
+/* 判据断言直接打共享实现：它才是四个页面共用的那一份 */
+const J = new Function(SHARED + '\nreturn { isCodeLike: dycIsCodeLike };')();
 
 /* ============================================================
  * 1. 最小 DOM 垫片（只实现被测函数用到的那一小撮 API）
@@ -533,7 +537,7 @@ function buildModule(fnNames, varNames, extra) {
  * 与断言无关，但会在每次注入时被调用。桩掉不影响被测逻辑。
  */
 const M = buildModule(
-  ['isCodeLike', 'isExtNode', 'textWithoutExt', 'infoCellOf', 'readOfficialCode',
+  ['isExtNode', 'textWithoutExt', 'infoCellOf', 'readOfficialCode',
    'guessFromName', 'readCode', 'hasDirectText', 'looksLikeName', 'pickNameIn',
    'imageCellOf', 'findNameEl', 'getRows', 'rowBrief', 'hostFor',
    'chainDeclsFor', 'backupProps', 'restoreProps', 'setImp',
@@ -555,7 +559,7 @@ const M = buildModule(
    'FLEX_DECLS', 'IMG_DECLS', 'IMG_N_DECLS', 'TD_DECLS', 'TXT_DECLS', 'W_DECLS',
    'TIP_SEL', 'MARK_TIP', 'TIP_MAX_TEXT',
    'hitLevel', 'sampleCount'],
-  'function dbg(){}'
+  SHARED + '\nfunction dbg(){}'
 );
 
 /* ============================================================
@@ -836,17 +840,30 @@ console.log('\n=========== C. 行识别（剔除测量行 / 表头 / 嵌套小�
 /* ---------- D. 款号口径 ---------- */
 console.log('\n=========== D. 款号口径 ===========');
 {
-  eq('纯数字官方货号算合法款号', M.isCodeLike('10086'), true);
-  eq('三个字符起步', M.isCodeLike('A12'), true);
-  eq('两个字符不算', M.isCodeLike('A1'), false);
-  eq('含空格不算', M.isCodeLike('A1 2'), false);
+  eq('纯数字官方货号算合法款号', J.isCodeLike('10086'), true);
+  eq('三个字符起步', J.isCodeLike('A12'), true);
+  eq('两个字符不算', J.isCodeLike('A1'), false);
+  eq('含空格不算', J.isCodeLike('A1 2'), false);
 
   const nameEl = new FakeEl('p', {}, [new FakeText('某款外套 NE1C0021W')]);
   eq('名称末尾款号可推算', M.guessFromName(nameEl), 'NE1C0021W');
   const pureText = new FakeEl('p', {}, [new FakeText('某款夏季外套')]);
   eq('名称末尾不是款号时不瞎猜', M.guessFromName(pureText), '');
   const short = new FakeEl('p', {}, [new FakeText('某款外套 A1')]);
-  eq('末尾不足 4 位不猜', M.guessFromName(short), '');
+  eq('末尾不足 3 位不猜', M.guessFromName(short), '');
+
+  // 2026-11-12 与中控台对齐（反馈 #137）：3 位款号、复合款号、纯尺码
+  const three = new FakeEl('p', {}, [new FakeText('黑色丝毛侧拉链半身裙（有内衬）S28')]);
+  eq('3 位款号可推算（#137）', M.guessFromName(three), 'S28');
+  const composite = new FakeEl('p', {}, [
+    new FakeText('【KiKi】【金绒流年】燕麦/乌木色羊毛老钱风背心外套 M609Y0544/0686')
+  ]);
+  eq('复合款号取整串', M.guessFromName(composite), 'M609Y0544/0686');
+  eq('复合款号算合法款号', J.isCodeLike('M609Y0544/0686'), true);
+  const size2xl = new FakeEl('p', {}, [new FakeText('某连衣裙 2XL')]);
+  eq('尺码 2XL 不当款号', M.guessFromName(size2xl), '');
+  const sixXl25 = new FakeEl('p', {}, [new FakeText('杏色连帽抽绳拉链外套 6XL25')]);
+  eq('6XL25 不被尺码规则误杀', M.guessFromName(sixXl25), '6XL25');
   const noDigit = new FakeEl('p', {}, [new FakeText('某款外套 ABCD')]);
   eq('末尾无数字不猜', M.guessFromName(noDigit), '');
 }

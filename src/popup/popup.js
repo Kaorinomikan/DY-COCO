@@ -53,6 +53,14 @@ const note = document.getElementById('apply-note');
 
 const flagsRoot = document.getElementById('flags-root');
 
+/* 开关元数据按 key 索引（2026-11-12 新增「单行平台白名单」后必须的一层）。
+ * 为什么需要：平台切换原来只按**分组**显隐，一行的去留跟着所在组走；
+ *   现在允许单行声明 platforms（分组归抖音、这一行微信也要露），
+ *   显隐就得逐行判，必须先按 key 找回它自己的元数据。
+ * ★ 不复制一份数据：对象引用指回 DYC_FLAGS_META 的同一项，改一处即两处一致。 */
+const FLAG_META_BY_KEY = {};
+DYC_FLAGS_META.forEach((m) => { if (m.key) FLAG_META_BY_KEY[m.key] = m; });
+
 function flash(text) {
   note.textContent = text;
   // 几秒后自动清空,避免堆积文字
@@ -195,6 +203,8 @@ function attachHelpBadge(hostEl, desc, note) {
 function buildToggleRow(meta) {
   const row = document.createElement('div');
   row.className = 'toggle-row';
+  // 2026-11-12:切平台要按行判显隐(单行 platforms 白名单),行上留 key 当把手。
+  row.dataset.flagRow = meta.key;
 
   const left = document.createElement('div');
   const name = document.createElement('div');
@@ -222,6 +232,18 @@ function buildToggleRow(meta) {
   }
 
   name.appendChild(document.createTextNode(meta.label));
+
+  if (meta.key === 'replayDownload') {
+    const link = document.createElement('a');
+    link.className = 'replay-page-link';
+    link.href = 'https://anchor.douyin.com/anchor/review';
+    link.target = '_blank';
+    link.rel = 'noopener noreferrer';
+    link.title = '打开直播复盘页';
+    link.setAttribute('aria-label', link.title + '（新标签页）');
+    link.innerHTML = '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 5H5v15h15v-5M14 3h7v7M21 3 11 13"/></svg>';
+    name.appendChild(link);
+  }
 
   // 问号徽章(2026-10-16 弹窗减噪;2026-10-18 泛化为通用函数)
   attachHelpBadge(name, meta.desc, meta.note);
@@ -260,6 +282,9 @@ function buildToggleRow(meta) {
 function buildHostRow(meta) {
   const row = document.createElement('div');
   row.className = 'host-row';
+  // 与 buildToggleRow 同一口径:行上留 key,平台切换按行判显隐时用。
+  // 纯分组行(无 key)不挂 —— 它没有开关,显隐只能跟着分组走。
+  if (meta.key) row.dataset.flagRow = meta.key;
 
   const name = document.createElement('span');
   name.className = 'tname';
@@ -1274,6 +1299,9 @@ function renderFlags() {
       // 渲染期一律先收起:此刻读不到开关真实值(storage 是异步回填的)。
       // 门控态(可点/灰显)由下面「初始状态」段按 storage 回填。
       panel.el.hidden = true;
+      // 2026-11-12:面板跟着行走 —— 行被平台挡掉时,面板也必须一起挡掉,
+      // 否则「其他」组在微信段只剩这一块孤立的清单。
+      panel.el.dataset.flagPanel = meta.key;
       if (meta.pinLast) {
         deferred[deferred.length - 1].panel = panel.el;
       } else {
@@ -1345,10 +1373,36 @@ function applyPlatform(platId) {
 
   const root = document.getElementById('flags-root');
   if (root) {
+    /* 显隐口径（2026-11-12 起，两级）：
+     *   ① 行的默认归属 = 分组：分组归本平台就露，否则藏；
+     *   ② 行自己声明了 platforms 就**只认它自己**，与分组归属无关
+     *      （「其他」组归抖音，但「粘贴图片」微信段也要能关 —— 见 flags.js）。
+     *   ③ 组框：连一行都没得露就整框收起。（「通用」组在 2026-11-12 把
+     *      唯一成员搬去「其他」后为空，留着会剩一个只有标题的空壳。）
+     * ★ 仍只切 hidden，不重建 DOM —— 切走再切回来，开关值与展开态原样还在。 */
     Array.prototype.forEach.call(root.children, (box) => {
       const gid = box.dataset ? box.dataset.gid : '';
       if (!gid) return;
-      box.hidden = groups.indexOf(gid) === -1;
+      const boxOwned = groups.indexOf(gid) !== -1;
+      const shownOn = (el) => {
+        const key = el.dataset.flagRow || el.dataset.flagPanel;
+        const meta = key ? FLAG_META_BY_KEY[key] : null;
+        if (!meta || !meta.platforms) return boxOwned;
+        return meta.platforms.indexOf(pid) !== -1;
+      };
+
+      let shownRows = 0;
+      Array.prototype.forEach.call(box.querySelectorAll('[data-flag-row]'), (row) => {
+        const on = shownOn(row);
+        row.hidden = !on;
+        if (on) shownRows++;
+      });
+      Array.prototype.forEach.call(box.querySelectorAll('[data-flag-panel]'), (panel) => {
+        // hidden 留给折叠交互；平台过滤不能覆盖用户的展开态。
+        panel.style.display = shownOn(panel) ? '' : 'none';
+      });
+
+      box.hidden = shownRows === 0;
     });
   }
 

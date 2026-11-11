@@ -551,7 +551,12 @@ const HTML = `<!doctype html><html><body>
       assert.ok(root.querySelector('style[data-dyc-imgpaste-style]').textContent.includes('all:initial'));
       const meta = w.DYC_FLAGS_META.find((m) => m.key === 'goodsImagePaste');
       assert.equal(w.DYC_FLAGS_META.filter((m) => m.key === meta.key).length, 1);
-      assert.ok(w.DYC_PLATFORMS.every((p) => p.groups.includes(meta.group)));
+      /* 口径（2026-11-12 改）：断言的是「两个平台都看得见这一行」，不再要求
+         它所在的**分组**被每个平台认领。用户把开关搬进抖音专属的「其他」组后，
+         可见性改由单行 platforms 白名单承担（见 flags.js / popup.applyPlatform），
+         仍盯着 group 会是「按实现写死」的过时断言。 */
+      assert.ok(w.DYC_PLATFORMS.every((p) => p.groups.includes(meta.group) ||
+        (meta.platforms || []).includes(p.id)), '开关应在两个平台都可见');
       assert.equal(meta.pages.join(','), 'goodsEdit,wxGoodsEdit');
       const manifest = JSON.parse(read('manifest.json'));
       const entries = manifest.content_scripts.filter((entry) => (entry.js || []).includes(SRC_UNDER_TEST));
