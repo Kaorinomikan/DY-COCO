@@ -1,5 +1,5 @@
 {
-  "version": "26.11.12.2",
+  "version": "26.11.12.3",
   "algorithm": "sha256",
   "files": [
     {
@@ -18,14 +18,39 @@
       "sha256": "2890984f2957c2ce88511f3e3994302dcedfce6a65e5eb97d74c64c3c48fa7a1"
     },
     {
+      "path": "icons/platforms/dy.png",
+      "size": 796,
+      "sha256": "4aca45c2f32f2e6260a17d61c680906d68791b2c8f60005a2a89ab63655a04e5"
+    },
+    {
+      "path": "icons/platforms/ks.png",
+      "size": 2120,
+      "sha256": "94e45c9afa0c6a83048b4b53330958f4e28c56bf576855dc1cd9793a89e5067b"
+    },
+    {
+      "path": "icons/platforms/tb.png",
+      "size": 4621,
+      "sha256": "88daff369a50dcda37d7f4f1b6d64d1d0cd5f62320ee4767023c13ff5fa9fc20"
+    },
+    {
+      "path": "icons/platforms/wx.png",
+      "size": 806,
+      "sha256": "68bbb6d098195492acdb6360326033b2f64e71cfeaa219b7b3a8129f18bb69f0"
+    },
+    {
+      "path": "icons/platforms/xhs.png",
+      "size": 2356,
+      "sha256": "efccec1a5260166915a3234e9f6c31dc6a922b9948a1661cff047e9a475e4fca"
+    },
+    {
       "path": "manifest.json",
       "size": 13079,
-      "sha256": "54e6086bd205668d8aa6e76b5395ae87ee6a0187113896bf40cd1f9c8771bc4c"
+      "sha256": "630a022546ae94df47a8b83d27bfd834ca05bed57ca9ac37f596c52a9868f795"
     },
     {
       "path": "src/background/service-worker.js",
       "size": 91557,
-      "sha256": "a0788cf74ba89473f807d70d7f89188a6f833b4183c2304a6c2f48687ab71415"
+      "sha256": "21f837726c5da9e6f46683ecaeb3a7029cb72bf3e27e3042d1c7523f96c69fa2"
     },
     {
       "path": "src/content/anchor.js",
@@ -104,8 +129,8 @@
     },
     {
       "path": "src/content/flags.js",
-      "size": 91988,
-      "sha256": "248b348556c90f1d0e211d6eccd9c1777500e2062a102fd54f2194194a3f7edf"
+      "size": 91718,
+      "sha256": "27bb04867a58e9db97e82bd163e2b0f7612f0161f91dc48907ae46cb558756c1"
     },
     {
       "path": "src/content/goods-batch-copy.js",
@@ -384,13 +409,13 @@
     },
     {
       "path": "src/popup/popup.html",
-      "size": 31743,
-      "sha256": "9ef0b844ce8890f708d4a44d539213c13ce5128c93bb78e523bdaeedbc2c0844"
+      "size": 29453,
+      "sha256": "0b1fc373d97475991f43034e22fab9f075787d937e4976bbf4845d708ba112d2"
     },
     {
       "path": "src/popup/popup.js",
-      "size": 85123,
-      "sha256": "748b2cca3c1ac62f5c79af90b07f04c2bad19a7e3c6e539987713d570d2e484d"
+      "size": 82065,
+      "sha256": "d5b4bc9a5ff12e32aeee0c3fc5ed076d4734664fd3bb4d489b60e5f71faf8715"
     },
     {
       "path": "src/replay/m3u8.js",

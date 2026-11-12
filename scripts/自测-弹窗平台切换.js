@@ -5,7 +5,7 @@
  *
  * 用户这一轮的四条要求，逐条钉死：
  *   ① 插件名统一叫「可可助手」（manifest.name / 弹窗标题 / 更新页）
- *   ② 顶部胶囊双段「抖音 ｜ 微信」，按钮前面带平台图标
+ *   ② 顶部下拉菜单切换平台，按钮前面带平台图标
  *   ③ 进抖音页默认抖音、进微信页自动切微信（网址优先，认不出才用上次记住的）
  *   ④ 调试模式 + 版本号恒定在弹窗最底部，切平台不动
  *
@@ -177,7 +177,7 @@ check('平台初始化与切换保留子面板折叠态，只有点名字才展�
   w.chrome = { storage: { local: { set() {} } } };
   w.platformInfo = (id) => PLATS.find((p) => p.id === id);
   w.updatePlatformUI = () => {};
-  w.eval('const FLAG_META_BY_KEY = { hideElements: {} }; let currentPlatform; let platInitDone; let multiPlatformMenuEnabled = true; const PLAT_STORE_KEY = "test";\n' +
+  w.eval('const FLAG_META_BY_KEY = { hideElements: {} }; let currentPlatform; let platInitDone; const PLAT_STORE_KEY = "test";\n' +
     bodyOf(js, 'attachSubPanelToggle') + '\n}\n' + bodyOf(js, 'applyPlatform') + '\n}');
   const row = w.document.querySelector('[data-flag-row]');
   const el = w.document.querySelector('[data-flag-panel]');
@@ -240,7 +240,7 @@ check('认不出的网址返回空串（由弹窗回落到上次记住的平台�
     .forEach((u) => assert.equal(detect(u), '', String(u) + ' 应返回空串'));
 });
 
-console.log('\n【四】弹窗结构：胶囊双段 + 固定底栏 + 名字');
+console.log('\n【四】弹窗结构：平台菜单 + 固定底栏 + 名字');
 check('标题是「可可助手」，且不再带平台前缀', () => {
   assert.ok(/<h1>可可助手<\/h1>/.test(html), '弹窗标题应为 <h1>可可助手</h1>');
   // 只看 body 之后的可见结构：CSS 注释里为了说明历史会提到旧名（「换回 6 字的
@@ -252,28 +252,16 @@ check('manifest 名字与浏览器里显示的一致（name + default_title）',
   assert.equal(mf.name, '可可助手');
   assert.equal(mf.action.default_title, '可可助手');
 });
-check('胶囊：两枚按钮、图标在前、抖音在微信前', () => {
-  const seg = html.slice(html.indexOf('id="plat-seg"'), html.indexOf('class="tagline"'));
-  const dy = seg.indexOf('data-plat="dy"');
-  const wx = seg.indexOf('data-plat="wx"');
-  assert.ok(dy > 0 && wx > 0, '两枚平台按钮都要在');
-  assert.ok(dy < wx, '抖音应排在微信之前');
-  // 每枚按钮里 svg 必须出现在文字之前 —— 用户原话「按钮前面带平台的图标」
-  for (const id of ['dy', 'wx']) {
-    const start = seg.indexOf('data-plat="' + id + '"');
-    const end = seg.indexOf('</button>', start);
-    const chunk = seg.slice(start, end);
-    const svgAt = chunk.indexOf('<svg');
-    const textAt = chunk.search(/<\/svg>\s*(抖音|微信)/);
-    assert.ok(svgAt > 0, id + ' 按钮缺图标');
-    assert.ok(textAt > svgAt, id + ' 按钮的图标要在文字前面');
-  }
-});
-check('胶囊用 <button>（键盘可达），且带 aria-pressed', () => {
-  assert.ok(/class="plat-item"[^>]*data-plat="dy"/.test(html), 'plat-item 结构');
-  const seg = html.slice(html.indexOf('id="plat-seg"'), html.indexOf('class="tagline"'));
-  assert.equal((seg.match(/<button type="button"/g) || []).length, 2, '应是两枚 button');
-  assert.equal((seg.match(/aria-pressed=/g) || []).length, 2, '两枚都要有 aria-pressed');
+check('平台菜单入口使用按钮，图标在名称前且关联选择面板', () => {
+  const page = new JSDOM(html);
+  const trigger = page.window.document.getElementById('platform-trigger');
+  assert.equal(trigger.tagName, 'BUTTON');
+  assert.equal(trigger.getAttribute('aria-expanded'), 'false');
+  assert.equal(trigger.getAttribute('aria-controls'), 'platform-panel');
+  assert(trigger.querySelector('.platform-logo img'));
+  assert(trigger.querySelector('#platform-current-name'));
+  assert(page.window.document.getElementById('platform-grid'));
+  page.window.close();
 });
 check('副标题简短可见，适合多平台菜单', () => {
   const text = new JSDOM(html).window.document.querySelector('.tagline').textContent.trim();
@@ -315,11 +303,6 @@ check('applyPlatform 只切显隐，不重建 DOM', () => {
   assert.ok(/box\.hidden\s*=/.test(body), '应只改 hidden');
   assert.ok(!/renderFlags\(/.test(body), 'applyPlatform 里不许重建（会闪、会丢滚动位置）');
   assert.ok(!/dycWriteFlag|chrome\.storage\.local\.set/.test(body), '切平台不许写开关值');
-});
-check('切换按钮：点已选中那段不重复处理', () => {
-  const body = bodyOf(js, 'bindPlatformSwitch');
-  assert.ok(/next === currentPlatform/.test(body), '要有「点当前段什么都不做」的判据');
-  assert.ok(/rememberPlatform/.test(body), '手动切换要记住');
 });
 check('自动判定：网址优先，认不出才用上次记住的', () => {
   const body = bodyOf(js, 'initPlatform');

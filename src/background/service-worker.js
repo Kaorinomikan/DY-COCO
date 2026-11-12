@@ -48,7 +48,7 @@
 // │ 发布会被直接中止。不需要靠人记。                                 │
 // └──────────────────────────────────────────────────────────────────┘
 // 全面整改：后台统一设置写入、私有历史与反馈来源截图，更新导入的开关定义。
-var DYC_BUILD = '26.11.12.2+sw38';
+var DYC_BUILD = '26.11.12.3+sw39';
 
 // classic worker，可以 importScripts（manifest 里没有设 type: module）
 importScripts('../shared/gitee.js', '../content/flags.js', '../shared/live-control-assets.js');

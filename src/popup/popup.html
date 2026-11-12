@@ -60,47 +60,6 @@
       gap: 8px;
       padding: 16px 16px 0;
     }
-    .plat-seg {
-      display: inline-flex;
-      align-items: center;
-      gap: 2px;
-      padding: 2px;
-      border-radius: 6px;
-      background: #f2f3f5;
-      flex: none;
-    }
-    /* 用 <button> 而不是 <span>：这一处是**主动作**，键盘 Tab 要能到、
-       空格/回车要能触发。普通 span 需自己补 tabindex + keydown，容易漏。 */
-    .plat-item {
-      display: inline-flex;
-      align-items: center;
-      gap: 3px;
-      height: 20px;
-      padding: 0 7px;
-      border: 0;
-      border-radius: 4px;
-      background: transparent;
-      font-family: inherit;
-      font-size: 10.5px;
-      line-height: 1;
-      color: #86909c;
-      cursor: pointer;
-      white-space: nowrap;
-    }
-    .plat-item:hover {
-      color: #4e5969;
-    }
-    .plat-item.on {
-      background: #fff;
-      color: #1f2329;
-      font-weight: 500;
-      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.07);
-    }
-    .plat-item svg {
-      display: block;
-      width: 11px;
-      height: 11px;
-    }
     [hidden] { display: none !important; }
     .platform-picker { position: relative; flex: none; }
     .platform-trigger {
@@ -113,10 +72,11 @@
     .platform-logo {
       display: inline-flex; align-items: center; justify-content: center;
       width: 23px; height: 23px; flex: none; border-radius: 7px;
-      background: var(--platform-color, #222633); color: #fff; font-size: 11px;
+      overflow: hidden;
     }
+    .platform-logo img { display: block; width: 100%; height: 100%; object-fit: contain; }
     .platform-trigger .platform-logo { width: 19px; height: 19px; border-radius: 5px; }
-    .platform-chevron { display: inline-block; transition: transform 180ms; }
+    .platform-chevron { display: block; width: 14px; height: 14px; flex: none; color: #78818e; transition: transform 180ms; }
     .platform-trigger[aria-expanded="true"] .platform-chevron { transform: rotate(180deg); }
     .platform-panel {
       position: absolute; z-index: 30; top: calc(100% + 8px); right: 0;
@@ -136,9 +96,8 @@
     .platform-option small { font-size: 10px; color: #78818e; }
     .platform-check { position: absolute; top: 4px; right: 5px; color: #7468cf; font-size: 12px; }
     .platform-panel-note { padding: 10px 6px 3px; margin-top: 7px; border-top: 1px solid #e9ecf1; font-size: 11px; line-height: 1.6; color: #78818e; }
-    .platform-context { flex: none; min-height: 27px; margin: 0 16px; display: flex; align-items: center; justify-content: space-between; gap: 4px; font-size: 11px; color: #78818e; }
+    .platform-context { flex: none; margin: 0 16px; display: flex; justify-content: flex-end; }
     .platform-return { border: 0; background: transparent; color: #7468cf; font: inherit; font-size: 11px; padding: 4px 0; cursor: pointer; }
-    .platform-feedback { flex: none; min-height: 18px; margin: 0 16px; font-size: 11px; line-height: 18px; color: #78818e; }
     .platform-badge { margin-left: auto; color: #78818e; font-size: 10px; background: #f5f6f8; padding: 2px 5px; border-radius: 4px; }
     .platform-placeholder { margin: 12px 0; font-size: 11px; line-height: 1.8; color: #78818e; }
     .platform-empty { min-height: 170px; padding-top: 48px; text-align: center; }
@@ -152,8 +111,7 @@
        否则会先按"全部分组"画一遍、再刷成单平台 —— 肉眼就是闪一下。 */
     body.plat-pending #flags-root,
     body.plat-pending .platform-picker,
-    body.plat-pending .platform-context,
-    body.plat-pending .platform-feedback {
+    body.plat-pending .platform-context {
       visibility: hidden;
     }
 
@@ -792,7 +750,7 @@
     <h1>可可助手</h1>
     <div class="platform-picker" id="platform-picker">
       <button type="button" class="platform-trigger" id="platform-trigger" aria-label="切换平台" aria-expanded="false" aria-controls="platform-panel">
-        <span class="platform-logo" id="platform-current-logo" aria-hidden="true">抖</span><span id="platform-current-name">抖音</span><span class="platform-chevron" aria-hidden="true">⌄</span>
+        <span class="platform-logo" id="platform-current-logo" aria-hidden="true"><img src="../../icons/platforms/dy.png" alt=""></span><span id="platform-current-name">抖音</span><svg class="platform-chevron" viewBox="0 0 16 16" fill="none" aria-hidden="true"><path d="m4 6 4 4 4-4" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </button>
       <div class="platform-panel" id="platform-panel" hidden>
         <div class="platform-panel-head"><span>切换平台</span><span>仅切换菜单</span></div>
@@ -800,18 +758,10 @@
         <div class="platform-panel-note">每次打开优先跟随当前网站。<br>手动切换不会跳转网页，设置独立保留。</div>
       </div>
     </div>
-    <div class="plat-seg" id="plat-seg" role="group" aria-label="切换平台" hidden>
-      <button type="button" class="plat-item" data-plat="dy" aria-pressed="true">
-        <svg viewBox="0 0 24 24" fill="#161823" aria-hidden="true"><path d="M16.6 3c.28 2.1 1.6 3.6 3.6 3.9v3.1c-1.4 0-2.7-.4-3.8-1.2v5.9c0 3.4-2.4 5.6-5.5 5.6-2.7 0-4.6-1.9-4.6-4.4 0-2.7 2.1-4.6 4.9-4.4v3.2c-1.1-.2-1.9.3-1.9 1.3 0 .9.7 1.5 1.6 1.5 1.1 0 1.7-.7 1.7-2.1V3h4z"/></svg>抖音
-      </button>
-      <button type="button" class="plat-item" data-plat="wx" aria-pressed="false">
-        <svg viewBox="0 0 24 24" fill="#07c160" aria-hidden="true"><path d="M9.2 4C5.2 4 2 6.6 2 9.8c0 1.8 1 3.4 2.7 4.6l-.7 2.1 2.4-1.2c.9.3 1.8.4 2.8.4.3 0 .5 0 .8-.1-.2-.5-.3-1-.3-1.5 0-3 2.9-5.4 6.4-5.4h.5C16.1 5.6 13 4 9.2 4zm-2.4 3.1a.95.95 0 1 1 0 1.9.95.95 0 0 1 0-1.9zm4.8 0a.95.95 0 1 1 0 1.9.95.95 0 0 1 0-1.9z"/><path d="M22 14.1c0-2.6-2.6-4.7-5.8-4.7s-5.8 2.1-5.8 4.7 2.6 4.7 5.8 4.7c.7 0 1.4-.1 2-.3l2 1-.6-1.8c1.5-.9 2.4-2.2 2.4-3.6zm-7.7-1.3a.8.8 0 1 1 0 1.6.8.8 0 0 1 0-1.6zm3.8 0a.8.8 0 1 1 0 1.6.8.8 0 0 1 0-1.6z"/></svg>微信
-      </button>
-    </div>
+
   </div>
   <div class="tagline">直播与店铺的便携化升级。</div>
-  <div class="platform-context" id="platform-context"><span id="platform-context-label">识别当前网站…</span><button type="button" class="platform-return" id="platform-return" hidden>跟随当前网站</button></div>
-  <div class="platform-feedback" id="platform-feedback" role="status" aria-live="polite"></div>
+  <div class="platform-context" id="platform-context" hidden><button type="button" class="platform-return" id="platform-return">跟随当前网站</button></div>
 
   <!-- ===== 主体：功能开关区（由 flags.js 的元数据表自动渲染）=====
        三个分组框按平台归属显隐：抖音 = 中控台 + 抖店 + 其他，微信 = 微信小店。

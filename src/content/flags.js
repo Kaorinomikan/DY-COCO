@@ -997,16 +997,6 @@ var DYC_FLAGS_META = [
     note: '需保持页面打开；直链续传取决于服务器支持。',
     default: true,
     pages: ['replayPage']
-  },
-  {
-    key: 'multiPlatformMenu',
-    group: 'shared',
-    inFooter: true,
-    label: '多平台菜单',
-    desc: '按网站显示菜单，也可在右上角手动切换。',
-    note: '关闭后只保留抖音与微信切换。',
-    default: true,
-    pages: []
   }
 ];/* ==========================================================
  * 四、从元数据派生的常量(保持向后兼容)

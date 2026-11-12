@@ -56,6 +56,30 @@ function fixture(url, options = {}) {
 let passed = 0;
 async function test(name, fn) { await fn(); passed++; console.log('通过：' + name); }
 (async () => {
+  await test('默认收起平台提示区，手动查看后保留返回当前网站入口', async () => {
+    const f = fixture('https://store.weixin.qq.com/'); await flush();
+    assert.equal(f.d.getElementById('platform-context').hidden, true);
+    assert.equal(f.d.getElementById('platform-feedback'), null);
+    assert.equal(f.d.getElementById('platform-context-label'), null);
+    f.choose('dy');
+    assert.equal(f.d.getElementById('platform-context').hidden, false);
+    f.d.getElementById('platform-return').click(); await flush();
+    assert.equal(f.d.getElementById('platform-context').hidden, true); f.close();
+  });
+  await test('平台列表、入口与空态使用随扩展打包的图标', async () => {
+    const f = fixture('https://www.douyin.com/'); await flush();
+    for (const button of f.d.querySelectorAll('.platform-option')) {
+      const icon = button.querySelector('.platform-logo img');
+      assert(icon, '每个平台都有真实图标');
+      assert(fs.existsSync(path.resolve(ROOT, 'src/popup', icon.getAttribute('src'))), '图标已本地打包');
+      f.choose(button.dataset.plat);
+      assert.equal(f.d.querySelector('#platform-current-logo img').src, icon.src);
+      if (!f.d.getElementById('platform-empty').hidden) {
+        assert.equal(f.d.querySelector('#platform-empty-logo img').src, icon.src);
+      }
+    }
+    assert.deepEqual(f.errors, []); f.close();
+  });
   for (const [url, id] of [
     ['https://qianfan.xiaohongshu.com/', 'xhs'], ['https://ark.xiaohongshu.com/app', 'xhs'],
     ['https://www.xiaohongshu.com/explore', 'xhs'], ['https://xiaohongshu.com', 'xhs'],
@@ -89,7 +113,7 @@ async function test(name, fn) { await fn(); passed++; console.log('通过：' + 
     assert(f.writes.every(p => !p.dybFeatures));
     assert(!f.animations.some(a => a.el.id === 'flags-root' && a.frames.some(frame => frame.opacity === 0)));
     assert.equal(f.d.getElementById('platform-panel').hidden, true);
-    assert(f.d.getElementById('platform-feedback').textContent.includes('微信')); f.close();
+    assert.equal(f.d.getElementById('platform-feedback'), null); f.close();
   });
   await test('手动查看可返回当前网站，下次打开仍按网站', async () => {
     const f = fixture('https://qianfan.xiaohongshu.com/'); await flush(); f.choose('wx');
@@ -98,23 +122,22 @@ async function test(name, fn) { await fn(); passed++; console.log('通过：' + 
     const next = fixture('https://qianfan.xiaohongshu.com/', { last: f.data.dybLastPlatform }); await flush();
     assert.equal(next.selected(), 'xhs'); f.close(); next.close();
   });
-  await test('开关即时回退旧菜单，写入失败复原；外部设置变化同样生效', async () => {
-    const f = fixture('https://www.xiaohongshu.com/'); await flush();
-    const input = f.d.querySelector('[data-flag-row="multiPlatformMenu"] input');
-    input.checked = false; input.dispatchEvent(new f.w.Event('change')); await flush();
-    assert.equal(f.data.dybFeatures.multiPlatformMenu, false); assert.equal(f.d.getElementById('platform-picker').hidden, true);
-    assert.equal(f.d.getElementById('plat-seg').hidden, false); assert.equal(f.selected(), 'dy');
-    f.emit({ dybFeatures: { newValue: { multiPlatformMenu: true } } }); await flush();
-    assert.equal(f.d.getElementById('platform-picker').hidden, false); f.close();
-    const bad = fixture('https://store.weixin.qq.com/', { failWrite: true }); await flush();
-    const toggle = bad.d.querySelector('[data-flag-row="multiPlatformMenu"] input');
-    toggle.checked = false; toggle.dispatchEvent(new bad.w.Event('change')); await flush();
-    assert.equal(toggle.checked, true); assert.equal(toggle.disabled, false); assert.equal(bad.d.getElementById('platform-picker').hidden, false); bad.close();
+  await test('点当前平台不重复写存档，切换无额外结果提示', async () => {
+    const f = fixture('https://store.weixin.qq.com/'); await flush();
+    const count = f.writes.length;
+    f.choose('wx'); assert.equal(f.writes.length, count);
+    f.choose('tb'); assert.equal(f.data.dybLastPlatform, 'tb');
+    assert.equal(f.d.getElementById('platform-current-name').textContent, '淘宝');
+    assert.equal(f.d.getElementById('platform-feedback'), null); f.close();
   });
-  await test('菜单开关已关闭时仍按当前微信网站初始化，不先显示新菜单', async () => {
+  await test('移除菜单开关，旧存档关闭值不影响平台菜单', async () => {
     const f = fixture('https://store.weixin.qq.com/', { last: 'dy', features: { multiPlatformMenu: false } });
-    await flush(); assert.equal(f.selected(), 'wx'); assert.equal(f.d.getElementById('platform-picker').hidden, true);
-    assert.equal(f.d.getElementById('plat-seg').hidden, false); f.close();
+    await flush(); assert.equal(f.selected(), 'wx');
+    assert.equal(f.d.querySelector('[data-flag-row="multiPlatformMenu"]'), null);
+    assert.equal(f.d.getElementById('platform-picker').hidden, false);
+    f.emit({ dybFeatures: { newValue: { multiPlatformMenu: false } } }); await flush();
+    f.choose('xhs'); assert.equal(f.selected(), 'xhs');
+    assert.equal(f.d.getElementById('platform-picker').hidden, false); f.close();
   });
   await test('键盘展开、方向移动、Esc与外部点击收起', async () => {
     const f = fixture('https://store.weixin.qq.com/'); await flush();

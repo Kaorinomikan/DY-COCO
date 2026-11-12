@@ -1349,7 +1349,7 @@ renderFlags();
  *
  * 平台表驱动入口与分组；小红书暂留两组，空平台显示占位。
  * 网址认得出就以网址为准，认不出才用存档；手动选择不跳转网页。
- * 业务开关与展开态原样保留；多平台菜单关闭时还原抖音/微信入口。
+ * 业务开关与展开态原样保留。
  * ========================================================== */
 const PLAT_STORE_KEY = 'dybLastPlatform';
 // 当前平台。空串 = 还没定（初始化是异步的，见 initPlatform）
@@ -1358,7 +1358,6 @@ let currentPlatform = '';
 // 让「plat-pending」永远挂着（那会让主体区一直不可见 = 弹窗看着是空的）
 let platInitDone = false;
 let detectedPlatform = '';
-let multiPlatformMenuEnabled = true;
 let platformSelectionMode = 'auto';
 let platformMenuOpen = false;
 let platformMenuRevision = 0;
@@ -1370,8 +1369,10 @@ function platformInfo(id) {
 
 function platformLogo(el, platform) {
   if (!el) return;
-  el.textContent = platform.mark || platform.label.slice(0, 1);
-  el.style.setProperty('--platform-color', platform.color || '#222633');
+  const icon = document.createElement('img');
+  icon.src = '../../icons/platforms/' + platform.id + '.png';
+  icon.alt = '';
+  el.replaceChildren(icon);
 }
 
 function buildPlatformOptions() {
@@ -1404,10 +1405,6 @@ function updatePlatformUI(pid) {
   const platform = platformInfo(pid);
   const picker = document.getElementById('platform-picker');
   if (!picker) return;
-  picker.hidden = !multiPlatformMenuEnabled;
-  document.getElementById('plat-seg').hidden = multiPlatformMenuEnabled;
-  document.getElementById('platform-context').hidden = !multiPlatformMenuEnabled;
-  document.getElementById('platform-feedback').hidden = !multiPlatformMenuEnabled;
   document.getElementById('platform-current-name').textContent = platform.label;
   platformLogo(document.getElementById('platform-current-logo'), platform);
   document.querySelectorAll('.platform-option').forEach((button) => {
@@ -1419,8 +1416,7 @@ function updatePlatformUI(pid) {
       ? '当前网站' : platformInfo(button.dataset.plat).status || '已支持';
   });
   const manual = platformSelectionMode === 'manual';
-  document.getElementById('platform-context-label').textContent =
-    (manual ? '手动查看 · ' : detectedPlatform ? '已识别 · ' : '沿用上次 · ') + platform.label;
+  document.getElementById('platform-context').hidden = !manual || !detectedPlatform;
   document.getElementById('platform-return').hidden = !manual || !detectedPlatform;
   const empty = document.getElementById('platform-empty');
   empty.hidden = dycPlatformGroups(pid).length !== 0;
@@ -1463,20 +1459,11 @@ async function setPlatformMenu(open, focusOption) {
   }
 }
 
-function setMultiPlatformMenu(enabled) {
-  if (multiPlatformMenuEnabled === enabled) return;
-  multiPlatformMenuEnabled = enabled;
-  if (!platInitDone) return;
-  setPlatformMenu(false);
-  // 关闭新菜单只还原原先两平台入口，不改任何业务开关。
-  applyPlatform(enabled && platformSelectionMode === 'auto' && detectedPlatform ? detectedPlatform : currentPlatform);
-}
-
 /** 把平台设成 platId：只切分组框显隐 + 胶囊选中态。 */
 function applyPlatform(platId) {
   const platform = platformInfo(platId);
-  // 合法空平台也要显示占位；仅未知 id 或关闭多平台菜单时回落。
-  const pid = platform && (multiPlatformMenuEnabled || platId === 'dy' || platId === 'wx') ? platId : DYC_PLATFORMS[0].id;
+  // 合法空平台也要显示占位；仅未知 id 回落。
+  const pid = platform ? platId : DYC_PLATFORMS[0].id;
   const groups = dycPlatformGroups(pid);
 
   currentPlatform = pid;
@@ -1516,12 +1503,6 @@ function applyPlatform(platId) {
     });
   }
 
-  Array.prototype.forEach.call(document.querySelectorAll('.plat-item'), (btn) => {
-    const on = btn.dataset.plat === pid;
-    btn.classList.toggle('on', on);
-    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
-  });
-
   updatePlatformUI(pid);
 
   platInitDone = true;
@@ -1536,32 +1517,8 @@ function rememberPlatform(pid) {
   } catch (e) { /* 存不下不影响本次切换，只是下次认不出网址时回到默认 */ }
 }
 
-/** 从被点到的节点往上找那枚平台按钮（SVG 里点中的是 <path>，不是按钮）。 */
-function platBtnOf(el) {
-  let node = el;
-  while (node && node !== document) {
-    if (node.classList && node.classList.contains('plat-item')) return node;
-    node = node.parentNode;
-  }
-  return null;
-}
-
 (function bindPlatformSwitch() {
   buildPlatformOptions();
-  const seg = document.getElementById('plat-seg');
-  if (!seg) return;
-  seg.addEventListener('click', (e) => {
-    const btn = platBtnOf(e.target);
-    if (!btn) return;
-    const next = btn.dataset.plat;
-    if (!next || next === currentPlatform) return;   // 点已选中的那段：什么都不做
-    platformSelectionMode = 'manual';
-    applyPlatform(next);
-    rememberPlatform(next);
-    // 换平台后回到顶部：停在上一平台的中段位置，看新的一组会很莫名
-    // （2026-10-31 第八轮：滚动归文档本身，.pop-body 不再是滚动容器）
-    window.scrollTo(0, 0);
-  });
   const trigger = document.getElementById('platform-trigger');
   const grid = document.getElementById('platform-grid');
   if (!trigger || !grid) return;
@@ -1577,7 +1534,6 @@ function platBtnOf(el) {
       platformSelectionMode = 'manual';
       applyPlatform(next);
       rememberPlatform(next);
-      document.getElementById('platform-feedback').textContent = '平台切换 ｜ ' + platformInfo(next).label + ' ｜ 已显示';
       animatePlatformElement(button.querySelector('.platform-check'), [{ transform: 'scale(.5)' }, { transform: 'scale(1)' }], 180);
       // 正文始终可见，只做一次小幅位移，避免退场空白与内外层重复动画。
       animatePlatformElement(flagsRoot, [{ transform: 'translateY(3px)' }, { transform: 'none' }], 160);
@@ -1606,7 +1562,6 @@ function platBtnOf(el) {
     platformSelectionMode = 'auto';
     applyPlatform(detectedPlatform);
     rememberPlatform(currentPlatform);
-    document.getElementById('platform-feedback').textContent = '平台切换 ｜ ' + platformInfo(currentPlatform).label + ' ｜ 已跟随网站';
     window.scrollTo(0, 0);
   });
 })();
@@ -1681,10 +1636,7 @@ DYC_FLAGS_META.forEach((meta) => {
     try {
       await dycWriteFlag(meta.key, on);
       input._savedValue = on;
-      if (meta.key === 'multiPlatformMenu') {
-        setMultiPlatformMenu(on);
-        flash('平台切换 ｜ 多平台菜单 ｜ ' + (on ? '已开启' : '已关闭'));
-      } else reportApplied(meta.pages, on);
+      reportApplied(meta.pages, on);
     } catch (error) {
       input.checked = before;
       foldOpeners.forEach((entry) => { if (entry.key === meta.key) entry.setGate(before); });
@@ -1698,7 +1650,6 @@ DYC_FLAGS_META.forEach((meta) => {
 
 // ---- 初始状态 ----
 dycReadAllFlags().then((values) => {
-  setMultiPlatformMenu(values.multiPlatformMenu !== false);
   DYC_FLAGS_META.forEach((meta) => {
     const input = flagInputs[meta.key];
     if (!input) return;
@@ -1719,16 +1670,8 @@ dycReadAllFlags().then((values) => {
   flash('设置读取失败：' + dycSettingError(error));
   initPlatform();
 });
-// 设置读取失联也能打开菜单；正常路径先读菜单开关，避免旧菜单用户先闪出新菜单。
+// 设置读取失联也能打开菜单。
 setTimeout(initPlatform, 800);
-
-chrome.storage.onChanged.addListener((changes, area) => {
-  if (area !== 'local' || !changes.dybFeatures) return;
-  const enabled = !changes.dybFeatures.newValue || changes.dybFeatures.newValue.multiPlatformMenu !== false;
-  const input = flagInputs.multiPlatformMenu;
-  if (input) { input.checked = enabled; input._savedValue = enabled; }
-  setMultiPlatformMenu(enabled);
-});
 
 /* ==========================================================
  * 二、更新区
