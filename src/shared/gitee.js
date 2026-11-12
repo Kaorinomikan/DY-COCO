@@ -1325,6 +1325,36 @@
     return btoa(s);
   }
 
+  /** 日志与更新亮点共用；只取第一个版本，旧版多行要点合成一条。 */
+  function parseReleaseNotes(text) {
+    if (!text) return null;
+    var summary = '', items = [], mode = 'body', seenVersion = false;
+    var lines = String(text).split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i].trim();
+      if (/^#\s/.test(line)) {
+        if (seenVersion || summary || items.length) break;
+        seenVersion = true;
+        continue;
+      }
+      if (/^##\s/.test(line)) {
+        mode = /^##\s*(验证|使用提醒|说明)/.test(line) ? 'skip'
+          : /^##\s*破坏性变更/.test(line) ? 'breaking' : 'body';
+        continue;
+      }
+      if (mode === 'skip') continue;
+      var m = line.match(/^\*\*本版一句话\*\*\s*[：:]\s*(.+)$/);
+      if (m) { summary = m[1].trim(); continue; }
+      if (/^[-*]\s+/.test(line)) {
+        var t = line.replace(/^[-*]\s+/, '').replace(/\*\*|`/g, '').trim();
+        if (t && !(mode === 'breaking' && /^无/.test(t))) items.push(t);
+      } else if (/^\s+\S/.test(lines[i]) && items.length && mode === 'body') {
+        items[items.length - 1] += line.replace(/\*\*|`/g, '');
+      }
+    }
+    return summary || items.length ? { summary: summary, items: items.slice(0, 5) } : null;
+  }
+
   root.DYC_GITEE = {
     OWNER: OWNER,
     REPO: REPO,
@@ -1381,6 +1411,7 @@
     fetchRawFile: fetchRawFile,
     fetchGitHubFile: fetchGitHubFile,
     sha256Hex: sha256Hex,
+    parseReleaseNotes: parseReleaseNotes,
     // 工具
     base64ToBytes: base64ToBytes,
     bytesToBase64: bytesToBase64

@@ -9,6 +9,7 @@ const read = file => fs.readFileSync(path.join(__dirname, '..', file), 'utf8');
 function harness(fetcher) {
   let now = 100000, next = 0;
   const timers = new Map(), frames = [], writes = [], finishes = [];
+  const listeners = new Map();
   const set = (fn, ms, repeat) => {
     const id = ++next;
     timers.set(id, { fn, at: now + ms, repeat });
@@ -35,10 +36,17 @@ function harness(fetcher) {
     performance: { getEntriesByType: () => [] },
     document: { querySelector: () => null }, location: { hostname: 'offline', href: 'https://offline/' },
     sessionStorage: { getItem: () => null, setItem() {}, removeItem() {} },
-    dycReadFlags: () => new Promise(() => {}), dycWatchFlags() {},
+    navigator: { onLine: true },
+    addEventListener(name, fn) {
+      if (!listeners.has(name)) listeners.set(name, new Set());
+      listeners.get(name).add(fn);
+    },
+    removeEventListener(name, fn) { listeners.get(name)?.delete(fn); },
+    dycReadFlags: () => new Promise(() => {}), dycWatchFlags(fn) { ctx.updateFlags = fn; },
     __DYC_REPLAY_DEBUG__: true, __DYC_REPLAY_META__: {},
     __DYC_REPLAY_UI__: {
       setAbortHandler(fn) { ctx.cancel = fn; }, setBtn() {}, showProgress() {},
+      setPauseHandler(fn) { ctx.pause = fn; },
       setProgress(ratio, meta) { frames.push({ time: now, ratio, ...meta }); },
       finishProgress(kind) { finishes.push(kind); }, say() {}, hideProgress() {},
       fmtBytes: n => String(Math.round(n)) + 'B',
@@ -83,7 +91,11 @@ function harness(fetcher) {
     if (error) throw error;
     return promise;
   }
-  return { ctx, advance, finish, frames, writes, finishes, timers, handle };
+  const network = online => {
+    ctx.navigator.onLine = online;
+    for (const fn of listeners.get(online ? 'online' : 'offline') || []) fn();
+  };
+  return { ctx, advance, finish, frames, writes, finishes, timers, handle, network, listeners };
 }
 
 function response(chunks, ms, signal, delay) {
@@ -343,13 +355,14 @@ async function check(name, fn) { await fn(); checks++; console.log('通过：' +
     assert.equal(h.frames.length, count);
     assert.equal(h.timers.size, 0);
   });
-  await check('鉴权失败不无效重试，整场失败停止其余请求和刷新', async () => {
+  await check('关闭续传时鉴权失败仍结束任务并清理请求', async () => {
     let failed = 0, hangingSignal;
     const h = harness((url, o, t) => {
       if (url === '0') { failed++; return Promise.resolve({ ok: false, status: 403 }); }
       if (url !== 'init') { hangingSignal = o.signal; return t.delay(null, 60000, o.signal); }
       return Promise.resolve(response([[255]], 1, o.signal, t.delay));
     });
+    h.ctx.updateFlags({ replayResume: false });
     await h.finish(h.ctx.__DYC_REPLAY_TEST__.runDownload(plan(5), 'bad'));
     assert.equal(failed, 1); assert.ok(hangingSignal.aborted);
     assert.deepEqual(h.finishes, ['bad']); assert.equal(h.timers.size, 0);
@@ -434,6 +447,221 @@ async function check(name, fn) { await fn(); checks++; console.log('通过：' +
     assert.notEqual(phases[0], phases[1]); assert.equal(phases[1], phases[2]);
     assert.notEqual(phases[2], phases[3]);
     assert.deepEqual(h.writes, [[255], [1, 2]]);
+  });
+  await check('暂停超过停滞时限仍保留顺序进度，联网或其他开关变化不解除手动暂停', async () => {
+    const calls = [];
+    const h = harness((url, o, t) => {
+      calls.push(url);
+      return Promise.resolve(response([[url === 'init' ? 255 : Number(url)]],
+        url === 'init' ? 1 : url === '0' ? 200 : 1500, o.signal, t.delay));
+    });
+    let removed = 0, aborted = 0;
+    h.handle.remove = async () => { removed++; };
+    const original = h.handle.createWritable;
+    h.handle.createWritable = async () => ({ ...await original(), abort: async () => { aborted++; } });
+    const p = h.ctx.__DYC_REPLAY_TEST__.runDownload(plan(8), 'pause');
+    await h.advance(450); h.ctx.pause(); await h.advance(1);
+    const before = h.writes.length, requests = calls.length;
+    assert.ok(before >= 2, '至少一片已写入后暂停');
+    h.network(false); h.network(true); h.ctx.updateFlags({ unrelatedFlag: true });
+    await h.advance(60000);
+    assert.equal(h.writes.length, before); assert.equal(calls.length, requests);
+    assert.equal(h.frames.at(-1).mode, 'paused');
+    assert.equal(removed, 0); assert.equal(aborted, 0); assert.equal(h.finishes.length, 0);
+    h.ctx.pause(); await h.finish(p);
+    assert.deepEqual(h.writes, [[255], ...Array.from({ length: 8 }, (_, i) => [i])]);
+    assert.equal(calls.filter(v => v === '0').length, 1, '已写入片不重新请求');
+    assert.deepEqual(h.finishes, ['ok']); assert.equal(h.timers.size, 0);
+    assert.ok([...h.listeners.values()].every(v => v.size === 0));
+  });
+  await check('断网等待超过一分钟不销毁任务，联网后自动从未完成分片继续', async () => {
+    const h = harness((url, o, t) => Promise.resolve(response(
+      [[url === 'init' ? 255 : Number(url)]], url === 'init' ? 1 : 1000, o.signal, t.delay)));
+    const p = h.ctx.__DYC_REPLAY_TEST__.runDownload(plan(9), 'offline');
+    await h.advance(1200); h.network(false); await h.advance(60000);
+    assert.equal(h.frames.at(-1).mode, 'offline');
+    assert.equal(h.finishes.length, 0);
+    h.network(true); await h.finish(p);
+    assert.deepEqual(h.writes, [[255], ...Array.from({ length: 9 }, (_, i) => [i])]);
+    assert.deepEqual(h.finishes, ['ok']); assert.equal(h.timers.size, 0);
+  });
+  await check('重试耗尽保留已写入进度，手动重试后整场完成', async () => {
+    let broken = true, calls = 0;
+    const h = harness((url, o, t) => {
+      calls++;
+      if (url === '1' && broken) return t.delay({ ok: false, status: 503 }, 400, o.signal);
+      return Promise.resolve(response([[url === 'init' ? 255 : Number(url)]], 100, o.signal, t.delay));
+    });
+    const p = h.ctx.__DYC_REPLAY_TEST__.runDownload(plan(7), 'retry');
+    await h.advance(12000);
+    assert.equal(h.frames.at(-1).mode, 'retry');
+    assert.ok(h.writes.some(w => w[0] === 0));
+    const count = calls;
+    await h.advance(45000); assert.equal(calls, count);
+    broken = false; h.ctx.pause(); await h.finish(p);
+    assert.deepEqual(h.writes, [[255], ...Array.from({ length: 7 }, (_, i) => [i])]);
+    assert.deepEqual(h.finishes, ['ok']); assert.equal(h.timers.size, 0);
+  });
+  await check('初始化段失败也可等待恢复，等待中取消会清理请求、监听和计时器', async () => {
+    const h = harness(() => Promise.resolve({ ok: false, status: 403 }));
+    const p = h.ctx.__DYC_REPLAY_TEST__.runDownload(plan(3), 'init-failed');
+    await h.advance(1000); assert.equal(h.frames.at(-1).mode, 'retry');
+    h.ctx.cancel(); await h.finish(p);
+    assert.deepEqual(h.finishes, ['warn']); assert.equal(h.timers.size, 0);
+    assert.ok([...h.listeners.values()].every(v => v.size === 0));
+  });
+  await check('先重试耗尽再收到断网事件时改为等待联网，并自动恢复', async () => {
+    let broken = true;
+    const h = harness((url, o, t) => broken ? Promise.resolve({ ok: false, status: 503 }) :
+      Promise.resolve(response([[255]], 100, o.signal, t.delay)));
+    const p = h.ctx.__DYC_REPLAY_TEST__.runDownload(plan(1), 'late-offline');
+    await h.advance(5000); assert.equal(h.frames.at(-1).mode, 'retry');
+    h.network(false); await h.advance(500); assert.equal(h.frames.at(-1).mode, 'offline');
+    broken = false; h.network(true); await h.finish(p);
+    assert.deepEqual(h.finishes, ['ok']); assert.equal(h.timers.size, 0);
+  });
+  await check('关闭续传开关立即释放暂停，下载继续且不重新写已完成片', async () => {
+    const h = harness((url, o, t) => Promise.resolve(response(
+      [[url === 'init' ? 255 : Number(url)]], 100, o.signal, t.delay)));
+    const p = h.ctx.__DYC_REPLAY_TEST__.runDownload(plan(5), 'flag');
+    await h.advance(250); h.ctx.pause(); await h.advance(1000);
+    h.ctx.updateFlags({ replayResume: false }); await h.finish(p);
+    assert.deepEqual(h.finishes, ['ok']);
+    assert.deepEqual(h.writes, [[255], [0], [1], [2], [3], [4]]);
+    assert.ok(h.frames.some(f => f.recoverable === false));
+  });
+  await check('TS暂停后复用同一个转封装实例与初始化段', async () => {
+    const h = harness((url, o, t) => Promise.resolve(response([[Number(url)]], 500, o.signal, t.delay)));
+    let instances = 0, written = 0;
+    h.ctx.muxjs = { mp4: { Transmuxer: class {
+      constructor() { instances++; }
+      on(name, fn) { if (name === 'data') this.data = fn; }
+      push(buf) { this.buf = buf; }
+      flush() { this.data({ initSegment: Uint8Array.from([255]), data: this.buf }); written++; }
+    } } };
+    const p = h.ctx.__DYC_REPLAY_TEST__.runDownload({ type: 'hls', segments: plan(8).segments }, 'ts');
+    await h.advance(700); h.ctx.pause(); await h.advance(2000);
+    const before = written; h.ctx.pause(); await h.finish(p);
+    assert.ok(before > 0); assert.equal(instances, 1); assert.equal(written, 8);
+    assert.deepEqual(h.writes, [[255], ...Array.from({ length: 8 }, (_, i) => [i])]);
+  });
+  function directResponse(chunks, status, headers, o, t) {
+    return { ...response(chunks, 300, o.signal, t.delay), status,
+      headers: { get: name => headers[name] || null } };
+  }
+  await check('直链暂停后按已写入字节发Range并校验原文件，不重复写入', async () => {
+    const requests = [];
+    const h = harness((url, o, t) => {
+      requests.push(o.headers || {});
+      const start = o.headers ? Number(/bytes=(\d+)/.exec(o.headers.Range)[1]) : 0;
+      const bytes = [1, 2, 3, 4, 5, 6].slice(start);
+      return Promise.resolve(directResponse(Array.from({ length: bytes.length / 2 }, (_, i) => bytes.slice(i * 2, i * 2 + 2)),
+        start ? 206 : 200, { 'content-length': String(bytes.length), etag: '"v1"',
+          'content-range': start ? 'bytes ' + start + '-5/6' : '' }, o, t));
+    });
+    const p = h.ctx.__DYC_REPLAY_TEST__.runDownload({ type: 'mp4', url: 'movie', segments: [] }, 'direct');
+    await h.advance(400); h.ctx.pause(); await h.advance(3000);
+    assert.deepEqual(h.writes, [[1, 2]]);
+    h.ctx.pause(); await h.finish(p);
+    assert.deepEqual(h.writes, [[1, 2], [3, 4], [5, 6]]);
+    assert.equal(requests[1].Range, 'bytes=2-'); assert.equal(requests[1]['If-Range'], '"v1"');
+    assert.deepEqual(h.finishes, ['ok']); assert.equal(h.timers.size, 0);
+  });
+  for (const invalid of ['ignored', 'changed', 'wrong-offset', 'no-validator']) {
+    await check('直链续传拒绝不安全响应：' + invalid, async () => {
+      let count = 0;
+      const h = harness((url, o, t) => {
+        const first = ++count === 1;
+        return Promise.resolve(directResponse([[1, 2], [3, 4]], first || invalid === 'ignored' ? 200 : 206,
+          { 'content-length': first || invalid === 'ignored' ? '4' : '2',
+            etag: invalid === 'no-validator' ? '' : !first && invalid === 'changed' ? '"v2"' : '"v1"',
+            'content-range': invalid === 'wrong-offset' ? 'bytes 0-1/4' : 'bytes 2-3/4' }, o, t));
+      });
+      const p = h.ctx.__DYC_REPLAY_TEST__.runDownload({ type: 'mp4', url: 'movie', segments: [] }, 'unsafe');
+      await h.advance(400); h.ctx.pause(); await h.advance(100); h.ctx.pause(); await h.finish(p);
+      assert.deepEqual(h.finishes, ['bad']); assert.deepEqual(h.writes, [[1, 2]]);
+      assert.equal(h.timers.size, 0);
+    });
+  }
+  await check('直链写盘失败直接收尾，不重复请求或误报可续传', async () => {
+    let calls = 0;
+    const h = harness((url, o, t) => {
+      calls++; return Promise.resolve(directResponse([[1, 2]], 200,
+        { 'content-length': '2', etag: '"v1"' }, o, t));
+    });
+    h.handle.createWritable = async () => ({ write: async () => { throw new Error('磁盘已满'); }, abort: async () => {} });
+    await h.finish(h.ctx.__DYC_REPLAY_TEST__.runDownload({ type: 'mp4', url: 'movie', segments: [] }, 'disk'));
+    assert.equal(calls, 1); assert.deepEqual(h.finishes, ['bad']); assert.equal(h.timers.size, 0);
+  });
+  await check('直链接收中断自动从已写入字节重试，收到完整文件后不因EOF中断重下', async () => {
+    let calls = 0;
+    const h = harness((url, o, t) => {
+      calls++;
+      const first = !o.headers;
+      let step = 0;
+      return Promise.resolve({ ok: true, status: first ? 200 : 206,
+        headers: { get: name => ({ 'content-length': first ? '4' : '2',
+          etag: '"v1"', 'content-range': first ? '' : 'bytes 2-3/4' })[name] || null },
+        body: { getReader: () => ({ read: () => step++ === 0
+          ? t.delay({ done: false, value: Uint8Array.from(first ? [1, 2] : [3, 4]) }, 100, o.signal)
+          : Promise.reject(new Error('连接中断')) }) },
+      });
+    });
+    await h.finish(h.ctx.__DYC_REPLAY_TEST__.runDownload({ type: 'mp4', url: 'movie', segments: [] }, 'network'));
+    assert.equal(calls, 2); assert.deepEqual(h.writes, [[1, 2], [3, 4]]);
+    assert.deepEqual(h.finishes, ['ok']); assert.equal(h.timers.size, 0);
+  });
+  await check('关闭续传后取消仍能中止关闭开关前已发出的请求', async () => {
+    const signals = [];
+    const h = harness((url, o, t) => {
+      if (url !== 'init') signals.push(o.signal);
+      return Promise.resolve(response([[1]], url === 'init' ? 1 : 60000, o.signal, t.delay));
+    });
+    const p = h.ctx.__DYC_REPLAY_TEST__.runDownload(plan(3), 'toggle-cancel');
+    await h.advance(100); h.ctx.updateFlags({ replayResume: false }); h.ctx.cancel(); await h.finish(p);
+    assert.ok(signals.length > 0 && signals.every(s => s.aborted));
+    assert.deepEqual(h.finishes, ['warn']); assert.equal(h.timers.size, 0);
+  });
+  await check('加密回放密钥请求失败可恢复，复用原有分片且只写一次', async () => {
+    let broken = true, keyCalls = 0, segmentCalls = 0;
+    const h = harness((url, o, t) => {
+      if (url === 'key') {
+        keyCalls++;
+        if (broken) return Promise.resolve({ ok: false, status: 403 });
+        return Promise.resolve(response([new Uint8Array(16)], 1, o.signal, t.delay));
+      }
+      segmentCalls++;
+      return Promise.resolve(response([[1]], 100, o.signal, t.delay));
+    });
+    h.ctx.crypto = { subtle: { importKey: async () => ({}), decrypt: async (_, key, bytes) => bytes } };
+    const p = h.ctx.__DYC_REPLAY_TEST__.runDownload({ type: 'hls', passthrough: true,
+      key: { method: 'AES-128', url: 'key' }, segments: [{ url: '0', seq: 0 }] }, 'encrypted');
+    await h.advance(1000); assert.equal(h.frames.at(-1).mode, 'retry');
+    broken = false; h.ctx.pause(); await h.finish(p);
+    assert.equal(keyCalls, 2); assert.equal(segmentCalls, 1);
+    assert.deepEqual(h.writes, [[1]]); assert.deepEqual(h.finishes, ['ok']);
+  });
+  await check('进度卡暂停、继续、重试入口与限制说明随状态更新，结束后清理', async () => {
+    const { JSDOM } = require('jsdom');
+    const dom = new JSDOM('<!doctype html><html><body></body></html>', { runScripts: 'outside-only', pretendToBeVisual: true });
+    try {
+      dom.window.eval(read('src/replay/replay-ui.js'));
+      const ui = dom.window.__DYC_REPLAY_UI__;
+      ui.mount(); ui.showProgress('test.mp4');
+      const root = dom.window.document.querySelector('#dyc-replay-host').shadowRoot;
+      const button = root.querySelector('[data-act="pause"]');
+      let clicks = 0; ui.setPauseHandler(() => { clicks++; });
+      for (const mode of ['', 'paused', 'offline', 'retry']) {
+        ui.setProgress(0.4, { mode, recoverable: true, reason: 'HTTP 403' });
+        assert.equal(button.hidden, false); button.click();
+        assert.equal(root.querySelector('.pc-hint').hidden, false);
+      }
+      assert.equal(clicks, 4);
+      ui.setProgress(0.4, { mode: '', recoverable: false }); assert.equal(button.hidden, true);
+      ui.finishProgress('ok', 'done'); assert.equal(root.querySelector('[data-act="pause"]'), null);
+      assert.equal(root.querySelector('.pc-hint').hidden, true);
+      ui.unmount();
+    } finally { dom.window.close(); }
   });
   console.log('回放下载调度：' + checks + ' 组场景通过');
 })().catch(e => { console.error(e); process.exitCode = 1; });

@@ -105,6 +105,11 @@ function checkNews(source) {
   else if (len(plain(summary)) > limits.summary) add('summary', 'length', '本版一句话超过 ' + limits.summary + ' 字', summary);
   items.forEach((value, i) => {
     const id = 'item-' + (i + 1);
+    const parts = value.split('。');
+    if (parts.length !== 3 || parts[2] !== '' || !parts[0] || !parts[1]) add(id, 'title-detail', '要点应为「短标题。说明。」', value);
+    if (len(parts[0]) > limits.label) add(id, 'title-length', '要点标题超过 ' + limits.label + ' 字', value);
+    if (/^(?:[①②③④⑤]|\d+[.、])/.test(value)) add(id, 'manual-number', '序号由界面生成，原文不加', value);
+    if (/(优化|提升|改进|更稳定|更清楚)/.test(value)) add(id, 'vague', '请直接写实际变化，不用优化、提升等空话', value);
     if (len(value) > limits.news) add(id, 'length', '更新要点 ' + len(value) + ' 字，超过 ' + limits.news + ' 字', value);
     if (/(histKey|Shadow DOM|querySelector|setStatus|sha256|断言|兜底|闸门|提交[号:]?\s*[0-9a-f]{7,40}\b)/i.test(value)) add(id, 'engineering', '更新要点混入实现细节，请移入开发日志', value);
   });
@@ -365,9 +370,12 @@ function selfTest() {
   assert.equal(checkFlags(sample).issues.length, 0);
   assert(checkFlags(sample.replace('输入序号，滚到对应商品。', '长'.repeat(57))).issues.some((i) => i.rule === 'combined-length'));
   assert(checkFlags(sample.replace('输入序号，滚到对应商品。', '保证成功')).issues.some((i) => i.rule === 'absolute'));
-  assert.equal(checkNews('**本版一句话**：改善商品定位。\n## 本版要点\n- 修复商品定位后高亮不显示的问题\n## 破坏性变更\n- 无。').issues.length, 0);
+  assert.equal(checkNews('**本版一句话**：改善商品定位。\n## 本版要点\n- 定位后看得见。找到的商品会亮起。\n## 破坏性变更\n- 无。').issues.length, 0);
   assert(checkNews('**本版一句话**：改善商品定位。\n## 本版要点\n- **定位 · 速度**：更快\n- **定位 · 稳定**：更稳').issues.some((i) => i.rule === 'duplicate-feature'));
   assert(checkNews('**本版一句话**：改善定位。\n## 本版要点\n- 改用 histKey\n扩展管理页点检查更新').issues.some((i) => i.rule === 'wrong-entry'));
+  assert(checkNews('**本版一句话**：商品定位。\n## 本版要点\n- 优化体验。提升稳定性。').issues.some(i => i.rule === 'vague'));
+  assert(checkNews('**本版一句话**：商品定位。\n## 本版要点\n- 1. 商品定位。找到的商品会亮起。').issues.some(i => i.rule === 'manual-number'));
+  assert(checkNews('**本版一句话**：商品定位。\n## 本版要点\n- 商品定位').issues.some(i => i.rule === 'title-detail'));
   const previous = { file: 'a', id: 'a', field: 'desc', rule: 'length', value: '甲' };
   const edited = { ...previous, value: '乙' };
   const baseline = new Set([signature(previous)]);

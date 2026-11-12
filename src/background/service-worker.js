@@ -48,7 +48,7 @@
 // │ 发布会被直接中止。不需要靠人记。                                 │
 // └──────────────────────────────────────────────────────────────────┘
 // 全面整改：后台统一设置写入、私有历史与反馈来源截图，更新导入的开关定义。
-var DYC_BUILD = '26.11.12.1+sw37';
+var DYC_BUILD = '26.11.12.2+sw38';
 
 // classic worker，可以 importScripts（manifest 里没有设 type: module）
 importScripts('../shared/gitee.js', '../content/flags.js', '../shared/live-control-assets.js');
@@ -1214,7 +1214,7 @@ async function nudgeFeedbackPanelMode(tabId, mode) {
  *   · 5 分钟内存缓存:切走再切回秒开,也免得每次开关面板都打仓库;
  *   · fresh=true 跳过内存缓存读(重试按钮用;拉取中途失败本就不写缓存);
  *   · 各版解析结果按 tag 持久缓存在 chrome.storage.local(2026-11-03 新增,见下);
- *   · 解析规则与 update.js 的 parseNewsMd 同源(改动请两边同步)。
+ *   · 解析统一调用 DYC_GITEE.parseReleaseNotes，与更新亮点共用。
  *   · 纯展示数据:不碰更新链路,任何失败都不弹系统对话框。
  * ──────────────────────────────────────────────────────────────────── */
 var CL_CACHE_TTL = 5 * 60 * 1000;
@@ -1228,8 +1228,7 @@ var clCache = { at: 0, data: null, list: null };
  *   · 未展开的版本一个请求都不发。
  * 为什么必须这样:.md 不走 CDN,每个未缓存标签固定烧 1 次 GitHub 匿名配额
  * (60 次/小时);原来一次打开最多烧 60+,现在最多烧用户真正看到的那些。
- * CL_MAX_ITEMS 退回它原本的语义:单个版本最多显示的要点条数。 */
-var CL_MAX_ITEMS = 10;
+ * 单版本要点统一由 DYC_GITEE.parseReleaseNotes 限为 5 条。 */
 var CL_PAGE_SIZE = 5;
 
 /* ★ 各版日志的持久缓存（2026-11-03，2026-11-06 扩容）
@@ -1247,7 +1246,7 @@ var CL_PAGE_SIZE = 5;
  *   「两源都 404」的版本每次打开面板都重新请求一遍。
  */
 var CL_NOTES_STORE = 'dycChangelogNotes';
-var CL_NOTES_SCHEMA = 2;
+var CL_NOTES_SCHEMA = 3;
 var CL_NOTES_KEEP = 120;  // 标签总数约 70，留足余量；防键值无限膨胀
 
 // 后台补拉的并发：4 是「够快」与「不打爆 Gitee raw」之间的折中。
@@ -1297,32 +1296,7 @@ function clTrimNotesCache(map, tags) {
 }
 
 function clParseNotes(text) {
-  if (!text) return null;
-  var summary = '';
-  var items = [];
-  var mode = 'body';
-  var lines = String(text).split(/\r?\n/);
-  for (var i = 0; i < lines.length; i++) {
-    var line = lines[i].trim();
-    if (/^##\s/.test(line)) {
-      if (/^##\s*验证/.test(line)) mode = 'verify';
-      else if (/^##\s*破坏性变更/.test(line)) mode = 'breaking';
-      else mode = 'body';
-      continue;
-    }
-    if (mode === 'verify') continue;
-    if (!summary) {
-      var m = line.match(/^\*\*本版一句话\*\*\s*[：:]\s*(.+)$/);
-      if (m) { summary = m[1].trim(); continue; }
-    }
-    if (!/^[-*]\s+/.test(line)) continue;
-    var t = line.replace(/^[-*]\s+/, '').replace(/\*\*/g, '').replace(/`/g, '').trim();
-    if (!t) continue;
-    if (mode === 'breaking' && /^无/.test(t)) continue;
-    items.push(t);
-  }
-  if (!summary && !items.length) return null;
-  return { summary: summary, items: items.slice(0, CL_MAX_ITEMS) };
+  return DYC_GITEE.parseReleaseNotes(text);
 }
 
 /** ArrayBuffer → UTF-8 字符串。TextDecoder 不在的老内核走手工解码兜底。 */

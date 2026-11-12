@@ -1382,40 +1382,13 @@ function showUnsupported(isRollback) {
  * 三条硬约束：
  *   ① 纯展示、可失败 —— 拉不到就整块不显示，不阻塞、不报错、不影响更新链路；
  *   ② 只取用户向内容 —— 「验证」小节及其后一律丢弃（那是开发者信息）；
- *   ③ 条数封顶 —— 超过 MAX_NEWS_ITEMS 的直接丢弃，要点必须一眼看完。
+ *   ③ 条数封顶 —— 共用解析器只取前 5 条，要点必须一眼看完。
  */
 const NEWS_FILE = 'RELEASE_NOTES.md';
-const MAX_NEWS_ITEMS = 5;
 
 /** 解析 RELEASE_NOTES.md → { summary, items[] }；解析不出内容时返回 null。 */
 function parseNewsMd(text) {
-  if (!text) return null;
-  let summary = '';
-  const items = [];
-  // body = 正常收；verify = 「验证」整节丢弃；breaking = 「破坏性变更」节（「无」的不占要点）
-  let mode = 'body';
-  for (const rawLine of String(text).split(/\r?\n/)) {
-    const line = rawLine.trim();
-    if (/^##\s/.test(line)) {
-      if (/^##\s*验证/.test(line)) mode = 'verify';
-      else if (/^##\s*破坏性变更/.test(line)) mode = 'breaking';
-      else mode = 'body';
-      continue;
-    }
-    if (mode === 'verify') continue;
-    if (!summary) {
-      const m = line.match(/^\*\*本版一句话\*\*\s*[：:]\s*(.+)$/);
-      if (m) { summary = m[1].trim(); continue; }
-    }
-    if (!/^[-*]\s+/.test(line)) continue;
-    const t = line.replace(/^[-*]\s+/, '').replace(/\*\*/g, '').replace(/`/g, '').trim();
-    if (!t) continue;
-    // 「破坏性变更」只有确有变更时才值得占一条要点，「无…」是噪音
-    if (mode === 'breaking' && /^无/.test(t)) continue;
-    items.push(t);
-  }
-  if (!summary && !items.length) return null;
-  return { summary: summary, items: items.slice(0, MAX_NEWS_ITEMS) };
+  return DYC_GITEE.parseReleaseNotes(text);
 }
 
 /** 渲染要点块。任何异常都吞掉 —— 它只是锦上添花，不能打扰用户。 */
@@ -1430,12 +1403,21 @@ async function renderWhatsNew() {
       bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)));
     if (!news) return;
 
-    if (news.summary) $('news-sum').textContent = news.summary;
+    $('news-sum').textContent = news.items.length ? '' : news.summary;
+    $('news-sum').hidden = news.items.length > 0;
     const ul = $('news-list');
     ul.innerHTML = '';
     for (const t of news.items) {
       const li = document.createElement('li');
-      li.textContent = t;
+      const split = t.search(/[。！!？?：:]/);
+      const title = document.createElement('strong');
+      title.textContent = (ul.children.length + 1) + '. ' + (split < 0 ? t : t.slice(0, split));
+      li.appendChild(title);
+      if (split >= 0 && t.slice(split + 1).trim()) {
+        const detail = document.createElement('div');
+        detail.textContent = t.slice(split + 1).trim();
+        li.appendChild(detail);
+      }
       ul.appendChild(li);
     }
     $('block-news').hidden = false;

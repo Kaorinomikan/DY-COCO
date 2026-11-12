@@ -115,7 +115,7 @@ const firstScreenBase = {
   total: 3,
   pending: 2,
   items: [
-    { tag: 'v26.11.06.1', date: '2026-11-06T10:00:00Z', notes: { summary: '缓存摘要', items: ['缓存要点'] }, fromCache: true },
+    { tag: 'v26.11.06.1', date: '2026-11-06T10:00:00Z', notes: { summary: '缓存摘要', items: ['缓存标题。缓存说明。'] }, fromCache: true },
     { tag: 'v26.11.05.1', date: '2026-11-05T10:00:00Z', notes: null, loading: true },
     { tag: 'v26.11.04.1', date: '2026-11-04T10:00:00Z', notes: null, loading: true }
   ]
@@ -156,7 +156,10 @@ async function test(name, fn) {
       assert.equal(list.length, 3, '应有 3 张卡，实得 ' + list.length);
       assert.equal(cardOf(ui, 'v26.11.06.1').getAttribute('data-cl-state'), 'ok');
       assert.equal(cardOf(ui, 'v26.11.05.1').getAttribute('data-cl-state'), 'loading');
-      assert.match(cardOf(ui, 'v26.11.06.1').textContent, /缓存摘要/, '缓存卡应显示摘要');
+      const cached = cardOf(ui, 'v26.11.06.1');
+      assert.match(cached.querySelector('strong').textContent, /^1\. 缓存标题$/);
+      assert.match(cached.textContent, /缓存说明/);
+      assert.doesNotMatch(cached.textContent, /缓存摘要/, '有要点时不重复展示摘要');
       assert.match(cardOf(ui, 'v26.11.05.1').textContent, /读取中/);
       assert.doesNotMatch(statusText(ui, kind), /读取中/);
       ui.win.close();
@@ -176,7 +179,8 @@ async function test(name, fn) {
 
       const fixed = cardOf(ui, 'v26.11.05.1');
       assert.equal(fixed.getAttribute('data-cl-state'), 'ok');
-      assert.match(fixed.textContent, /补全摘要/);
+      assert.doesNotMatch(fixed.textContent, /补全摘要/, '补全后也不重复展示摘要');
+      assert.match(fixed.querySelector('strong').textContent, /^1\. 补全要点一$/);
       assert.match(fixed.textContent, /补全要点二/);
       assert.equal(cards(ui).length, 3, '补全不应改变卡片数量');
       assert.equal(cardOf(ui, 'v26.11.06.1'), untouchedBefore, '其它卡片应是同一个节点，未被重绘');

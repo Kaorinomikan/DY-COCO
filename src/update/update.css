@@ -61,7 +61,7 @@ h1 {
 }
 
 /* ---- 本版更新要点 ---- */
-/* 只承载「本版一句话 + 若干条要点」，条目上限在 update.js 里控制（MAX_NEWS_ITEMS）。
+/* 只承载「本版一句话 + 若干条要点」，条目上限由共用解析器控制（5 条）。
    刻意不加底色与边框：它是说明文字，不是操作区，别和下面的步骤块抢视线。 */
 .news-sum {
   font-size: 12px;
@@ -72,7 +72,8 @@ h1 {
 
 .news-list {
   margin: 0;
-  padding-left: 18px;
+  padding: 0;
+  list-style: none;
   font-size: 12px;
   color: #4e5969;
   line-height: 1.9;
@@ -281,3 +282,6 @@ h1 {
 }
 
 .foot a:hover { text-decoration: underline; }
+
+.news-list li { margin-top: 10px; }
+.news-list strong { display: block; color: #1f2329; }

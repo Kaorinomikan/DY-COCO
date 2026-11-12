@@ -116,7 +116,7 @@ function extractVar(source, name) {
 }
 
 const CL_VARS = [
-  'CL_CACHE_TTL', 'clCache', 'CL_MAX_ITEMS', 'CL_PAGE_SIZE',
+  'CL_CACHE_TTL', 'clCache', 'CL_PAGE_SIZE',
   'CL_NOTES_STORE', 'CL_NOTES_SCHEMA', 'CL_NOTES_KEEP', 'CL_FILL_CONCURRENCY'
 ].map((name) => extractVar(swSource, name)).join('\n');
 
@@ -143,7 +143,10 @@ function makeChangelogContext(options = {}) {
     runtime: { lastError: null, getManifest: () => ({ version: '26.11.03.1' }) },
     storage: { local: storage }
   };
+  const parserContext = vm.createContext({});
+  vm.runInContext(fs.readFileSync(path.join(root, 'src/shared/gitee.js'), 'utf8'), parserContext);
   const DYC_GITEE = {
+    parseReleaseNotes: parserContext.DYC_GITEE.parseReleaseNotes,
     TAGS_PAGE: 'https://github.com/x/y/tags',
     fetchTagList() {
       if (options.tagsFail) return Promise.reject(new Error('读取版本列表失败（HTTP 403）'));
@@ -472,6 +475,35 @@ async function testChangelogList() {
 }
 
 (async () => {
+  await test('日志和更新亮点只显示本版、上限一致，保留旧版换行', () => {
+    const { ctx } = makeChangelogContext();
+    const updateSource = fs.readFileSync(path.join(root, 'src/update/update.js'), 'utf8');
+    vm.runInContext(extractFunction(updateSource, 'parseNewsMd'), ctx);
+    const sample = '# 本版\n**本版一句话**：本版摘要\n## 本版要点\n- 标题。说明\n  接在上一行。\n- 第二项。说明。\n## 验证\n- 内部测试\n# 旧版\n**本版一句话**：旧摘要\n## 本版要点\n- 旧内容';
+    const log = ctx.clParseNotes(sample);
+    assert.deepEqual(JSON.parse(JSON.stringify(log)), JSON.parse(JSON.stringify(ctx.parseNewsMd(sample))));
+    assert.equal(log.items.length, 2);
+    assert.equal(log.items[0], '标题。说明接在上一行。');
+    assert(!JSON.stringify(log).includes('旧内容'));
+    assert(!JSON.stringify(log).includes('内部测试'));
+    const many = notesText('摘要') + Array.from({length: 8}, (_, i) => '- 条目' + i).join('\n');
+    assert.equal(ctx.clParseNotes(many).items.length, ctx.parseNewsMd(many).items.length);
+    assert.equal(ctx.parseNewsMd(many).items.length, 5);
+    assert.equal(ctx.clParseNotes(''), null);
+  });
+  await test('两处日志都显示编号标题，内容转义且不重复摘要', () => {
+    for (const [file, escName] of [['src/feedback/panel.js', 'clEsc'], ['src/feedback/feedback.js', 'esc']]) {
+      const c = vm.createContext({});
+      c[escName] = text => String(text).replace(/</g, '&lt;');
+      vm.runInContext(extractFunction(fs.readFileSync(path.join(root, file), 'utf8'), 'clBodyHtml'), c);
+      const html = c.clBodyHtml({notes: {summary: '重复摘要', items: ['标题。<说明>。', '旧单句']}});
+      assert(html.includes('<strong>1. 标题</strong>'));
+      assert(html.includes('2. 旧单句'));
+      assert(html.includes('&lt;说明>'));
+      assert(!html.includes('重复摘要'));
+      assert(c.clBodyHtml({notes: {summary: '备用摘要', items: []}}).includes('备用摘要'));
+    }
+  });
   await testOpenPanel();
   await testChangelogList();
   console.log('\n更新日志自测：' + passed + '/' + (passed + failed) + ' 通过');

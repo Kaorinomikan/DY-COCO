@@ -187,11 +187,16 @@
   function clBodyHtml(r) {
     if (r.notes) {
       var h = '';
-      if (r.notes.summary) h += '<div class="cl-sum">' + esc(r.notes.summary) + '</div>';
+      if (r.notes.summary && !(r.notes.items || []).length) h += '<div class="cl-sum">' + esc(r.notes.summary) + '</div>';
       if (r.notes.items && r.notes.items.length) {
         h += '<ul class="cl-list">';
         for (var k = 0; k < r.notes.items.length; k++) {
-          h += '<li>' + esc(r.notes.items[k]) + '</li>';
+          var text = r.notes.items[k];
+          var split = text.search(/[。！!？?：:]/);
+          var title = split < 0 ? text : text.slice(0, split);
+          var detail = split < 0 ? '' : text.slice(split + 1).trim();
+          h += '<li><strong>' + (k + 1) + '. ' + esc(title) + '</strong>'
+            + (detail ? '<div>' + esc(detail) + '</div>' : '') + '</li>';
         }
         h += '</ul>';
       }

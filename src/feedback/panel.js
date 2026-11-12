@@ -146,8 +146,9 @@
     '.cl-date { font-size: 11px; color: #86909c; }',
     '.cl-now { font-size: 11px; color: #ff7d00; border: 1px solid #ff7d00; border-radius: 3px; padding: 0 4px; }',
     '.cl-sum { font-size: 12.5px; color: #4e5969; margin-top: 5px; line-height: 1.7; }',
-    '.cl-list { margin: 6px 0 0; padding-left: 17px; }',
-    '.cl-list li { font-size: 12.5px; color: #4e5969; line-height: 1.7; }',
+    '.cl-list { margin: 6px 0 0; padding: 0; list-style: none; }',
+    '.cl-list strong { display: block; color: #1f2329; }',
+    '.cl-list li { margin-top: 10px; font-size: 12.5px; color: #4e5969; line-height: 1.7; }',
     '.cl-miss { font-size: 11px; color: #86909c; margin-top: 4px; line-height: 1.6; }',
     '.cl-foot { font-size: 11px; color: #86909c; line-height: 1.7; margin-top: 2px; }',
     '.cl-foot a { color: #ff7d00; text-decoration: none; cursor: pointer; }',
@@ -843,11 +844,16 @@
   function clBodyHtml(r) {
     if (r.notes) {
       var h = '';
-      if (r.notes.summary) h += '<div class="cl-sum">' + clEsc(r.notes.summary) + '</div>';
+      if (r.notes.summary && !(r.notes.items || []).length) h += '<div class="cl-sum">' + clEsc(r.notes.summary) + '</div>';
       if (r.notes.items && r.notes.items.length) {
         h += '<ul class="cl-list">';
         for (var k = 0; k < r.notes.items.length; k++) {
-          h += '<li>' + clEsc(r.notes.items[k]) + '</li>';
+          var text = r.notes.items[k];
+          var split = text.search(/[。！!？?：:]/);
+          var title = split < 0 ? text : text.slice(0, split);
+          var detail = split < 0 ? '' : text.slice(split + 1).trim();
+          h += '<li><strong>' + (k + 1) + '. ' + clEsc(title) + '</strong>'
+            + (detail ? '<div>' + clEsc(detail) + '</div>' : '') + '</li>';
         }
         h += '</ul>';
       }

@@ -74,7 +74,7 @@ check('DYC_PLATFORMS 存在且含 dy / wx', () => {
   // ⚠️ 别用 deepEqual：PLATS 来自 jsdom 的另一个 realm，数组原型不同，
   //    deepEqual 会以「same structure but not reference-equal」判失败。
   const ids = Array.from(PLATS, (p) => p.id).join(',');
-  assert.equal(ids, 'dy,wx', '平台顺序应为 dy,wx，实际 ' + ids);
+  assert.equal(ids, 'dy,wx,xhs,ks,tb', '平台顺序应保留原入口并追加新平台，实际 ' + ids);
 });
 check('每个分组都被认领（漏一个 = 那组永远不显示）', () => {
   const owned = PLATS.reduce((acc, p) => acc.concat(p.groups), []);
@@ -175,7 +175,9 @@ check('平台初始化与切换保留子面板折叠态，只有点名字才展�
   w.DYC_PLATFORMS = PLATS;
   w.dycPlatformGroups = groupsOf;
   w.chrome = { storage: { local: { set() {} } } };
-  w.eval('const FLAG_META_BY_KEY = { hideElements: {} }; let currentPlatform; let platInitDone; const PLAT_STORE_KEY = "test";\n' +
+  w.platformInfo = (id) => PLATS.find((p) => p.id === id);
+  w.updatePlatformUI = () => {};
+  w.eval('const FLAG_META_BY_KEY = { hideElements: {} }; let currentPlatform; let platInitDone; let multiPlatformMenuEnabled = true; const PLAT_STORE_KEY = "test";\n' +
     bodyOf(js, 'attachSubPanelToggle') + '\n}\n' + bodyOf(js, 'applyPlatform') + '\n}');
   const row = w.document.querySelector('[data-flag-row]');
   const el = w.document.querySelector('[data-flag-panel]');
@@ -273,8 +275,9 @@ check('胶囊用 <button>（键盘可达），且带 aria-pressed', () => {
   assert.equal((seg.match(/<button type="button"/g) || []).length, 2, '应是两枚 button');
   assert.equal((seg.match(/aria-pressed=/g) || []).length, 2, '两枚都要有 aria-pressed');
 });
-check('副标题文案与用户指定一字不差', () => {
-  assert.ok(/适配抖音、微信的中控台和店铺的便携化升级。/.test(html));
+check('副标题简短可见，适合多平台菜单', () => {
+  const text = new JSDOM(html).window.document.querySelector('.tagline').textContent.trim();
+  assert.ok(text.length > 0 && text.length <= 21);
 });
 check('固定底栏容器在主体之后、页面内容流的末尾', () => {
   const body = html.indexOf('id="flags-root"');

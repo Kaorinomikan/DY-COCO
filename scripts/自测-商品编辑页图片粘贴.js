@@ -555,7 +555,7 @@ const HTML = `<!doctype html><html><body>
          它所在的**分组**被每个平台认领。用户把开关搬进抖音专属的「其他」组后，
          可见性改由单行 platforms 白名单承担（见 flags.js / popup.applyPlatform），
          仍盯着 group 会是「按实现写死」的过时断言。 */
-      assert.ok(w.DYC_PLATFORMS.every((p) => p.groups.includes(meta.group) ||
+      assert.ok(w.DYC_PLATFORMS.filter((p) => ['dy', 'wx'].includes(p.id)).every((p) => p.groups.includes(meta.group) ||
         (meta.platforms || []).includes(p.id)), '开关应在两个平台都可见');
       assert.equal(meta.pages.join(','), 'goodsEdit,wxGoodsEdit');
       const manifest = JSON.parse(read('manifest.json'));

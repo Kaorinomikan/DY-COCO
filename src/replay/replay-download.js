@@ -95,6 +95,7 @@
   var flags = {};
   var state = {
     running: false,
+    control: null,
     aborted: false,
     session: null,            // 已解析好的下载计划（点过一次就复用，避免重复拉清单）
     dlName: null              // 当前下载的文件名（含扩展名）：按钮壳重建时恢复进度卡用
@@ -653,8 +654,9 @@
 
   function getKey(url, ctl) {
     if (keyCache[url]) return Promise.resolve(keyCache[url]);
-    return NET.fetchBuf(url, { timeoutMs: SEG_IDLE_MS,
-      signal: ctl && ctl.abortCtl ? ctl.abortCtl.signal : undefined }).then(function (buf) {
+    return networkTask(ctl, function (signal) {
+      return NET.fetchBuf(url, { timeoutMs: SEG_IDLE_MS, signal: signal });
+    }).then(function (buf) {
       // AES-128 的密钥固定 16 字节；不足说明平台用了非常规长度，直接判失败
       if (!buf || buf.byteLength !== 16) throw new Error('密钥长度异常（' + (buf && buf.byteLength) + ' 字节）');
       keyCache[url] = buf;
@@ -700,13 +702,106 @@
     }
     if (ctl && ctl.abortCtl) opts.signal = ctl.abortCtl.signal;
 
-    return NET.fetchBuf(seg.url, opts).then(function (buf) {
+    return networkTask(ctl, function (signal) {
+      if (signal) opts.signal = signal;
+      return NET.fetchBuf(seg.url, opts);
+    }, flow && flow.reset, flow && flow.onRateLimited).then(function (buf) {
       if (!plan.key || plan.key.method !== 'AES-128') return buf;
       return getKey(plan.key.url, ctl).then(function (k) {
         var iv = plan.key.iv ? hexToBytes(plan.key.iv) : ivFromSeq(seg.seq);
         return decryptAes128(buf, k, iv);
       });
     });
+  }
+
+  function waitReady(ctl) {
+    return ctl.recovery ? ctl.recovery.wait() : Promise.resolve();
+  }
+
+  // shortcut: 进度与转封装状态仅保留在当前页面，跨刷新续传需另做持久检查点。
+  function createRecovery(ctl, changed) {
+    var pending = [];
+    var requests = new AbortController();
+    var recovery = {
+      mode: '', reason: '',
+      refresh: changed,
+      enabled: function () { return flags.replayResume !== false; },
+      signal: function () { return requests.signal; },
+      wait: function () {
+        if (ctl.aborted) return Promise.reject(new Error('已取消'));
+        if (!recovery.mode) return Promise.resolve();
+        return new Promise(function (resolve, reject) { pending.push({ resolve: resolve, reject: reject }); });
+      },
+      pause: function (mode, err) {
+        if (ctl.aborted || ctl.failed || !recovery.enabled()) return;
+        // 手动暂停不被浏览器网络事件或其他并发请求的错误覆盖。
+        if (recovery.mode === 'paused' || (recovery.mode && mode !== 'paused' &&
+            !(mode === 'offline' && recovery.mode === 'retry'))) return;
+        recovery.mode = mode;
+        recovery.reason = err && err.message || '';
+        requests.abort();
+        changed();
+      },
+      resume: function () {
+        if (ctl.aborted || ctl.failed) return;
+        if (recovery.enabled() && window.navigator && window.navigator.onLine === false) {
+          recovery.mode = 'offline'; changed(); return;
+        }
+        if (requests.signal.aborted) requests = new AbortController();
+        recovery.mode = ''; recovery.reason = '';
+        pending.splice(0).forEach(function (p) { p.resolve(); });
+        changed();
+      },
+      dispose: function () {
+        requests.abort();
+        pending.splice(0).forEach(function (p) { p.reject(new Error('已取消')); });
+        if (window.removeEventListener) {
+          window.removeEventListener('offline', offline);
+          window.removeEventListener('online', online);
+        }
+        if (ctl.abortCtl) ctl.abortCtl.signal.removeEventListener('abort', cancel);
+      }
+    };
+    function offline() { recovery.pause('offline'); }
+    function online() { if (recovery.mode === 'offline') recovery.resume(); }
+    function cancel() { recovery.dispose(); }
+    if (window.addEventListener) {
+      window.addEventListener('offline', offline);
+      window.addEventListener('online', online);
+    }
+    if (ctl.abortCtl) ctl.abortCtl.signal.addEventListener('abort', cancel);
+    return recovery;
+  }
+
+  function networkTask(ctl, job, reset, limited) {
+    var recovery = ctl && ctl.recovery;
+    if (!recovery) return job(ctl && ctl.abortCtl && ctl.abortCtl.signal);
+    var attempt = 0;
+    function go() {
+      return recovery.wait().then(function () {
+        if (ctl.aborted || ctl.failed) throw new Error('已取消');
+        if (recovery.enabled() && window.navigator && window.navigator.onLine === false) {
+          recovery.pause('offline'); return go();
+        }
+        return job(recovery.signal()).catch(function (err) {
+          if (reset) reset();
+          if (ctl.aborted || ctl.failed || err.resumeUnsafe) throw err;
+          if (recovery.mode) { attempt = 0; return go(); }
+          if (!recovery.enabled()) throw err;
+          if (window.navigator && window.navigator.onLine === false) {
+            recovery.pause('offline'); attempt = 0; return go();
+          }
+          var st = err && err.status;
+          if (limited && (st === 429 || st === 503 || st === 509)) limited();
+          if (attempt >= SEG_RETRY || st === 401 || st === 403 || st === 404) {
+            recovery.pause('retry', err); attempt = 0; return go();
+          }
+          attempt++;
+          return sleep(250 * attempt * attempt, ctl.abortCtl && ctl.abortCtl.signal).then(go);
+        });
+      });
+    }
+    return go();
   }
 
   /**
@@ -764,6 +859,20 @@
     var snapshot = { done: 0, total: plan.type === 'mp4' ? (plan.bytes || 0) : plan.segments.length,
       bytes: 0, conc: 0 };
     ctl.phase = '下载数据';
+    if (typeof AbortController === 'function') {
+      ctl.recovery = createRecovery(ctl, function () {
+        stallLast = Date.now();
+        samples = [{ t: stallLast, b: networkBytes }]; lastSpeed = 0;
+        dlog('下载恢复状态：' + (ctl.recovery.mode || '继续下载'));
+        renderProgress(true);
+      });
+      state.control = ctl.recovery;
+      if (UI.setPauseHandler) UI.setPauseHandler(function () {
+        if (!ctl.recovery.enabled() || ctl.phase === '保存文件') return;
+        if (ctl.recovery.mode) ctl.recovery.resume();
+        else ctl.recovery.pause('paused');
+      });
+    }
     ctl.onData = function (size) {
       if (ctl.aborted || ctl.failed) return;
       networkBytes += size;
@@ -781,7 +890,11 @@
       progressTimer = setInterval(renderProgress, UI_REFRESH_MS);
       stallTimer = setInterval(function () {
         if (!state.running || ctl.aborted) return;
+        if (ctl.recovery && ctl.recovery.mode) return;
         if (Date.now() - stallLast < STALL_MS) return;
+        if (ctl.recovery && ctl.recovery.enabled() && /^下载/.test(ctl.phase)) {
+          ctl.recovery.pause('retry', new Error('网络长时间无进展，请重试继续')); return;
+        }
         ctl.stalled = true;
         ctl.aborted = true;
         state.aborted = true;
@@ -791,6 +904,9 @@
 
     /** 收尾三件事（成功 / 失败 / 取消都要走）：停巡检、摘守护、清「正在下载」标记 */
     function cleanup() {
+      if (ctl.recovery) ctl.recovery.dispose();
+      state.control = null;
+      if (UI.setPauseHandler) UI.setPauseHandler(null);
       if (stallTimer) { clearInterval(stallTimer); stallTimer = 0; }
       if (progressTimer) { clearInterval(progressTimer); progressTimer = 0; }
       if (GUARD) GUARD.end();
@@ -846,7 +962,18 @@
       // 状态与并发放标题行，速度与剩余时间保持一行。
       var badge = ctl.phase + (conc ? ' · ' + conc + ' 线程' : '');
 
-      UI.setProgress(ratio, { left: left, speed: speedText, eta: etaText, badge: badge });
+      var mode = ctl.recovery && ctl.recovery.mode;
+      if (mode) {
+        badge = mode === 'paused' ? '已暂停' : mode === 'offline' ? '等待网络恢复' : '等待重试';
+        speedText = '0 B/s';
+        etaText = mode === 'offline' ? '联网后自动继续，请保持页面打开' :
+          mode === 'paused' ? '进度已保留，请保持页面打开' : '进度已保留，点击重试继续';
+      }
+
+      UI.setProgress(ratio, { left: left, speed: speedText, eta: etaText, badge: badge,
+        mode: mode || '', recoverable: !!(ctl.recovery && ctl.recovery.enabled()),
+        saving: ctl.phase === '保存文件',
+        reason: ctl.recovery && ctl.recovery.reason });
 
       // 诊断日志：每跨过 10% 记一条（含并发档位），排查「怎么这么慢」时够用
       var pct10 = Math.floor(ratio * 10) * 10;
@@ -861,7 +988,7 @@
     // savedHandle = 本次保存句柄；preSize = 下载前文件大小。
     // preSize 只为一条规则服务：**只删「本次新建」的文件** —— 覆盖已有文件
     // 保存时（preSize > 0）一律不删，删了等于把用户原来的文件也端了。
-    // 不支持断点续传，半成品没有任何保留价值，是「删」而不是「留」的底气。
+    // 同页恢复期间保持写入流；只有最终放弃或无法恢复的错误才进入清理。
     var savedHandle = null;
     var preSize = -1;
 
@@ -874,7 +1001,10 @@
         : Promise.resolve(null)
       ).catch(function () { return null; }).then(function (size0) {
         preSize = (size0 === null || size0 === undefined) ? -1 : size0;
-        return W.openSink(target.handle, function (phase) { ctl.phase = phase; }).then(function (sink) {
+        return W.openSink(target.handle, function (phase) {
+          ctl.phase = phase;
+          if (phase === '保存文件') renderProgress(true);
+        }).then(function (sink) {
           startStallWatch();
           return Promise.resolve().then(function () {
             return doWrite(sink, plan, ctl, onProgress);
@@ -974,21 +1104,30 @@
       // 整场就是一个文件：流式读、边读边写
       var got = 0;
       var total = plan.bytes || 0;
-      return NET.streamTo(plan.url, function (chunk, received, length) {
-        if (ctl.aborted) throw new Error('已取消');
-        if (length) { total = length; transfer.expected = length; }
-        var since = Date.now();
-        transfer.writeStartedAt = since;
-        return sink.write(chunk).then(function () {
-          wrote(chunk.byteLength, since);
-          got += chunk.byteLength;
-          onProgress(got, total || 0, got);
-          ctl.phase = '下载数据';
-        });
-      }, ctl.abortCtl ? ctl.abortCtl.signal : undefined, function (size) {
-        transfer.received += size;
-        if (ctl.onData) ctl.onData(size);
-      }).then(function (n) {
+      var source = {};
+      return networkTask(ctl, function (signal) {
+        if (got && got === source.total) return Promise.resolve(got);
+        return NET.streamTo(plan.url, function (chunk, received, length) {
+          if (ctl.aborted) throw new Error('已取消');
+          if (length) { total = length; transfer.expected = length; }
+          return waitReady(ctl).then(function () {
+            var since = Date.now();
+            transfer.writeStartedAt = since;
+            return sink.write(chunk).then(function () {
+              wrote(chunk.byteLength, since);
+              got += chunk.byteLength;
+              onProgress(got, total || 0, got);
+              ctl.phase = '下载数据';
+            });
+          }).catch(function (err) {
+            // 写盘失败不能作为网络错误重试，防止重复写入。
+            err.resumeUnsafe = true; throw err;
+          });
+        }, signal, function (size) {
+          transfer.received += size;
+          if (ctl.onData) ctl.onData(size);
+        }, { offset: got, source: source, timeoutMs: SEG_IDLE_MS });
+      }, function () { transfer.received = got; }).then(function (n) {
         transfer.complete = true;
         transfer.expected = n || got;
         onProgress(1, 1, n || got);
@@ -1016,7 +1155,7 @@
     var initP = Promise.resolve();
     if (isFmp4 && plan.map) {
       initP = fetchSegment({ url: plan.map.url, byterange: plan.map.byterange, seq: -1 }, plan, ctl)
-        .then(function (buf) { return stream.init(buf); });
+        .then(function (buf) { return waitReady(ctl).then(function () { return stream.init(buf); }); });
     }
 
     var n = plan.segments.length;
@@ -1130,10 +1269,13 @@
             heldBytes += size;
             updateTransfer();
           },
-          beforeRead: function (signal) { return waitForSpace(i, signal); }
+          beforeRead: function (signal) { return waitForSpace(i, signal); },
+          reset: function () { releaseSegment(i); },
+          onRateLimited: onRateLimited
         }).catch(function (err) {
           releaseSegment(i);
           if (ctl.aborted || ctl.failed) throw err;
+          if (ctl.recovery && ctl.recovery.enabled()) throw err; // 解密错误不可盲目重试。
           var st = err && err.status;
           if (st === 429 || st === 503 || st === 509) onRateLimited();
           if (st === 401 || st === 403 || st === 404) throw err;
@@ -1198,6 +1340,7 @@
      */
     function schedule() {
       if (ctl.aborted || ctl.failed) return;
+      if (ctl.recovery && ctl.recovery.mode) return;
       while (nextFetch < n && nextFetch - writePtr < BUFFER_MAX && nInflight < conc) {
         var reserve = estimateSegment(nextFetch);
         if (nextFetch !== writePtr && heldBytes + (nInflight + 1) * reserve > BUFFER_BYTES) break;
@@ -1211,13 +1354,18 @@
       ctl.phase = '下载分片';
       var since = 0;
       var inputSize = 0;
-      return Promise.resolve(inflight[i]).then(function (r) {
+      return waitReady(ctl).then(function () {
+        schedule();
+        return inflight[i];
+      }).then(function (r) {
         if (ctl.aborted) throw new Error('已取消');
         if (!r.ok) throw r.e;          // 失败片在这里冒泡打断整场下载
-        inputSize = segmentBytes[i];
-        since = Date.now();
-        transfer.writeStartedAt = since;
-        return stream.write(r.v);
+        return waitReady(ctl).then(function () {
+          inputSize = segmentBytes[i];
+          since = Date.now();
+          transfer.writeStartedAt = since;
+          return stream.write(r.v);
+        });
       }).then(function () {
         wrote(inputSize, since);
         inflight[i] = null;
@@ -1560,7 +1708,13 @@
   });
 
   dycWatchFlags(function (f) {
+    var resumeWasOn = flags.replayResume !== false;
     flags = f;
+    // 关闭恢复开关时释放等待，保留现有下载；后续失败沿用原来的结束流程。
+    if (state.control && resumeWasOn !== (flags.replayResume !== false)) {
+      if (flags.replayResume === false) state.control.resume();
+      else state.control.refresh();
+    }
     var now = enabled();
     if (prevOn === null) { prevOn = now; if (now) start(); return; }
     if (now === prevOn) return;

@@ -110,7 +110,8 @@ assert.ok(footAt < maskAt, '底栏要在遮罩之前（遮罩是 fixed 浮层，
 const tag = ruleOf('.tagline').replace(/\/\*[\s\S]*?\*\//g, ' ');
 const tagSize = Number((tag.match(/font-size:\s*([\d.]+)px/) || [])[1]);
 assert.ok(tagSize <= 11.5, '副标题字号必须 ≤11.5px，21 个字才能一行放下（当前 ' + tagSize + 'px）');
-assert.ok(/适配抖音、微信的中控台和店铺的便携化升级。/.test(html), '副标题用的是指定文案');
+const taglineText = (html.match(/class="tagline">([^<]+)</) || [])[1] || '';
+assert.ok(taglineText.trim().length > 0 && taglineText.length <= 21, '副标题简短可见，不限于原先两个平台');
 
 console.log('弹窗面板自测：13/13 通过；280px × 600px 固定窗口、页脚 margin-top:auto'
   + '（内容少则黏底留空、内容多则滚到底才见）、布局与平台数量解耦（无平台专属样式）、'

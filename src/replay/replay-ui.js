@@ -160,6 +160,7 @@
     '  font-feature-settings:"tnum";white-space:nowrap}',
     '.pc-eta{text-align:right}',
     '.pc-ft{display:flex;gap:8px;margin-top:10px}',
+    '.pc-hint{font:400 11px/1.5 inherit;color:#d6e5ff;margin-top:7px;overflow-wrap:anywhere}',
     '.pc-ft button{height:27px;padding:0 12px;border-radius:6px;border:1px solid rgba(255,255,255,.42);',
     '  background:rgba(255,255,255,.10);color:#fff;font:500 11.5px/1 inherit;cursor:pointer;',
     '  transition:background .15s,border-color .15s,transform .08s}',
@@ -1071,8 +1072,9 @@
       + '</div>'
       + '<div class="pc-ft">'
       +   '<button type="button" data-act="fold">收起</button>'
+      +   '<button type="button" data-act="pause" hidden>暂停</button>'
       +   '<button type="button" data-act="abort">取消下载</button>'
-      + '</div>';
+      + '</div><div class="pc-hint" hidden></div>';
 
     if (opts && opts.silent) {
       // 静默重建：保持收起态（hidden 未动），内容骨架已就位。
@@ -1089,6 +1091,10 @@
     };
 
     var ab = pc.querySelector('[data-act="abort"]');
+    pc.querySelector('[data-act="pause"]').onclick = function (ev) {
+      ev.preventDefault(); ev.stopPropagation();
+      if (ui.onPause) ui.onPause();
+    };
     // 取消要二次确认（用户 2026-10-18 定）：误触一次就把已下的几百 MB 丢掉太疼。
     // 第一次点 ⇒ 变红 + 改文案为「再点一次取消」，ABORT_ARM_MS 内再点才真取消；
     // 超时自动复位，不做常驻红按钮（免得看着像「已经进入取消状态」）。
@@ -1170,6 +1176,18 @@
         bd.textContent = meta.badge;
         bd.hidden = !meta.badge;
       }
+      var pause = ui.prog.querySelector('[data-act="pause"]');
+      if (pause && meta.recoverable != null) {
+        pause.hidden = !meta.recoverable;
+        pause.disabled = meta.saving === true;
+        pause.textContent = !meta.mode ? '暂停' : meta.mode === 'retry' ? '重试继续' : '继续';
+      }
+      var hint = ui.prog.querySelector('.pc-hint');
+      if (hint && meta.recoverable != null) {
+        hint.hidden = !meta.recoverable;
+        hint.textContent = (meta.mode === 'retry' && meta.reason ? meta.reason + '；' : '')
+          + '仅在本页保留进度，刷新或关页将中断。';
+      }
     } else if (meta != null) {
       if (l) l.textContent = meta;
       if (rr) rr.textContent = '';
@@ -1178,7 +1196,8 @@
     // 按钮本身就是「最小化态」：百分比直接显示在按钮上
     if (ui.btn && ui.btn.classList && ui.btn.classList.contains('busy')) {
       var txt = ui.btn.querySelector('span');
-      if (txt) txt.textContent = '下载中 ' + pctNum + '%';
+      if (txt) txt.textContent = (meta && meta.mode ? meta.mode === 'paused' ? '已暂停 ' :
+        meta.mode === 'offline' ? '等待联网 ' : '等待重试 ' : '下载中 ') + pctNum + '%';
     }
   }
 
@@ -1212,6 +1231,8 @@
     var eta = ui.prog.querySelector('.pc-eta');
     if (speed) speed.textContent = '';
     if (eta) eta.textContent = '';
+    var hint = ui.prog.querySelector('.pc-hint');
+    if (hint) hint.hidden = true;
 
     if (ft) {
       ft.innerHTML = '<button type="button" class="pri" data-act="close">关闭</button>';
@@ -1361,6 +1382,7 @@
     fmtBytes: fmtBytes,
     fmtDur: fmtDur,
     esc: esc,
-    setAbortHandler: function (fn) { ui.onAbort = fn; }
+    setAbortHandler: function (fn) { ui.onAbort = fn; },
+    setPauseHandler: function (fn) { ui.onPause = fn; }
   };
 })();

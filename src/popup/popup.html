@@ -101,9 +101,59 @@
       width: 11px;
       height: 11px;
     }
+    [hidden] { display: none !important; }
+    .platform-picker { position: relative; flex: none; }
+    .platform-trigger {
+      display: flex; align-items: center; gap: 7px; padding: 5px 8px;
+      border: 1px solid #e5e6eb; border-radius: 8px; background: #f5f6f8;
+      color: #1f2329; font: inherit; font-size: 12px; cursor: pointer;
+      transition: background 160ms, box-shadow 160ms;
+    }
+    .platform-trigger[aria-expanded="true"] { border-color: #8c80df; box-shadow: 0 0 0 2px #7470e814; }
+    .platform-logo {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 23px; height: 23px; flex: none; border-radius: 7px;
+      background: var(--platform-color, #222633); color: #fff; font-size: 11px;
+    }
+    .platform-trigger .platform-logo { width: 19px; height: 19px; border-radius: 5px; }
+    .platform-chevron { display: inline-block; transition: transform 180ms; }
+    .platform-trigger[aria-expanded="true"] .platform-chevron { transform: rotate(180deg); }
+    .platform-panel {
+      position: absolute; z-index: 30; top: calc(100% + 8px); right: 0;
+      width: 230px; padding: 8px; background: #fff; border: 1px solid #e5e6eb;
+      border-radius: 12px; box-shadow: 0 10px 30px #26314b26; transform-origin: top right;
+    }
+    .platform-panel-head { display: flex; justify-content: space-between; padding: 5px 6px 10px; font-size: 11px; color: #78818e; }
+    .platform-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 5px; }
+    .platform-option {
+      position: relative; display: flex; flex-direction: column; align-items: center; gap: 6px;
+      min-height: 79px; padding: 10px 2px; border: 0; border-radius: 8px;
+      background: transparent; color: #1f2329; font: inherit; font-size: 12px;
+      cursor: pointer; transition: background 160ms;
+    }
+    .platform-option:hover { background: #f5f6f8; }
+    .platform-option.on { background: #f0efff; }
+    .platform-option small { font-size: 10px; color: #78818e; }
+    .platform-check { position: absolute; top: 4px; right: 5px; color: #7468cf; font-size: 12px; }
+    .platform-panel-note { padding: 10px 6px 3px; margin-top: 7px; border-top: 1px solid #e9ecf1; font-size: 11px; line-height: 1.6; color: #78818e; }
+    .platform-context { flex: none; min-height: 27px; margin: 0 16px; display: flex; align-items: center; justify-content: space-between; gap: 4px; font-size: 11px; color: #78818e; }
+    .platform-return { border: 0; background: transparent; color: #7468cf; font: inherit; font-size: 11px; padding: 4px 0; cursor: pointer; }
+    .platform-feedback { flex: none; min-height: 18px; margin: 0 16px; font-size: 11px; line-height: 18px; color: #78818e; }
+    .platform-badge { margin-left: auto; color: #78818e; font-size: 10px; background: #f5f6f8; padding: 2px 5px; border-radius: 4px; }
+    .platform-placeholder { margin: 12px 0; font-size: 11px; line-height: 1.8; color: #78818e; }
+    .platform-empty { min-height: 170px; padding-top: 48px; text-align: center; }
+    .platform-empty .platform-logo { width: 40px; height: 40px; border-radius: 12px; font-size: 18px; }
+    .platform-empty-title { margin: 14px 0 8px; font-size: 13px; font-weight: 500; }
+    .platform-empty-note { margin: 0; font-size: 11px; line-height: 1.8; color: #78818e; }
+    @media (prefers-reduced-motion: reduce) {
+      .platform-trigger, .platform-chevron, .platform-option { transition: none; }
+    }
     /* 判定平台是异步的（要问当前标签页）。在拿到结果之前先把主体藏起来，
        否则会先按"全部分组"画一遍、再刷成单平台 —— 肉眼就是闪一下。 */
-    body.plat-pending #flags-root {
+    body.plat-pending #flags-root,
+    body.plat-pending .platform-picker,
+    body.plat-pending .platform-context,
+    body.plat-pending .platform-feedback {
       visibility: hidden;
     }
 
@@ -172,6 +222,7 @@
       margin-top: 12px;
       padding: 2px 10px 4px;
       border: 1px solid;
+      border-color: #c9cdd4;
       border-radius: 10px;
     }
     .group-live { border-color: #165dff; }
@@ -739,7 +790,17 @@
        右侧是平台切换胶囊 —— 图标在前、文字在后，点一下换平台。 ===== -->
   <div class="pop-head">
     <h1>可可助手</h1>
-    <div class="plat-seg" id="plat-seg" role="group" aria-label="切换平台">
+    <div class="platform-picker" id="platform-picker">
+      <button type="button" class="platform-trigger" id="platform-trigger" aria-label="切换平台" aria-expanded="false" aria-controls="platform-panel">
+        <span class="platform-logo" id="platform-current-logo" aria-hidden="true">抖</span><span id="platform-current-name">抖音</span><span class="platform-chevron" aria-hidden="true">⌄</span>
+      </button>
+      <div class="platform-panel" id="platform-panel" hidden>
+        <div class="platform-panel-head"><span>切换平台</span><span>仅切换菜单</span></div>
+        <div class="platform-grid" id="platform-grid" role="group" aria-label="选择平台"></div>
+        <div class="platform-panel-note">每次打开优先跟随当前网站。<br>手动切换不会跳转网页，设置独立保留。</div>
+      </div>
+    </div>
+    <div class="plat-seg" id="plat-seg" role="group" aria-label="切换平台" hidden>
       <button type="button" class="plat-item" data-plat="dy" aria-pressed="true">
         <svg viewBox="0 0 24 24" fill="#161823" aria-hidden="true"><path d="M16.6 3c.28 2.1 1.6 3.6 3.6 3.9v3.1c-1.4 0-2.7-.4-3.8-1.2v5.9c0 3.4-2.4 5.6-5.5 5.6-2.7 0-4.6-1.9-4.6-4.4 0-2.7 2.1-4.6 4.9-4.4v3.2c-1.1-.2-1.9.3-1.9 1.3 0 .9.7 1.5 1.6 1.5 1.1 0 1.7-.7 1.7-2.1V3h4z"/></svg>抖音
       </button>
@@ -748,13 +809,20 @@
       </button>
     </div>
   </div>
-  <div class="tagline">适配抖音、微信的中控台和店铺的便携化升级。</div>
+  <div class="tagline">直播与店铺的便携化升级。</div>
+  <div class="platform-context" id="platform-context"><span id="platform-context-label">识别当前网站…</span><button type="button" class="platform-return" id="platform-return" hidden>跟随当前网站</button></div>
+  <div class="platform-feedback" id="platform-feedback" role="status" aria-live="polite"></div>
 
   <!-- ===== 主体：功能开关区（由 flags.js 的元数据表自动渲染）=====
        三个分组框按平台归属显隐：抖音 = 中控台 + 抖店 + 其他，微信 = 微信小店。
        新增开关只改 flags.js，不要改本文件。 -->
   <div class="pop-body">
     <div id="flags-root"></div>
+    <div class="platform-empty" id="platform-empty" hidden>
+      <span class="platform-logo" id="platform-empty-logo" aria-hidden="true"></span>
+      <h2 class="platform-empty-title" id="platform-empty-title"></h2>
+      <p class="platform-empty-note">平台入口已预留<br>后续功能将在这里显示</p>
+    </div>
     <div class="apply-note" id="apply-note"></div>
   </div>
 

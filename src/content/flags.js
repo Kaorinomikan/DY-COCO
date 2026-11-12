@@ -218,7 +218,9 @@ var DYC_FLAG_GROUPS = [
   { id: 'shop', title: '抖店' },
   { id: 'wx', title: '微信小店' },   // 2026-10-31 新增:微信侧第一个业务功能落地
   { id: 'other', title: '其他' },
-  { id: 'shared', title: '通用' }
+  { id: 'shared', title: '通用' },
+  { id: 'xhsShop', title: '小红书千帆', placeholder: '功能接入后在这里显示' },
+  { id: 'xhsHome', title: '小红书主页', placeholder: '功能接入后在这里显示' }
 ];
 
 /* ==========================================================
@@ -253,6 +255,7 @@ var DYC_PLATFORMS = [
   {
     id: 'dy',
     label: '抖音',
+    mark: '抖', color: '#222633', status: '已支持',
     // 「其他」归抖音侧：里面的直播回放 / 大屏跳转 / 明细跳转都只作用于抖音页面，
     // 微信态下拉出来点不动，只会让人以为坏了（2026-10-31 用户认可该分法）。
     groups: ['live', 'shop', 'other', 'shared'],
@@ -261,14 +264,31 @@ var DYC_PLATFORMS = [
   {
     id: 'wx',
     label: '微信',
+    mark: '微', color: '#18a967', status: '已支持',
     groups: ['wx', 'shared'],
     urlRe: DYC_PAGE_PATTERNS.wxAll
+  },
+  {
+    id: 'xhs', label: '小红书', mark: '红', color: '#ef3457', status: '待接入',
+    groups: ['xhsShop', 'xhsHome'],
+    urlRe: /^https:\/\/(?:[a-z0-9-]+\.)*xiaohongshu\.com\//
+  },
+  {
+    id: 'ks', label: '快手', mark: '快', color: '#f17a33', status: '暂无功能',
+    groups: [],
+    urlRe: /^https:\/\/(?:[a-z0-9-]+\.)*(?:kuaishou|kwaixiaodian)\.com\//
+  },
+  {
+    id: 'tb', label: '淘宝', mark: '淘', color: '#f27623', status: '暂无功能',
+    groups: [],
+    urlRe: /^https:\/\/(?:[a-z0-9-]+\.)*taobao\.com\//
   }
 ];
 
 /** 这个网址属于哪个平台；认不出返回 ''（由弹窗回落到上次记住的平台）。 */
 function dycDetectPlatform(url) {
-  var u = String(url || '');
+  var u;
+  try { u = new URL(String(url || '')).href; } catch (_) { return ''; }
   for (var i = 0; i < DYC_PLATFORMS.length; i++) {
     if (DYC_PLATFORMS[i].urlRe.test(u)) return DYC_PLATFORMS[i].id;
   }
@@ -968,6 +988,25 @@ var DYC_FLAGS_META = [
     note: '清零前需确认；平台要求额外确认时停止。',
     default: true,
     pages: ['wxGoodsList']
+  },
+  {
+    key: 'replayResume',
+    group: 'other',
+    label: '回放暂停与续传',
+    desc: '回放下载支持暂停、继续和断网恢复。',
+    note: '需保持页面打开；直链续传取决于服务器支持。',
+    default: true,
+    pages: ['replayPage']
+  },
+  {
+    key: 'multiPlatformMenu',
+    group: 'shared',
+    inFooter: true,
+    label: '多平台菜单',
+    desc: '按网站显示菜单，也可在右上角手动切换。',
+    note: '关闭后只保留抖音与微信切换。',
+    default: true,
+    pages: []
   }
 ];/* ==========================================================
  * 四、从元数据派生的常量(保持向后兼容)

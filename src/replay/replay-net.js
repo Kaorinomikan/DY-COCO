@@ -276,22 +276,71 @@
    * 直链 MP4 的流式读取：边读边把字节交给 onChunk，内存里不攒整个文件。
    * @returns {Promise<number>} 总字节数
    */
-  function streamTo(url, onChunk, signal, onData) {
-    return request(url, { signal: signal }).then(function (r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      var total = parseInt(r.headers.get('content-length') || '0', 10) || 0;
-      if (!r.body || typeof r.body.getReader !== 'function') {
+  function streamTo(url, onChunk, signal, onData, opts) {
+    opts = opts || {};
+    var offset = opts.offset || 0;
+    var source = opts.source || {};
+    function unsafe(message) { var err = new Error(message); err.resumeUnsafe = true; return err; }
+    if (offset && (!source.validator || !source.total)) {
+      return Promise.reject(unsafe('服务器未提供直链续传校验信息，无法安全继续，请重新下载'));
+    }
+    var local = new AbortController();
+    var timer = 0, timedOut = false, reader = null;
+    function abort() { local.abort(); }
+    function touch() {
+      clearTimeout(timer);
+      if (opts.timeoutMs) timer = setTimeout(function () { timedOut = true; local.abort(); }, opts.timeoutMs);
+    }
+    function cleanup() {
+      clearTimeout(timer);
+      if (signal) signal.removeEventListener('abort', abort);
+    }
+    if (signal) {
+      if (signal.aborted) abort();
+      else signal.addEventListener('abort', abort);
+    }
+    touch();
+    var init = { signal: local.signal };
+    if (offset) init.headers = { Range: 'bytes=' + offset + '-', 'If-Range': source.validator };
+    return request(url, init).then(function (r) {
+      reader = r.body && typeof r.body.getReader === 'function' ? r.body.getReader() : null;
+      if (!r.ok) { var err = new Error('HTTP ' + r.status); err.status = r.status; throw err; }
+      var length = parseInt(r.headers.get('content-length') || '0', 10) || 0;
+      var etag = r.headers.get('etag');
+      var validator = etag && !/^W\//i.test(etag) ? etag : r.headers.get('last-modified');
+      var total = length;
+      if (offset) {
+        var range = /^bytes (\d+)-(\d+)\/(\d+)$/.exec(r.headers.get('content-range') || '');
+        if (r.status !== 206 || !range || Number(range[1]) !== offset ||
+            Number(range[3]) !== source.total || Number(range[2]) !== source.total - 1 ||
+            (validator && validator !== source.validator) ||
+            (length && length !== source.total - offset)) {
+          throw unsafe('服务器未按原文件断点返回数据，已停止续传，请重新下载');
+        }
+        total = source.total;
+      } else {
+        if (r.status === 206) throw unsafe('服务器返回了不完整的直链文件，请重新下载');
+        source.total = total; source.validator = validator;
+      }
+      if (!reader) {
         // 拿不到流就退回整块（大文件会吃内存，但不至于直接失败）
         return r.arrayBuffer().then(function (b) {
           if (onData) onData(b.byteLength);
-          return onChunk(new Uint8Array(b), b.byteLength, total).then(function () { return b.byteLength; });
+          if (total && offset + b.byteLength !== total) throw new Error('直链文件接收不完整');
+          clearTimeout(timer);
+          return onChunk(new Uint8Array(b), offset + b.byteLength, total)
+            .then(function () { return offset + b.byteLength; });
         });
       }
-      var reader = r.body.getReader();
-      var got = 0;
+      var got = offset;
       function pump() {
+        touch();
         return reader.read().then(function (res) {
-          if (res.done) return got;
+          clearTimeout(timer); // 写盘或手动暂停等待不计入网络超时。
+          if (res.done) {
+            if (total && got !== total) throw new Error('直链文件接收不完整');
+            return got;
+          }
           var ch = res.value;
           got += ch.byteLength;
           if (onData) onData(ch.byteLength);
@@ -299,6 +348,11 @@
         });
       }
       return pump();
+    }).then(function (n) { cleanup(); return n; }, function (err) {
+      cleanup(); local.abort();
+      if (reader && reader.cancel) { try { Promise.resolve(reader.cancel()).catch(function () {}); } catch (e) {} }
+      if (timedOut) throw new Error('直链文件连续无数据，接收超时');
+      throw err;
     });
   }
 

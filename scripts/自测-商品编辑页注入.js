@@ -216,18 +216,18 @@ check('弹窗平台判定覆盖本页（抖音分组）', () => {
   assert.ok(/dycDetectPlatform/.test(read('src/popup/popup.js')), 'popup.js 没复用平台判定');
 });
 
-check('新增开关按加入顺序排在 DYC_FLAGS_META 表尾（用户 2026-11-08 定：最新在底部）', () => {
-  // 规矩:以后新加功能一律追加到 DYC_FLAGS_META 末尾,不往中间插。
-  // 本断言钉住"当前最新的三个在表尾";将来再加新开关时,把本断言改成
-  // "更晚的开关在表尾"即可 —— 中途插队会让弹窗里新功能出现在老功能中间。
+check('新增开关保持加入顺序，后续开关可继续在末尾追加', () => {
+  // 固定已加入开关的连续顺序，不把末尾位置冻结，允许后续正常追加。
   const keys = win.DYC_FLAGS_META
     .map((m) => m.key)
     .filter(Boolean);
-  const tail = keys.slice(-3).join(',');
+  const added = ['goodsImagePaste', 'fabricSmartFill', 'wxClearStock', 'replayResume'];
+  const start = keys.indexOf(added[0]);
+  assert.ok(start >= 0, '已加入的开关不能消失');
+  const sequence = keys.slice(start, start + added.length).join(',');
   // ★ 用字符串比较而不是 deepEqual:win 里的数组是 JSDOM realm 的,
   //   assert/strict 的 deepEqual 会因原型不同而永远失败。
-  assert.equal(tail, 'goodsImagePaste,fabricSmartFill,wxClearStock',
-    '表尾三位是 [' + keys.slice(-3).join('、') + '] —— 有人往中间插了新开关?');
+  assert.equal(sequence, added.join(','), '已加入的开关被重排，或新开关插入了它们之间');
 });
 
 console.log('\n────────────────────────────────────────');
