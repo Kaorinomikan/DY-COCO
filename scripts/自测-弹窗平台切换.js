@@ -158,6 +158,45 @@ check('白名单是逐行的：不给「其他」组的抖音专属功能带进�
     assert.equal(wxKeys.indexOf(key), -1, key + ' 不该出现在微信段');
   });
 });
+console.log('\n【二·六】回放续传：从菜单隐藏 + 恒定开启（2026-11-17 用户定）');
+/* 用户原话:「这个菜单按钮从菜单隐藏，功能不要删」，随后补一句
+   「隐藏就是强制打开。不然怎么用。」
+   所以这一节要同时钉住四件事，少一件就出岔子：
+     ① 条目在 —— 删了 flags.replayResume 变 undefined，后来人就会把读取处一起清掉；
+     ② 弹窗不露 —— hidden:true；
+     ③ 读出来恒为 true —— forceOn 压掉老存档里的 false（否则关过的用户永远开不回来，
+        菜单又没入口，功能等于对他们消失）；
+     ④ 读取点还在 —— replay-download.js 仍按这个键判定续传。
+   ③ 必须跑真函数（dycNormalizeFlags），不能只 grep 源码 —— 写法一变就假绿。 */
+check('回放续传已从弹窗隐藏，条目仍在且标了 forceOn', () => {
+  const meta = META.filter((m) => m.key === 'replayResume')[0];
+  assert.ok(meta, 'DYC_FLAGS_META 里没有 replayResume（功能被删了？）');
+  assert.equal(meta.hidden, true, 'replayResume 应带 hidden:true，否则弹窗里还会出一行');
+  assert.equal(meta.forceOn, true, 'replayResume 应带 forceOn:true；只隐藏不恒开，老用户就开不回来');
+  assert.notEqual(meta.default, false, '回放续传必须默认开，隐藏不等于关掉');
+  assert.equal(visibleKeys('dy').indexOf('replayResume'), -1, '抖音段不该再看到这一行');
+  assert.equal(visibleKeys('wx').indexOf('replayResume'), -1, '微信段不该再看到这一行');
+});
+check('老存档里关过也读成开（forceOn 在归一化层压掉旧 false）', () => {
+  const legacy = win.dycNormalizeFlags({ replayResume: false });
+  assert.equal(legacy.replayResume, true,
+    '存档 replayResume:false 没被压成 true —— 隐藏后用户再也开不回来');
+  // 不能顺手把别人的开关也压掉：同一个函数里其余键必须原样保留。
+  const others = win.dycNormalizeFlags({ replayResume: false, hideElements: false, luckyBag: true });
+  assert.equal(others.hideElements, false, 'forceOn 误伤了别的开关（hideElements 被翻成开）');
+  assert.equal(others.luckyBag, true, 'forceOn 误伤了别的开关（luckyBag 被翻成关）');
+});
+check('弹窗渲染确实按 hidden 跳过（机制在，隐藏才成立）', () => {
+  assert.ok(/if\s*\(\s*meta\.hidden\s*\)\s*return/.test(js),
+    'popup.js 渲染循环没判 meta.hidden —— hidden:true 会失效');
+});
+check('续传逻辑仍在读这个开关（删条目时不会静默失效）', () => {
+  const src = read('src/replay/replay-download.js');
+  assert.ok(/flags\.replayResume/.test(src), 'replay-download.js 已不再读 replayResume');
+  assert.ok(/enabled:\s*function\s*\(\)\s*\{\s*return\s+flags\.replayResume\s*!==\s*false/.test(src),
+    '续传开关的总闸判定不见了');
+});
+
 check('弹窗按行判显隐、零可露行的组框自动收起（不然「通用」剩个空壳）', () => {
   const body = bodyOf(js, 'applyPlatform');
   assert.ok(/data-flag-row/.test(body), 'applyPlatform 没按行判显隐');

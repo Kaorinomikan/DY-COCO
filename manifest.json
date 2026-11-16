@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "可可助手",
-  "version": "26.11.12.3",
+  "version": "26.11.17.1",
   "description": "抖音抖店、微信小店、中控台小助手",
   "permissions": [
     "storage",
@@ -171,7 +171,8 @@
         "https://compass.jinritemai.com/shop/merchandise-traffic*",
         "https://*.jinritemai.com/ffa/merchant/*",
         "https://*.jinritemai.com/dashboard/shopwindow/*",
-        "https://*.jinritemai.com/ffa/g/create*"
+        "https://*.jinritemai.com/ffa/g/create*",
+        "https://*.jinritemai.com/ffa/morder/logistics/*"
       ],
       "js": [
         "src/content/flags.js",
@@ -372,6 +373,26 @@
     },
     {
       "matches": [
+        "https://fxg.jinritemai.com/ffa/morder/logistics/*"
+      ],
+      "js": [
+        "src/content/flags.js",
+        "src/content/diag.js",
+        "src/content/anchor.js",
+        "src/content/dialog.js",
+        "src/content/item-code.js",
+        "src/content/return-goods-name.js",
+        "src/live/hide-elements.js",
+        "src/content/debug-panel.js"
+      ],
+      "css": [
+        "src/content/style.css",
+        "src/content/msgbox.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
         "https://*.jinritemai.com/*",
         "https://*.jinritemai.com/ffa/g/create*",
         "https://anchor.douyin.com/*",
@@ -388,6 +409,7 @@
         "https://fxg.jinritemai.com/ffa/g/channel-goods-manage/list*",
         "https://fxg.jinritemai.com/ffa/g/list*",
         "https://fxg.jinritemai.com/ffa/merchant/*",
+        "https://fxg.jinritemai.com/ffa/morder/logistics/*",
         "https://liveservice.douyin.com/*",
         "https://store.weixin.qq.com/*"
       ],
@@ -406,6 +428,7 @@
         "https://fxg.jinritemai.com/ffa/g/channel-goods-manage/list*",
         "https://fxg.jinritemai.com/ffa/g/list*",
         "https://fxg.jinritemai.com/ffa/merchant/*",
+        "https://fxg.jinritemai.com/ffa/morder/logistics/*",
         "https://liveservice.douyin.com/*",
         "https://store.weixin.qq.com/*"
       ],

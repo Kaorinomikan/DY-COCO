@@ -324,6 +324,62 @@ console.log('\n=========== C. 污染源自证（innerText vs textWithoutExt）==
   if (ok) pass++; else { fail++; failures.push('污染源自证未按预期'); }
 }
 
+/* ---------- D. 诊断留痕（#138：取号现场必须能在诊断里看到） ---------- */
+console.log('\n=========== D. 诊断（#138 取号现场留痕）===========');
+{
+  /* ① diag 不在场：静默跳过、不许抛错 —— 诊断绝不能反过来打断复制 */
+  const noDiag = buildModule(
+    path.join(ROOT, 'src/live/copy-code.js'),
+    ['noteDiag', 'noteInjectStat', 'noteCodeDiag'],
+    ['lastInjectStat'],
+    'var window = {};'
+  );
+  let threw = null;
+  try {
+    noDiag.noteCodeDiag({ tagName: 'DIV', className: 'x', textContent: NAME_TEXT },
+      { code: EXPECT_CODE, from: 'guess' });
+    noDiag.noteInjectStat(0, 8);
+  } catch (e) { threw = e; }
+  const ok1 = !threw;
+  console.log('  ' + (ok1 ? '✓' : '✗') + ' D1 diag 不在场 → 不抛错（诊断不许打断复制）');
+  if (ok1) pass++; else { fail++; failures.push('D1 诊断缺席时应静默：' + (threw && threw.message)); }
+
+  /* ② diag 在场：点一次按钮要留下「名称尾部 + 元素 + 档位 + 结果」 */
+  const recs = [];
+  globalThis.__DGRECS = recs;
+  const DG = buildModule(
+    path.join(ROOT, 'src/live/copy-code.js'),
+    ['noteDiag', 'noteInjectStat', 'noteCodeDiag'],
+    ['lastInjectStat'],
+    'var window = { __dycDiag: { note: function (a, d, r) {' +
+    ' globalThis.__DGRECS.push({ a: a, d: String(d || ""), r: String(r || "") }); } } };'
+  );
+  const el = { tagName: 'DIV', className: 'name_cell', textContent: NAME_TEXT };
+  DG.noteCodeDiag(el, { code: EXPECT_CODE, from: 'guess' });
+  DG.noteCodeDiag(el, { code: '', from: 'none' });
+  DG.noteInjectStat(0, 8);
+  DG.noteInjectStat(0, 8);     // 同签名 → 必须去重，不刷屏
+  DG.noteInjectStat(8, 8);     // 数字变化 → 必须再记一条
+
+  const hit = recs.find((x) => x.r === EXPECT_CODE);
+  const miss = recs.find((x) => x.r === '无货号');
+  const zero = recs.filter((x) => x.r === '0/8');
+  const full = recs.find((x) => x.r === '8/8');
+
+  const checks = [
+    ['D2 取到号时有记录', !!hit],
+    ['D3 记录含名称尾部（据此可判「末尾是不是款号」）', !!hit && hit.d.includes(EXPECT_CODE)],
+    ['D4 记录含档位（官方 / 推算）', !!hit && hit.d.includes('guess')],
+    ['D5 取不到号也有记录（过去这里是诊断盲区）', !!miss],
+    ['D6 注入统计同签名只记一条（不刷屏）', zero.length === 1],
+    ['D7 注入数字变化后再记一条', !!full]
+  ];
+  for (const [label, ok] of checks) {
+    console.log('  ' + (ok ? '✓' : '✗') + ' ' + label);
+    if (ok) pass++; else { fail++; failures.push(label); }
+  }
+}
+
 /* ---------- 汇总 ---------- */
 console.log('\n' + '='.repeat(62));
 console.log('通过 ' + pass + ' / ' + (pass + fail));

@@ -107,6 +107,8 @@
   var flags = null;
   var observer = null;
   var pending = false;
+  /* 上一轮注入的「成功/行数」签名 —— 只有数字变化才写诊断(见 noteInjectStat) */
+  var lastInjectStat = '';
 
   function enabled() {
     return !!flags && flags.liveCopyCode !== false;
@@ -433,6 +435,57 @@
     }, 1500);
   }
 
+  /* ---------- 诊断（2026-11-16 · 反馈 #138） ----------
+   *
+   * 【为什么补这一段】
+   *   #138 报「小黄车复制不到款号」。复盘时发现**诊断里一个字都没有**：
+   *   取号失败走的是 say(..., { keepHistory:false }) + 按钮变色，
+   *   既不进消息盒子、也不进 __dycDiag 轨迹 ⇒ 只能靠猜「名称里到底有没有款号」。
+   *   而取号规则本身已被实测排除（现行 item-code.js 对「…外套 S28」返回 S28）。
+   *
+   * 【记什么】
+   *   · 每轮注入的「成功数 / 商品行数」—— 数字变化才记，防刷屏。
+   *     它能把两种完全不同的故障分开：「注入 0 个」= 按钮根本不在页面上；
+   *     「注入 8 个」= 按钮有，问题在取号。
+   *   · 每次点击的「名称尾部 24 字 + 命中元素 + 走了哪一档 + 结果」。
+   *     名称尾部足够判断「末尾是不是款号」，又不至于把整行（含价格）搬进诊断。
+   *
+   * 【硬约束】诊断永不打断主流程：diag 不在场、抛错，一律静默跳过。
+   * ------------------------------------------------------------------ */
+
+  function noteDiag(action, detail, result) {
+    try {
+      var d = window.__dycDiag;
+      if (!d || typeof d.note !== 'function') return;
+      d.note(action, detail, result);
+    } catch (e) { /* 诊断失败不许影响复制 */ }
+  }
+
+  /** 每轮注入结果；只在数字变化时落一条。 */
+  function noteInjectStat(done, rows) {
+    var sig = done + '/' + rows;
+    if (sig === lastInjectStat) return;
+    lastInjectStat = sig;
+    noteDiag('货号按钮', '本轮注入 ' + done + ' 个 / 商品行 ' + rows + ' 个', sig);
+  }
+
+  /** 取号现场（点一次按钮记一条）。 */
+  function noteCodeDiag(nameEl, r) {
+    var t = nameEl ? String(nameEl.textContent || '') : '';
+    var tail = t.replace(/\s+/g, ' ').trim().slice(-24);
+    var tag;
+    if (nameEl) {
+      tag = String(nameEl.tagName || '').toLowerCase();
+      var cls = String(nameEl.className || '').split(/\s+/)[0];
+      if (cls) tag += '.' + cls.slice(0, 24);
+    } else {
+      tag = '(无名称元素)';
+    }
+    noteDiag('货号取值',
+      '尾[' + tail + ']｜元素=' + tag + '｜档=' + (r.from || 'none'),
+      r.code || '无货号');
+  }
+
   function makeButton(row, nameEl) {
     var btn = document.createElement('button');
     btn.type = 'button';
@@ -452,6 +505,7 @@
       var nowName = findNameElByAnchor(findPlatformIdButton(row)) ||
                     findNameEl(row) || nameEl;
       var r = readCode(row, nowName);
+      noteCodeDiag(nowName, r);
       if (!r.code) {
         // 取不到时把「规则」和「为什么」一并写清楚 —— 用户最可能在这一刻
         // 想弄明白「明明名称里有款号，为什么取不到」（款号在中间 / 后面还有字）。
@@ -554,6 +608,7 @@
     for (var i = 0; i < items.length; i++) {
       try { if (injectIntoRow(items[i])) n++; } catch (e) { /* 单行失败不影响其余 */ }
     }
+    noteInjectStat(n, items.length);
     return n;
   }
 

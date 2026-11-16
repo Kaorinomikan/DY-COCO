@@ -82,6 +82,19 @@ var DYC_PAGE_PATTERNS = {
   //      exclude_matches,避免 flags.js / hide-elements.js 被重复注入两次。
   goodsEdit:
     /^https:\/\/(?:[a-z0-9-]+\.)*jinritemai\.com\/ffa\/g\/create/,
+  // 抖店「多地址退货」模块(2026-11-17 新增,计划 #139):
+  //   新建/编辑策略 = /ffa/morder/logistics/policy-edit(用户采结构的那一页),
+  //   同模块里还有策略列表 —— 取**整个模块前缀**而不是单条路径:
+  //   本模块是 SPA,列表→编辑走 pushState 不刷新页面,content_scripts 只在
+  //   导航时注入,把 matches 卡死在 policy-edit 会让「从列表点进来」的那次
+  //   彻底没有脚本(直播回放 / 活动广场都踩过同一个坑)。
+  //   ⚠️ 必须排在 shopAll **之前**:diag.js 的 pageKind() 按声明顺序先匹配先返回,
+  //      排在后面这一页永远只报「抖店其他页」。
+  //   ⚠️ 本页**仍属 shopAll**(「隐藏页面元素」等全域开关照旧生效);
+  //      manifest 侧由单独一条 content_scripts 承载,并把本路径写进全域条目的
+  //      exclude_matches,避免 flags.js / hide-elements.js 被重复注入两次。
+  returnPolicy:
+    /^https:\/\/fxg\.jinritemai\.com\/ffa\/morder\/logistics\//,
   shopAll:
     /^https:\/\/(?:[a-z0-9-]+\.)*jinritemai\.com\/(?!ffa\/content-tool\/live\/control|dashboard\/live\/control)/,
   // 电商罗盘「直播明细」页(2026-10-15 反馈 #84 新增,方案乙):
@@ -352,8 +365,14 @@ function dycPlatformGroups(platId) {
  *   store       'feature'(默认,存 dybFeatures)/ 'debug'(存独立键 dybDebug)
  *   hidden      true = **不进弹窗**(仍是一个真开关:照常存 dybFeatures、照常有默认值、
  *               内容脚本照常读得到),只在功能自己的界面里改。
- *               注:唯一用过它的 autoLoopDefaultOn 已于 2026-10-27 整条删除(用户要求连
- *               面板里那枚开关一起去掉,行为改为「进页面恒开」),机制留着给以后需要时用。
+ *               历史:autoLoopDefaultOn 曾用过(2026-10-27 整条删除);
+ *               现用者 = replayResume(2026-11-17 用户要求「从菜单隐藏,功能不要删」)。
+ *   forceOn     true = **恒定开启**:dycNormalizeFlags() 读取时一律置 true,
+ *               存档里的旧 false 直接作废(用户 2026-11-17 原话:
+ *               「隐藏就是强制打开。不然怎么用。」)。
+ *               与 hidden 成对使用 —— 菜单没有入口又不收掉开关权,老存档里关过的
+ *               用户就再也开不回来,功能等于对他们消失。
+ *               现用者 = replayResume;判据只此一处,别在功能代码里各写各的。
  *
  * 数组顺序 = 弹窗里的显示顺序。
  * ========================================================== */
@@ -989,14 +1008,46 @@ var DYC_FLAGS_META = [
     default: true,
     pages: ['wxGoodsList']
   },
+  /* ── 2026-11-17 用户定:从弹窗菜单隐藏,同时**恒定开启** ───────────────
+   * 用户原话①「这个菜单按钮从菜单隐藏,功能不要删」;
+   * 原话②「隐藏就是强制打开。不然怎么用。」
+   * 做法 = hidden:true + forceOn:true,两件事必须成对:
+   *   · hidden  —— popup.js 逐行判这个字段,命中就不建行;
+   *   · forceOn —— 读取时压掉存档值(dycNormalizeFlags 里统一置 true)。
+   * 为什么两件都要:只隐藏不留入口 ⇒ 老存档里手动关过的用户永远开不回来,
+   *   功能等于对他们消失。既然菜单不给了,开关权就必须收回到「恒开」。
+   * 条目保留、不删 —— 删了 flags.replayResume 变 undefined,续传判定
+   *   `!== false` 虽仍为真,但条目一没,后来人就会顺手把读取处也清掉,
+   *   那时才是真的静默失效。
+   * 守卫 = scripts/自测-弹窗平台切换.js【二·六】三条(条目在/不露/恒开)。
+   * 顺序:条目仍在表尾,不动位置 —— 自测-商品编辑页注入.js 的末尾顺序断言照旧成立。 */
   {
     key: 'replayResume',
+    hidden: true,
+    forceOn: true,
     group: 'other',
     label: '回放暂停与续传',
     desc: '回放下载支持暂停、继续和断网恢复。',
     note: '需保持页面打开；直链续传取决于服务器支持。',
     default: true,
     pages: ['replayPage']
+  },
+  /* ── 抖店 · 多地址退货页(2026-11-17 新增,计划 #139)───────────────────
+   * 用户原话(待办 #139):「『多退货地址』页支持完整商品名 + 货号复制」。
+   * 作用页 returnPolicy = 物流工具 → 多地址退货(/ffa/morder/logistics/*)。
+   * 做两件事:① 商品卡里的商品名不再压成一行,最多三行(两行优先);
+   *           ② 名称下方一枚「货号」按钮,点一下复制款号。
+   * 取号两档:平台写了「货号」就用它,否则按名称末尾推算(item-code.js 判据);
+   *   都取不到只提示「无货号」,不复制半截内容。
+   * ★ 位置:按 2026-11-08 口径追加在表尾(弹窗里最新的排最下面)。 */
+  {
+    key: 'returnGoodsName',
+    group: 'shop',
+    label: '退货地址商品名',
+    desc: '多地址退货页商品名完整显示，并加货号复制。',
+    note: '货号按名称末尾取。',
+    default: true,
+    pages: ['returnPolicy']
   }
 ];/* ==========================================================
  * 四、从元数据派生的常量(保持向后兼容)
@@ -1091,6 +1142,15 @@ function dycNormalizeFlags(stored) {
   if (!stored || stored.servicePlatformJump === undefined) {
     out.servicePlatformJump = out.liveScreenJump !== false && out.liveDetailJump !== false;
   }
+  /* forceOn(2026-11-17):标了这个字段的开关**恒定开启** —— 不管存档写过什么。
+   * 放在归一化层而不是各功能里,是为了「一处判据」:
+   *   dycReadFlags(内容脚本)和 dycReadAllFlags(弹窗)都走这里,
+   *   以后新增读取入口也自动继承,不会出现某条路径漏压旧值的半开状态。
+   * 场景:replayResume 已从菜单隐藏,老存档里的 false 若不压掉,
+   *   用户既开不了也用不上(用户原话「隐藏就是强制打开」)。 */
+  DYC_FLAGS_META.forEach(function (m) {
+    if (m.key && m.forceOn) out[m.key] = true;
+  });
   return out;
 }
 

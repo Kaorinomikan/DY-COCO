@@ -166,8 +166,17 @@
     const parts = String(text || '').split(/[\s\u3000]+/).filter(Boolean);
     let last = null;
     for (const p of parts) {
-      const m = /(haohuo\.jinritemai\.com[^\s"'<>]*[?&]id=(\d{10,}))/i.exec(p) ||
-                /(jinritemai\.com[^\s"'<>]*[?&](?:product_id|id)=(\d{10,}))/i.exec(p);
+      /* 2026-11-16 反馈 #141:原正则只认 `?id=` / `?product_id=`,
+       * 精选联盟的通用分享链接只有 `?promotion_id=`(alliance.jinritemai.com/
+       * merchants/alliance-general-share?promotion_id=…),两个分支都不命中 ⇒
+       * 链接**还没交给接口**就被本地正则淘汰,报「无法识别」。
+       * 这一层的职责只是「从剪贴板里挑出像商品链接的那一段」;
+       * 真正的解析由 resolveLink() 把整条链接交给平台 batch_link 完成 ——
+       * 所以预筛比平台严是纯损耗:平台能认、我们却先拒了。
+       * 现在补 promotion_id,并把子域放开到整个 jinritemai.com 域名族
+       * (haohuo / alliance / buyin / fxg …),与 shop-paste.js:174 同口径;
+       * 协议头保留(平台按整条链接解析,有无 https 都可能影响判定)。 */
+      const m = /((?:https?:\/\/)?(?:[a-z0-9-]+\.)*jinritemai\.com[^\s"'<>]*[?&](?:product_id|promotion_id|id)=(\d{10,}))/i.exec(p);
       if (m) last = { id: m[2], link: m[1] };   // 只留最后一个(最近粘的那条)
     }
     return last ? [last] : [];
@@ -576,8 +585,14 @@
       if (links.length) {
         const r = await resolveLink(ewid, links[0].link);
         if (!r.ok) {
-          setStatus('链接 ' + links[0].id, 'alert', { source: SOURCE, count: '无法识别', keepHistory: true });
-          log('粘贴加车:链接解析失败 ' + links[0].id + ' → ' + r.why);
+          /* 2026-11-16 反馈 #141:不再笼统报「无法识别」。
+           * 平台为什么不收这条链接(不是联盟商品 / 已下架 / 审核未通过)才是可用的信息,
+           * 统统一句「无法识别」等于把平台自己的判定丢掉了。
+           * 条上一行宽,取前 18 字;完整原因进 log。 */
+          const why = String(r.why || '').replace(/\s+/g, ' ').trim();
+          const brief = why ? (why.length > 18 ? why.slice(0, 18) + '…' : why) : '无法识别';
+          setStatus('链接 ' + links[0].id, 'alert', { source: SOURCE, count: brief, keepHistory: true });
+          log('粘贴加车:链接解析失败 ' + links[0].id + ' → ' + (why || '(平台未给原因)'));
           return;
         }
         targets = [r];

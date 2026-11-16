@@ -8,9 +8,11 @@ source = source.replace('  dycReadFlags().then', [
   '  window.test = {',
   '  state: { bindCalls: 0 },',
   '  onClick,',
+  '  parseLinks,',
   '  attach(b) { btn = b; },',
   '  mock(cfg) {',
   '    window.test.state.bindCalls = 0;',
+  '    window.test.state.lastUrl = "";',
   '    if (!window.test._bind) window.test._bind = bindPromotions;',
   '    if (!window.test._pageFetch) window.test._pageFetch = pageFetch;',
   '    readClipboard = cfg.read;',
@@ -19,6 +21,13 @@ source = source.replace('  dycReadFlags().then', [
   '    searchMyShop = async () => ({ matches: cfg.matches || [{ promotion_id: "1", product_id: "1", title: "ABC123" }] });',
   '    bindPromotions = window.test._bind;',
   '    pageFetch = window.test._pageFetch;',
+  '    if (cfg.linkRaw) {',
+  '      const resp = cfg.linkRaw;',
+  '      pageFetch = async (url) => {',
+  '        window.test.state.lastUrl = url;',
+  '        return { status: 200, text: JSON.stringify(resp) };',
+  '      };',
+  '    }',
   '    if (cfg.bindRaw) {',
   '      const resp = cfg.bindRaw;',
   '      pageFetch = async () => {',
@@ -77,6 +86,9 @@ source = source.replace('  dycReadFlags().then', [
     { promotion_id: '2', product_id: '2', title: 'ABC123-B' }
   ];
 
+  /* 反馈 #141 的原始链接（用户直接贴给我们的那一条，原样保留做回归样本） */
+  const ALLIANCE_LINK = 'https://alliance.jinritemai.com/merchants/alliance-general-share?promotion_id=3851381164740837441';
+
   const scenes = [
     { name: '正常加车', cfg: { read: async () => 'ABC123' },
       btn: '已加车 ✓', kind: 'success', binds: 1 },
@@ -106,7 +118,22 @@ source = source.replace('  dycReadFlags().then', [
           success_count: 1, failure_count: 1,
           failure_list: [{ promotion_id: '2', fail_reason: '商品数量已达上限' }]
         } } },
-      btn: '部分加入', kind: 'failure', binds: 1, say: '只加了 1 个', count: '其余未加入' }
+      btn: '部分加入', kind: 'failure', binds: 1, say: '只加了 1 个', count: '其余未加入' },
+
+    /* 反馈 #141（2026-11-16）：精选联盟「通用分享」链接只有 ?promotion_id=，
+       旧预筛只认 ?id= / ?product_id= ⇒ 链接还没出站就被本地正则淘汰。
+       这一条验「能一路走到平台、并真的把绑定请求发出去」。 */
+    { name: '联盟分享链接加车', cfg: { read: async () => ALLIANCE_LINK,
+        linkRaw: { code: 0, data: { batch_shop_manage_promotions: [
+          { promotion_id: '3851381164740837441', product_id: '3552430413047811198',
+            item_type: 6, title: 'ABC123', filter_status: 0 } ] } } },
+      btn: '已加车 ✓', kind: 'success', binds: 1, urlHas: '3851381164740837441' },
+
+    /* 平台明确不收这条链接时，提示要给**平台原因**，不能笼统一句「无法识别」 */
+    { name: '联盟链接被平台拒', cfg: { read: async () => ALLIANCE_LINK,
+        linkRaw: { code: 1, msg: '链接格式不支持' } },
+      btn: '加车失败 !', kind: 'failure', binds: 0, count: '链接格式不支持',
+      urlHas: '3851381164740837441' }
   ];
 
   for (const sc of scenes) {
@@ -138,13 +165,40 @@ source = source.replace('  dycReadFlags().then', [
     if (sc.count) assert.equal(last.o.count, sc.count, sc.name + ': 右段结果词应为 ' + sc.count);
     if (sc.countHas) assert.ok(last.o.count.includes(sc.countHas),
       sc.name + ': 右段结果词应含「' + sc.countHas + '」');
+    if (sc.urlHas) assert.ok(String(c.window.test.state.lastUrl || '').includes(sc.urlHas),
+      sc.name + ': 应把整条原始链接交给平台（含 ' + sc.urlHas + '）');
 
     for (const f of timers.values()) f();
     timers.clear();
     assert.equal(b.textContent, '粘贴加车', sc.name + ': 2.5 秒后按钮应复原');
   }
 
-  console.log('PASS: ' + scenes.length + ' 个场景 —— 正常加车 / 平台拒绝(非车满不误判) /' +
+  /* ---------- 链接预筛单元断言（#141）----------
+     这一层只负责「从剪贴板里挑出像商品链接的那一段」，真解析交给平台。
+     所以判据是：**该认的都认出来、不该认的别误认**，且交给平台的必须是原始链接。 */
+  const P = c.window.test.parseLinks;
+  const linkCases = [
+    ['联盟通用分享（仅 promotion_id）', ALLIANCE_LINK, '3851381164740837441'],
+    ['haohuo 商品链接（回归）', 'https://haohuo.jinritemai.com/views/product/item2?id=3552430413047811198', '3552430413047811198'],
+    ['fxg 带 product_id（回归）', 'https://fxg.jinritemai.com/ffa/g/list?product_id=3552430413047811198', '3552430413047811198'],
+    ['无协议头的裸链接（回归）', 'haohuo.jinritemai.com/views/product/item2?id=3552430413047811198', '3552430413047811198']
+  ];
+  for (const [label, text, id] of linkCases) {
+    const r = P(text);
+    assert.equal(r.length, 1, '预筛: ' + label + ' 应识别为链接');
+    assert.equal(r[0].id, id, '预筛: ' + label + ' 的 id 应为 ' + id);
+    assert.ok(r[0].link.includes(id), '预筛: ' + label + ' 的 link 应保留原始链接');
+  }
+  /* 反向：款号 / 商品名不能被当链接（否则会拿它去查接口，白跑一趟） */
+  assert.equal(P('ABC123').length, 0, '预筛: 纯款号不应识别为链接');
+  assert.equal(P('王囡囡 蓝色英文字母小众设计款拉链休闲外套 S28').length, 0,
+    '预筛: 商品名不应识别为链接');
+  /* 只取最后一条（用户 2026-10-24 定：只接收最新粘贴的那条） */
+  assert.equal(P('https://haohuo.jinritemai.com/views/product/item2?id=1111111111111111111 ' +
+    ALLIANCE_LINK)[0].id, '3851381164740837441', '预筛: 多条链接只取最后一条');
+
+  console.log('PASS: ' + (scenes.length + linkCases.length + 4) + ' 项 —— 正常加车 / 平台拒绝(非车满不误判) /' +
     ' 款号查不到 / 空剪贴板 / 剪贴板被拒 / 满载预判(不发请求) /' +
-    ' 满载但已在车内(不误报) / 平台 msg 报上限兜底 / 逐条失败原因报上限');
+    ' 满载但已在车内(不误报) / 平台 msg 报上限兜底 / 逐条失败原因报上限 /' +
+    ' 联盟分享链接(promotion_id)加车 / 联盟链接被拒报平台原因 / 链接预筛 7 项');
 })().catch((e) => { console.error(e); process.exit(1); });

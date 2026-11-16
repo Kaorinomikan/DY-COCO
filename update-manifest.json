@@ -1,5 +1,5 @@
 {
-  "version": "26.11.12.3",
+  "version": "26.11.17.1",
   "algorithm": "sha256",
   "files": [
     {
@@ -44,13 +44,13 @@
     },
     {
       "path": "manifest.json",
-      "size": 13079,
-      "sha256": "630a022546ae94df47a8b83d27bfd834ca05bed57ca9ac37f596c52a9868f795"
+      "size": 13789,
+      "sha256": "00ff86d91588cbfeea2ba5f9c4ef9484009dee8c121f728075b4a24f2ced5db1"
     },
     {
       "path": "src/background/service-worker.js",
       "size": 91557,
-      "sha256": "21f837726c5da9e6f46683ecaeb3a7029cb72bf3e27e3042d1c7523f96c69fa2"
+      "sha256": "6b9a3df034f03deaa9b82ef36b1b5ab6944494b900d05b3edbb17562ffcbf666"
     },
     {
       "path": "src/content/anchor.js",
@@ -129,8 +129,8 @@
     },
     {
       "path": "src/content/flags.js",
-      "size": 91718,
-      "sha256": "27bb04867a58e9db97e82bd163e2b0f7612f0161f91dc48907ae46cb558756c1"
+      "size": 96064,
+      "sha256": "7aa566b64dabb342f8d2983dd48810cb937aacee570bc946e58767cca4ef387b"
     },
     {
       "path": "src/content/goods-batch-copy.js",
@@ -191,6 +191,11 @@
       "path": "src/content/page-probe.js",
       "size": 31129,
       "sha256": "4ac27678cc427f03d284e9277e116112b9c74b7550ea37ac64854adbd96ddee1"
+    },
+    {
+      "path": "src/content/return-goods-name.js",
+      "size": 42266,
+      "sha256": "83392d698c40a7ca17ecd894cc9c52ffeb9363ea722215f65cdf9526d40b3e5c"
     },
     {
       "path": "src/content/row-scan.js",
@@ -299,8 +304,8 @@
     },
     {
       "path": "src/live/cart-paste.js",
-      "size": 37888,
-      "sha256": "d0bde72e44a4045cebe38366350c0b745e837025abd544d6a0007572e9d0ea10"
+      "size": 39253,
+      "sha256": "7d1ddc1192e9149d4dfe2b2fe45748730859f22e4c763dc2ad50fa474c3232db"
     },
     {
       "path": "src/live/compass-table.js",
@@ -309,8 +314,8 @@
     },
     {
       "path": "src/live/copy-code.js",
-      "size": 31115,
-      "sha256": "a802683d1f5836e388c5d9a6731ebc3b763810b477be10f3b9e5e5e2b8b8f9e8"
+      "size": 33648,
+      "sha256": "dba2f59ce05ffa9e282dc20ee2827b4b524cb20857175a78e038d2e6b956da9d"
     },
     {
       "path": "src/live/hide-elements.js",
