@@ -346,6 +346,9 @@
     e.engine = detectEngine();
     e.caps = detectCaps();
     e.ver = safe(function () { return chrome.runtime.getManifest().version; }, '');
+    /* 内容脚本构建号（flags.js 定义）。扩展版本号在本地改代码时不变 ——
+     * 只有这里能区分「新代码loaded了没」，报「改了没用」时先看这一行。 */
+    e.build = safe(function () { return window.__DYC_BUILD__ || ''; }, '');
     e.boot = bootAt;
     e.age = Date.now() - bootAt;
     if (extra && extra.why) e.why = clamp(extra.why, 200);
@@ -909,6 +912,10 @@
     shopAll: '抖店其他页',
     compassLive: '罗盘直播明细页',
     compassTable: '罗盘商品表页',
+    // 2026-11-17：这两页的键原先没登记，报告里直接显示英文键名（returnPolicy），
+    // 排查「功能没生效」时看不出用户到底在哪一页。顺手补上。
+    returnPolicy: '退货策略页',
+    material: '素材管理页',
     debugTarget: '调试目标页',
     // 微信小店（2026-10-30 新增，仅基础设施）。三个键与 flags.js 的
     // DYC_PAGE_PATTERNS 一一对应，报出来是为了让诊断报告里能一眼分清
@@ -918,6 +925,13 @@
     wxShop: '微信小店后台',
     wxChannels: '视频号助手',
     wxAll: '微信小店其他页',
+    // 小红书中控台（2026-11-17 新增，仅基础设施）。与 flags.js 的三个键一一对应。
+    xhsCtrl: '小红书中控台',
+    xhsArkList: '小红书千帆商品列表',
+    xhsArkReturn: '小红书千帆退货策略页',
+    xhsPgy: '蒲公英其他页',
+    xhsArk: '小红书千帆其他页',
+    xhsAll: '小红书其他页',
     extensionPage: '扩展页面',
     other: '其他页面',
     unknown: '未知'
@@ -1066,6 +1080,7 @@
       if (bsMeta) {
         L.push('- 浮条扫描(最近一次 ' + (bsMeta.at || '?') + '):配置 ' + bsMeta.cfgs + ' 套'
           + ' · 遍历 ' + bsMeta.nodes + ' 节点'
+          + (bsMeta.skipped ? '(跳过:' + bsMeta.skipped + ')' : '')
           + (bsMeta.budgetOut ? ' · ⚠预算耗尽(可能有子树没扫到)' : '')
           + (bsMeta.depthOut ? ' · ⚠深度截断' : '')
           + ' · 打标隐藏 ' + bsMeta.marked + ' 个');
@@ -1370,6 +1385,10 @@
     L.push('- 内核:' + env.engine);
     L.push('- UA:' + env.ua);
     L.push('- 扩展版本:' + env.ver);
+    L.push('- 内容脚本构建号:' + (env.build || '(未标注 —— 这版内容脚本还没带构建号，整页刷新不会更新它，需要扩展管理页重载)'));
+    if (env.build && env.ver && env.build.indexOf(env.ver) !== 0) {
+      L.push('  ⚠ 构建号与版本号不同源，可能加载了旧包');
+    }
     L.push('- 已运行:' + Math.round((env.age || 0) / 1000) + ' 秒');
     L.push('- 采集耗时:' + (snap.took || 0) + ' ms');
     if (env.why) L.push('- 降级原因:' + env.why);

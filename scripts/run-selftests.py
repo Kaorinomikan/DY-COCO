@@ -327,6 +327,17 @@ def classify(result, script, script_sources, changed):
             '稳定复现 ⇒ 查未结束的定时器/轮询；偶发 ⇒ 本轮可忽略，属环境抖动',
         ]
 
+    # changed 为 None = git 取不到改动范围（PATH 里没有 git、工作树异常等）。
+    # 旧实现在这里直接做 `p in changed`，NoneType 不可迭代 ⇒ 抛 TypeError，
+    # 把整段失败归因打挂、连真实失败断言都看不到（2026-11-17 实测撞上）。
+    # 归因是**辅助信息**，任何情况下都不许掩盖「哪个用例红了、红在哪一行」。
+    if changed is None:
+        return '无法判定（取不到改动范围）', \
+               '归因需要 git 改动清单，本轮没拿到；失败本身仍然有效。', [
+            '单独重跑该用例并读完整输出',
+            '确认 PATH 里有 PortableGit 后重跑，才能拿到改动关联',
+        ]
+
     touched = sorted(p for p in script_sources if p in changed)
     src_like, behavior_like = script_profile(script) if script else (0, 0)
 

@@ -217,10 +217,17 @@ check('popup：本页支持范围含两个域（并能挡仿冒域）', () => {
   assert.equal(win.dycDetectPlatform('https://fxg.jinritemai.com/ffa/g/list'), 'dy', '抖店不能因此失效');
   assert.equal(win.dycDetectPlatform('https://store.weixin.qq.com.evil.test/shop'), '', '仿冒域不该被认作作用页');
 });
-check('popup：两条「不在支持范围」提示已含微信小店', () => {
+check('popup：两条「不在支持范围」提示是平台表驱动（自动含微信小店）', () => {
   const src = read('src/popup/popup.js');
   assert.equal(src.split('本页不在扩展支持范围').length - 1, 2, '预期两处提示');
-  assert.equal(src.split('直播回放页 / 微信小店').length - 1, 2, '两处都要写微信小店');
+  // 2026-11-17：文案改为 supportedScopeText() 平台表驱动 —— 原断言绑死
+  // 「直播回放页 / 微信小店」这句，接入小红书当天就红了（写死的文案必然漏新平台）。
+  // 现在盯推导关系：① 两处提示都走该函数；② 它只列 status=已支持 的平台名；
+  //   ③ 微信域本身仍在已支持之列（行为断言，与文案措辞无关）。
+  assert.ok(src.split('supportedScopeText()').length - 1 >= 2, '两处提示都要走平台表');
+  assert.ok(/function supportedScopeText\(\)[\s\S]*?DYC_PLATFORMS[\s\S]*?status === '已支持'[\s\S]*?\.label/
+    .test(src), 'supportedScopeText 必须从 DYC_PLATFORMS 的已支持平台取 label');
+  assert.equal(win.DYC_PLATFORMS.find((p) => p.id === 'wx').status, '已支持', '微信域仍须在线');
 });
 
 console.log('\n【六】调试面板：接口取样按钮按「探针在场」显示');

@@ -1,5 +1,15 @@
 /**
- * 抖店「多地址退货」页 · 商品名完整显示 + 货号复制（计划 #139，2026-11-17）
+ * 抖店「商品卡片」· 商品名完整显示 + 货号复制
+ * ============================================================
+ * 作用页（两页，判据一套通用、开关分页）：
+ *   ① 「多地址退货」页 fxg.jinritemai.com/ffa/morder/logistics/*（计划 #139，2026-11-17）
+ *   ② 「素材管理」页 fxg.jinritemai.com/ffa/creative/*（2026-11-17 用户要求
+ *      「完整名称和复制货号把这两功能兼容到这里」）
+ *
+ * 两页的共同形态就是「商品卡片 = 缩略图 + 名称(被压成一行) + 一行商品 ID」，
+ * 所以判据不做第二份，只有三处按页分派：开关键 / 按钮锚点 / 诊断来源名。
+ * 素材页的差别在结构：名称与 ID 行**各套一层**（name-VOjSh9 / productIdWrapper），
+ * 按钮必须挂到它们共同的那层、紧跟 ID 行 —— 详见 ensureButton 的注释。
  * ============================================================
  * 【解决什么问题】
  *
@@ -72,8 +82,10 @@
  *
  * 【开关】
  *
- *   flags.js 的 returnGoodsName（抖店组，默认开）。关掉即时生效：
- *   摘观察器 + 移除已注入按钮 + 还原全部内联属性，页面回原样。
+ *   两页各一个键（flags.js，默认开）：退货页 returnGoodsName / 素材页 materialGoodsName。
+ *   分开是刻意的：两页场景不同（一个配置退货策略、一个挑素材绑商品），
+ *   共用一个键会出现「关掉退货页，素材页跟着没了」的困惑。
+ *   关掉即时生效：摘观察器 + 移除已注入按钮 + 还原全部内联属性，页面回原样。
  * ============================================================
  */
 (function dycReturnGoodsName() {
@@ -86,16 +98,61 @@
 
   /* ---------- 常量 ---------- */
 
-  /* 作用页判据与 flags.js 的 returnPolicy 键同口径（模块级自检，防注入到别的页） */
-  var PAGE_RE = /^https:\/\/fxg\.jinritemai\.com\/ffa\/morder\/logistics\//;
+  /* 作用页判据与 flags.js 的 returnPolicy / material 键同口径（模块级自检，防注入到别的页）。
+   *
+   * ★ 2026-11-17 扩到第二页（用户原话「完整名称和复制货号把这两功能兼容到这里」，
+   *   指的是抖店「素材管理」页 /ffa/creative/material-manage-menu）。
+   *   两页的共同形态是「商品卡片：缩略图 + 名称（被压成一行）+ 一行商品 ID」，
+   *   所以判据一套通用，只有三处按页分派：
+   *     ① 开关键：退货页 returnGoodsName / 素材页 materialGoodsName；
+   *     ② 按钮锚点：素材页的名称与 ID 行是**兄弟容器**（name / productIdWrapper），
+   *        按钮要挂在它们共同的那层（detail）里、紧跟 ID 行，见 anchorHostOf()；
+   *     ③ 诊断里的来源名。
+   */
+  var PAGES = {
+    returnPolicy: /^https:\/\/fxg\.jinritemai\.com\/ffa\/morder\/logistics\//,
+    material: /^https:\/\/(?:[a-z0-9-]+\.)*jinritemai\.com\/ffa\/creative\//
+  };
+  var PAGE_FLAG = { returnPolicy: 'returnGoodsName', material: 'materialGoodsName' };
+  var PAGE_LABEL = { returnPolicy: '退货地址商品名', material: '素材页商品名' };
+
+  /** 当前命中哪一页；不在作用页返回 '' */
+  function pageKey() {
+    var href = '';
+    try { href = String(location.href || ''); } catch (e) { return ''; }
+    for (var k in PAGES) {
+      if (PAGES[k] && PAGES[k].test(href)) return k;
+    }
+    return '';
+  }
+
+  /** 当前页对应的开关键（不在作用页时给退货页的，仅供默认值兜底） */
+  function flagKeyNow() {
+    return PAGE_FLAG[pageKey()] || PAGE_FLAG.returnPolicy;
+  }
 
   var MARK = 'data-dyc-rgname';          // 名称元素上的「我处理过」标记
+  /* 解开 / 钳制的**常驻规则标记**（2026-11-17 真机）
+   *
+   * 为什么不再写内联样式：内联会被平台重渲染洗掉，于是「我们解开 → 平台洗回 →
+   * 我们解开」循环 —— 诊断轨迹里就是 `u10 → u0 → u10` 交替，用户看到的是
+   * 名称高度在 1 行与 3 行之间反复跳、货号按钮跟着上下抖。
+   * 改成属性标记后，实际样式由注入的 <style> 常驻提供（带 !important）：
+   * 平台洗内联对我们毫无影响，只要属性还在就一直完整显示。
+   * 属性若也被洗掉，下一轮重新打上即可（一次 setAttribute，不重排多个属性）。 */
+  var OPEN_ATTR = 'data-dyc-rgopen';
+  var CAP_ATTR = 'data-dyc-rgcap';
+
   var BTN_ATTR = 'data-dyc-rg-btn';      // 我们注入的按钮（读页面文本时整棵跳过）
   var BTN_CLASS = 'dyc-rg-btn';
   var STYLE_ID = 'dyc-rg-style';
 
   /* 名称最多显示几行：与 shop-list-name.js 同一口径（两行优先、三行兜底） */
   var MAX_LINES = 3;
+
+  /* 同一个名称最多重写几次样式。超过就停手 —— 防止与平台重渲染打摆（会抖）。
+   * 正常情况写完一轮后 truncReason 就返回空，永远用不到这个上限。 */
+  var REDO_LIMIT = 3;
 
   /* 首屏三次补涂：表单页是 React 分批挂载，商品卡常晚于首帧 */
   var BOOT_DELAYS = [1200, 3000, 6000];
@@ -155,7 +212,7 @@
   }
 
   function inScope() {
-    try { return PAGE_RE.test(String(location.href || '')); } catch (e) { return false; }
+    return !!pageKey();
   }
 
   /** 扩展自己注入的节点（注入的按钮、标记过的名称）—— 一律不算页面数据 */
@@ -202,19 +259,48 @@
    */
   function truncReason(el) {
     if (!el || !el.getBoundingClientRect) return '';
+    /* 已经按 MAX_LINES 钳过的元素不必再判：它天生 scrollHeight > clientHeight
+     * （第 N+1 行还藏在下面），再判一次就会每轮重写样式（见 capLines 的说明）。 */
+    if (el.__dycRgCapped) return '';
+    /* ★ 2026-11-17：已打「解开」标记 ⇒ 样式由常驻 CSS 规则提供，直接跳过。
+     *   不加这条的话，平台每次洗掉内联后我们又判一次「被裁」→ 再解一遍，
+     *   诊断里就是 u10 → u0 → u10 的死循环，用户看到名称高度来回跳。 */
+    try {
+      if (el.getAttribute && el.getAttribute(OPEN_ATTR)) return '';
+    } catch (e0) { /* 读不到属性就按原判据走 */ }
     var cs = null;
     try { cs = window.getComputedStyle ? window.getComputedStyle(el) : null; } catch (e) { return ''; }
     if (!cs) return '';
-    /* ① 行数钳制：本页商品名就是这种（line-clamp:1） */
+    /* ① 行数钳制：本页商品名就是这种（line-clamp:1）
+     *
+     * ★ 2026-11-17 真机（素材管理页）：「文字显示不完全」的根因就在这一行。
+     *   该内核上 `cs.webkitLineClamp` 与 `cs['-webkit-line-clamp']` **都取不到**
+     *   （返回 undefined），只有 getPropertyValue 这条路能读到 "1"。
+     *   旧写法于是永远判不出 clamp ⇒ truncReason 返回空 ⇒ applyUnclip 从没被调用
+     *   ⇒ 名称一直是一行。诊断报告里那行「184×16 · 文本高 48/可见高 16 ·
+     *   line-clamp:1」正是「平台在裁、我们没解」的现场。
+     *   三条路依次走，谁先读到用谁（getPropertyValue 是标准写法，最可靠）。 */
     var lc = cs.webkitLineClamp || cs['-webkit-line-clamp'] || '';
+    if (!lc && typeof cs.getPropertyValue === 'function') {
+      try { lc = cs.getPropertyValue('-webkit-line-clamp') || ''; } catch (e) { lc = ''; }
+    }
     var n = parseInt(lc, 10);
     if (lc && lc !== 'none' && !isNaN(n) && n > 0) return 'clamp';
     /* ② 单行省略号：必须真溢出才算，否则会把正常文本也改一遍 */
     var ws = cs.whiteSpace || '';
     var ell = cs.textOverflow || '';
     if ((ws === 'nowrap' || ell === 'ellipsis') && el.scrollWidth > el.clientWidth + 1) return 'nowrap';
-    /* ③ 定高剪裁 */
-    if (cs.overflow === 'hidden' && el.scrollHeight > el.clientHeight + 1) return 'height';
+    /* ③ 定高剪裁
+     *
+     * ★ 同时修的第二处：旧写法只认 `cs.overflow === 'hidden'`，而素材页平台写的是
+     *   `overflow-y: hidden`（overflow-x 被 CSS 归一化成 auto）⇒ 计算值是
+     *   'auto hidden'，永远不等于 'hidden' ⇒ 判不出来。
+     *   改成**硬判据**：只要真的有内容被切（scrollHeight > clientHeight）就解 ——
+     *   比猜平台用了哪种写法可靠，也不会误伤（没被切就不会进这条）。
+     *   例外：真滚动容器（overflow-y: auto/scroll）不碰，那是能滚的，不该拆。 */
+    var oy = cs.overflowY || '';
+    if (oy === 'auto' || oy === 'scroll') return '';
+    if (el.scrollHeight > el.clientHeight + 1) return 'height';
     return '';
   }
 
@@ -391,9 +477,32 @@
     } catch (e) { return null; }
   }
 
-  function eachDeep(cb) {
+  /**
+   * 优先只在「卡片容器」子树里找，而不是全页找。
+   *
+   * ★ 2026-11-17（素材页抖动）：这一页近 4000 个元素，原来每次 DOM 变化都全页
+   *   重采一轮（RECOLLECT_GAP=900ms）。老内核上滚动就是一顿一顿的 —— 用户口中
+   *   的「抖动」有一部分来自这里。
+   *   素材页每张卡都带 `productItem` 前缀（CSS Modules 的构建哈希在尾部，
+   *   前缀是组件语义名，平台改版通常只换哈希），收窄到这几十个节点后量级降一个
+   *   数量级。认不出来（少于 3 个）就退回全页 —— 宁可慢，也不漏。
+   *   只对素材页这么做：退货页的主表单区本来就不大，且没有这个命名约定。
+   */
+  function scopeRoots() {
+    if (pageKey() !== 'material') return null;
+    var hits = [];
+    try {
+      var list = document.querySelectorAll('[class*="productItem"]');
+      for (var i = 0; i < list.length; i++) hits.push(list[i]);
+    } catch (e) { return null; }
+    /* 门槛取 2：列表只有一两条时也要收窄（真实页面常见筛选后只剩几条）；
+     * 只有 1 个时可能是别处撞名的组件，退回全页更稳。 */
+    return hits.length >= 2 ? hits : null;
+  }
+
+  function eachDeep(cb, roots) {
     var budget = LEAF_BUDGET * 4;
-    (function walk(node, depth) {
+    var walk = function (node, depth) {
       if (!node || budget <= 0) return;
       var kids = node.children;
       if (!kids) return;
@@ -409,13 +518,19 @@
         }
         walk(el, depth);
       }
-    })(document.body, 0);
+    };
+    /* 有收窄根就只走这些子树；否则退全页（原行为） */
+    if (roots && roots.length) {
+      for (var r = 0; r < roots.length && budget > 0; r++) walk(roots[r], 0);
+    } else {
+      walk(document.body, 0);
+    }
   }
 
   function collect() {
     var picked = [];       // [{card, el, len}]
     var loose = 0;         // 像名称但不在卡里的叶子数（诊断用：说明判据卡在哪一层）
-    eachDeep(function (el) {
+    function pick(el) {
       if (!isTextHolder(el)) return;               // 纯文本叶子，或「文字 + 行内 span」
       var t = textOf(el);
       if (!looksLikeName(t)) return;
@@ -431,7 +546,12 @@
         picked[at].el = el;
         picked[at].len = t.length;
       }
-    });
+    }
+    var roots = scopeRoots();
+    eachDeep(pick, roots);
+    /* 收窄后一个都没认出来（连「像名称但不在卡里」的候选都没有）⇒ 前缀可能变了，
+     * 退回全页再找一轮。只在收窄场景发生，且当轮只多扫一次。 */
+    if (roots && !picked.length && !loose) eachDeep(pick, null);
     if (!picked.length && loose) {
       noteFact('识别不到商品卡（候选 ' + loose + ' 个），本轮不处理', '0/' + loose);
     }
@@ -463,19 +583,29 @@
     if (touched.indexOf(el) < 0) touched.push(el);
   }
 
-  /** 还原一个元素上我们写过的全部内联属性 */
+  /** 还原一个元素上我们写过的内联属性 + 打过的标记属性 */
   function restoreOne(el) {
-    if (!el || !el.__dycRgOrig) return;
-    var bak = el.__dycRgOrig;
-    for (var prop in bak) {
-      if (!Object.prototype.hasOwnProperty.call(bak, prop)) continue;
-      try {
-        if (bak[prop].v) el.style.setProperty(prop, bak[prop].v, bak[prop].p || '');
-        else el.style.removeProperty(prop);
-      } catch (e) { /* 忽略单条失败 */ }
+    if (!el) return;
+    if (el.__dycRgOrig) {
+      var bak = el.__dycRgOrig;
+      for (var prop in bak) {
+        if (!Object.prototype.hasOwnProperty.call(bak, prop)) continue;
+        try {
+          if (bak[prop].v) el.style.setProperty(prop, bak[prop].v, bak[prop].p || '');
+          else el.style.removeProperty(prop);
+        } catch (e) { /* 忽略单条失败 */ }
+      }
+      el.__dycRgOrig = null;
     }
-    el.__dycRgOrig = null;
-    try { el.removeAttribute(MARK); } catch (e2) { /* 忽略 */ }
+    /* 2026-11-17：解截断改成属性方案后，名称元素上没有内联可还原，
+     * 但属性必须摘掉 —— 否则关掉开关时 CSS 规则还在，页面回不到原样。 */
+    try {
+      el.removeAttribute(MARK);
+      el.removeAttribute(OPEN_ATTR);
+      el.removeAttribute(CAP_ATTR);
+    } catch (e2) { /* 忽略 */ }
+    el.__dycRgCapped = false;
+    el.__dycRgWrites = 0;
   }
 
   function restoreAll() {
@@ -509,62 +639,37 @@
     return Math.round(h / lh);
   }
 
-  /** 超过 MAX_LINES 才钳（带省略号）；两行 / 三行装得下就一个字不藏 */
+  /** 超过 MAX_LINES 才钳（带省略号）；两行 / 三行装得下就一个字不藏。
+   *  2026-11-17：改为**摘掉 OPEN_ATTR、打上 CAP_ATTR**，样式由常驻规则提供。 */
   function capLines(el) {
     var lines = naturalLines(el);
     if (!lines || lines <= MAX_LINES) return false;
-    setProp(el, 'display', '-webkit-box');
-    setProp(el, '-webkit-box-orient', 'vertical');
-    setProp(el, '-webkit-line-clamp', String(MAX_LINES));
-    setProp(el, 'overflow', 'hidden');
-    setProp(el, 'text-overflow', 'ellipsis');
     try {
-      var cs = window.getComputedStyle ? window.getComputedStyle(el) : null;
-      var lh = cs ? parseFloat(cs.lineHeight) : NaN;
-      if (!isFinite(lh) || lh <= 0) lh = (cs ? parseFloat(cs.fontSize) : 14) * 1.43;
-      if (lh > 0) setProp(el, 'max-height', (Math.ceil(lh * MAX_LINES) + 1) + 'px');
-    } catch (e) { /* 量不到行高就只靠 line-clamp */ }
+      el.removeAttribute(OPEN_ATTR);
+      el.setAttribute(CAP_ATTR, '1');
+    } catch (e) { /* 忽略 */ }
+    /* 钳过的元素天生 scrollHeight > clientHeight（第 N+1 行藏在下面），
+     * 打内部标记避免每轮重判 —— 内存标记，平台换节点即失效。 */
+    el.__dycRgCapped = true;
     return true;
   }
 
   /**
-   * 按截断原因展开一个名称元素（属性集合与 shop-list-name.js 同源）。
-   * @return {boolean} true = 这次真的写了
+   * 展开一个被截断的名称：**只打属性**，具体样式见 CSS 里的 OPEN_ATTR 规则。
+   * @return {boolean} true = 这次真的处理了
    */
   function applyUnclip(el, reason) {
     if (!el) return false;
-    if (reason === 'clamp') {
-      setProp(el, 'display', 'block');
-      setProp(el, '-webkit-line-clamp', 'none');
-      setProp(el, '-webkit-box-orient', 'horizontal');
-      setProp(el, 'overflow', 'visible');
-    } else if (reason === 'nowrap') {
-      setProp(el, 'white-space', 'normal');
-      setProp(el, 'text-overflow', 'clip');
-      setProp(el, 'overflow', 'visible');
-    } else if (reason === 'height') {
-      setProp(el, 'max-height', 'none');
-      setProp(el, 'height', 'auto');
-      setProp(el, 'overflow', 'visible');
-    } else {
-      return false;
-    }
-    /* 款号整体参与折行，长串放不下才允许内部折断 */
-    setProp(el, 'word-break', 'normal');
-    setProp(el, 'overflow-wrap', 'break-word');
-    /* 折成两行以上才补留白（单行保持平台原样） */
+    if (reason !== 'clamp' && reason !== 'nowrap' && reason !== 'height') return false;
     try {
-      var cs = window.getComputedStyle ? window.getComputedStyle(el) : null;
-      var fs = cs ? parseFloat(cs.fontSize) || 14 : 14;
-      var lh = cs ? parseFloat(cs.lineHeight) : NaN;
-      if (!isFinite(lh) || lh <= 0) lh = fs * 1.43;
-      if (el.scrollHeight > lh * 1.6) {
-        setProp(el, 'line-height', '1.55');
-        setProp(el, 'padding-bottom', '2px');
-      }
-    } catch (e) { /* 量不到就按单行处理 */ }
-    try { el.setAttribute(MARK, '1'); } catch (e2) { /* 忽略 */ }
+      el.setAttribute(OPEN_ATTR, '1');
+      el.removeAttribute(CAP_ATTR);
+      el.setAttribute(MARK, '1');
+    } catch (e) { return false; }
+    /* 记进 touched：关开关时要靠它把属性摘掉（名称元素上没有内联可还原） */
+    if (touched.indexOf(el) < 0) touched.push(el);
     if (!appliedAt) appliedAt = Date.now();
+    /* 规则生效后再量自然行数：超过 MAX_LINES 的钳回三行（换成 CAP_ATTR） */
     capLines(el);
     return true;
   }
@@ -614,6 +719,32 @@
    * 56×20 固定宽、蓝描边白底、hover 蓝底白字、默认半透明；只把左侧间距
    * 从 6px 保留（跟在小黄车「复制 ID」右边时就是这个间距）。 */
   var CSS = [
+    /* ---------- 名称完整显示（常驻规则 · 2026-11-17）----------
+     *
+     * 选择器不加 html/body 前缀：这段样式还要注入到 shadowRoot 里，
+     * 而 shadow 树里没有 html/body，加前缀就永远匹配不到。
+     * 靠 !important 压过平台的类规则（内联样式我们不写，所以没有优先级问题）。
+     */
+    '[' + OPEN_ATTR + '] {',
+    '  display: block !important;',
+    '  -webkit-line-clamp: none !important;',
+    '  -webkit-box-orient: horizontal !important;',
+    '  overflow: visible !important;',
+    '  max-height: none !important;',
+    '  height: auto !important;',
+    '  text-overflow: clip !important;',
+    '  white-space: normal !important;',
+    '  word-break: normal !important;',
+    '  overflow-wrap: break-word !important;',
+    '}',
+    /* 超过 MAX_LINES 的名称钳回三行（与商品列表同一口径） */
+    '[' + CAP_ATTR + '] {',
+    '  display: -webkit-box !important;',
+    '  -webkit-box-orient: vertical !important;',
+    '  -webkit-line-clamp: ' + MAX_LINES + ' !important;',
+    '  overflow: hidden !important;',
+    '  text-overflow: ellipsis !important;',
+    '}',
     '.' + BTN_CLASS + ' {',
     '  all: initial;',
     '  display: inline-flex; align-items: center; justify-content: center;',
@@ -630,7 +761,19 @@
     '}',
     '.' + BTN_CLASS + ':hover { opacity: 1; background: #0075ff; color: #fff; }',
     '.' + BTN_CLASS + '.is-err { border-color: #86909c; color: #86909c; background: #fff; }',
-    '.' + BTN_CLASS + '.is-err:hover { background: #86909c; color: #fff; }'
+    '.' + BTN_CLASS + '.is-err:hover { background: #86909c; color: #fff; }',
+    /* 素材页：贴名称右下角（用户 2026-11-17 原话「放在名称右下角，
+     * 尽量不要在 ID 行下面，不好看」）。
+     *
+     * ★ 2026-11-17 第二版改成**绝对定位**：上一版用「块级 + margin-left:auto」，
+     *   真机诊断里按钮 rect 在 x=448（卡片左半边）—— 说明名称容器不是普通 block
+     *   （极可能是 -webkit-box / flex），margin-left:auto 在里面不生效。
+     *   绝对定位与 display 无关，靠 right/bottom 定位，任何容器都成立。
+     *   定位上下文由 ensureCornerHost() 只给 position:relative（不加 padding，
+     *   那会把平台定死的高度里的内容区压小）。 */
+    '.' + BTN_CLASS + '--corner {',
+    '  position: absolute; right: 0; bottom: 0; margin: 0;',
+    '}'
   ].join('\n');
 
   /**
@@ -715,7 +858,7 @@
   function noteFact(text, result) {
     try {
       if (window.__dycDiag && typeof window.__dycDiag.note === 'function') {
-        window.__dycDiag.note('退货地址商品名', text, result);
+        window.__dycDiag.note(PAGE_LABEL[pageKey()] || PAGE_LABEL.returnPolicy, text, result);
       }
     } catch (e) { /* 诊断失败不许影响功能 */ }
   }
@@ -726,7 +869,7 @@
     ensureStyleFor(item && item.el);
     var btn = doc.createElement('button');
     btn.type = 'button';
-    btn.className = BTN_CLASS;
+    btn.className = BTN_CLASS + (pageKey() === 'material' ? ' ' + BTN_CLASS + '--corner' : '');
     btn.textContent = '货号';
     btn.setAttribute(BTN_ATTR, '1');
     btn.title = '点击复制货号 · 优先用平台货号；平台没显示时取商品名末尾的款号';
@@ -800,12 +943,102 @@
    *   ⇒ 判据升级为**按卡查重**：卡的整棵子树里已经有我们的按钮就复用，
    *     并把它挪到当前该在的位置（幂等 + 自愈，不做重复插入）。
    */
+  /**
+   * 素材页：让名称容器成为按钮的定位上下文。
+   *
+   * ★ 只写 `position:relative`，**绝不写 padding** —— 这一页名称容器的高度是
+   *   平台定死的，多给 padding 会把内容区压小、刚解开的名称又会少一行
+   *   （2026-11-17 第一版就这么回退的）。真实位置检查见诊断里按钮 rect 的 x：
+   *   上一版用 margin-left:auto 时是 448（卡片左半边），说明容器不是普通 block。
+   */
+  function ensureCornerHost(host) {
+    if (!host || host.nodeType !== 1) return;
+    try {
+      if (host.style && host.style.getPropertyValue('position') === 'relative') return;
+    } catch (e) { /* 读不到就照写 */ }
+    var cs = null;
+    try { cs = window.getComputedStyle ? window.getComputedStyle(host) : null; } catch (e2) { cs = null; }
+    var pos = cs ? String(cs.position || '') : '';
+    if (pos === 'relative' || pos === 'absolute' || pos === 'fixed') return;
+    setProp(host, 'position', 'relative');
+  }
+
+  /**
+   * 就地补一个「刚被平台渲染出来」的节点（不等下一轮扫描）。
+   *
+   * ★ 2026-11-17 真机：这一页的商品卡列表约 1.3 秒重渲染一次，每次把节点换成新的 ——
+   *   新节点上没有我们的标记属性，按钮也被删掉。原来靠防抖（400ms，后来 60ms）
+   *   去补，中间那段空窗就是用户看到的「闪」。
+   *   这里在 MutationObserver 回调里**同步**补，肉眼几乎看不到空窗。
+   *
+   * 判据与 collect() 完全一致（同一套 looksLikeName / cardOf），
+   * 所以补出来的结果和正常扫描没有区别；每张卡仍然只有一枚按钮（ensureButton 幂等）。
+   */
+  function patchFresh(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (isOurNode(el)) return false;
+    if (!isTextHolder(el)) return false;
+    var t = textOf(el);
+    if (!looksLikeName(t)) return false;
+    if (inSelectContext(el)) return false;
+    var card = cardOf(el);
+    if (!card) return false;
+    var reason = truncReason(el);
+    if (reason) applyUnclip(el, reason);
+    ensureButton({ el: el, card: card });
+    return true;
+  }
+
+  /** 对新增子树做就地补。@param {number} budget 本次还能检查多少个节点（共享预算） */
+  function patchTree(node, budget) {
+    var left = (typeof budget === 'number') ? budget : 200;
+    if (!node || node.nodeType !== 1 || left <= 0) return left;
+    try { patchFresh(node); } catch (e0) { /* 单个节点失败不影响其它 */ }
+    left--;
+    var kids = null;
+    try { kids = node.querySelectorAll ? node.querySelectorAll('*') : null; } catch (e1) { kids = null; }
+    if (!kids) return left;
+    var cap = kids.length > left ? left : kids.length;
+    for (var i = 0; i < cap && left > 0; i++) {
+      try { patchFresh(kids[i]); } catch (e2) { /* 忽略 */ }
+      left--;
+    }
+    return left;
+  }
+
   function ensureButton(item) {
     var el = item.el;
+    if (!el || el.nodeType !== 1) return false;
+    var material = (pageKey() === 'material');
+
+    /* 落点按页面分派：
+     *  · 退货页：贴在卡内那行「ID:…」之后（用户 2026-11-12 定）；
+     *  · 素材页：名称容器内部、绝对定位到右下角（见 ensureCornerHost）。
+     * 两者 host 与锚点不同，所以先分流再走同一套幂等逻辑。 */
     var host = el.parentElement;
     if (!host || host.nodeType !== 1) return false;
+    var anchorEl = null;
 
-    var anchorEl = idLineIn(host, el) || el;
+    if (material) ensureCornerHost(host);
+
+    if (!material) {
+      /* 锚点：优先卡内那行「ID:…」。
+       *
+       * ★ 2026-11-17：名称与 ID 行不是同一个父容器的兄弟，而是**各套一层**
+       *   （name > div / productIdWrapper > idStyle > div），共同父层是 detail。
+       *   只在名称容器里找 ID 行会找不到，按钮就挤进名称容器内部、
+       *   把刚解开的三行名称又挤回一行。找不到时再往上一层找一次。
+       *   退货页名称容器里本来就有 ID 行，这段是空操作。 */
+      anchorEl = idLineIn(host, el);
+      if (!anchorEl) {
+        var up = host.parentElement;
+        if (up && up.nodeType === 1) {
+          var upLine = idLineIn(up, host);
+          if (upLine) { host = up; anchorEl = upLine; }
+        }
+      }
+      if (!anchorEl) anchorEl = el;
+    }
 
     /* ① 卡内已有按钮 ⇒ 复用（可能挂在别的兄弟下面），落点不对就挪一次 */
     var exist = null;
@@ -814,25 +1047,41 @@
     }
     if (!exist && host.__dycRgBtn && host.__dycRgBtn.isConnected) exist = host.__dycRgBtn;
     if (exist && exist.isConnected) {
+      /* 类名可能在 SPA 切页时留着上一页的样式，校正一次 */
+      var hasCorner = String(exist.className || '').indexOf('--corner') >= 0;
+      if (material && !hasCorner) exist.className = BTN_CLASS + ' ' + BTN_CLASS + '--corner';
+      if (!material && hasCorner) exist.className = BTN_CLASS;
+
       exist.__dycItem = item;
       item.btn = exist;
-      if (exist.parentElement !== host || exist.previousSibling !== anchorEl) {
-        try { host.insertBefore(exist, anchorEl.nextSibling); } catch (e2) { /* 挪不动就留在原地 */ }
+      if (exist.parentElement !== host) {
+        try {
+          if (material) host.appendChild(exist);
+          else host.insertBefore(exist, anchorEl.nextSibling);
+        } catch (e2) { /* 挪不动就留在原地 */ }
+      } else if (material) {
+        /* 已在名称容器里：保证是最后一个子节点（绝对定位不依赖顺序，但结构稳定好排查） */
+        if (exist !== host.lastElementChild) {
+          try { host.appendChild(exist); } catch (e5) { /* 忽略 */ }
+        }
+      } else if (exist.previousSibling !== anchorEl) {
+        try { host.insertBefore(exist, anchorEl.nextSibling); } catch (e6) { /* 忽略 */ }
       }
       host.__dycRgBtn = exist;
       return true;
     }
 
-    /* ② 卡内没有 ⇒ 插一枚，位置贴在锚（ID 行）之后 */
+    /* ② 卡内没有 ⇒ 插一枚 */
     var btn = makeButton(item);
     btn.__dycItem = item;
     try {
-      host.insertBefore(btn, anchorEl.nextSibling);
+      if (material) host.appendChild(btn);
+      else host.insertBefore(btn, anchorEl.nextSibling);
     } catch (e3) {
       try { host.appendChild(btn); } catch (e4) { return false; }
     }
     host.__dycRgBtn = btn;
-    ensureWrap(host);
+    if (!material) ensureWrap(host);
     item.btn = btn;
     return true;
   }
@@ -850,6 +1099,15 @@
   function scan() {
     if (!on) return 0;
     if (!inScope()) { stopAll(); return 0; }
+    /* SPA 从一页切到另一页时（两页的开关是两个键），按新页的键重算一次。
+     * 交给 setOn 走正常起停，这里直接返回，避免一边收尾一边处理。 */
+    if (lastFlags) {
+      var want = wantNow();
+      if (want !== on) {
+        setOn(want);
+        return 0;
+      }
+    }
     /* 什么时候重采候选：
      *   · 缓存里的节点被平台整段换掉了（alive 为假）；**或**
      *   · 有新增节点（dirty）—— 抽屉打开时新内容就是这么进来的。
@@ -869,20 +1127,44 @@
     }
 
     var n = 0;
+    var unclipped = 0;     // 本轮真的解开了几个名称（0 = 判据没命中；非 0 但页面没变 = 写了被洗）
+    var stopped = 0;       // 本轮因重写上限跳过几个
     for (var i = 0; i < cache.length; i++) {
       var it = cache[i];
       if (!it.el.isConnected) continue;
       var reason = truncReason(it.el);
-      if (reason) applyUnclip(it.el, reason);
+      if (reason) {
+        /* ★ 2026-11-17：给「我们解开 → 平台压回」这种打摆加个上限。
+         *   平台若把内联样式洗掉、节点又留着，就会一轮一轮地重新解开 ⇒ 每次
+         *   都触发布局变化 ⇒ 用户看到的是整块画面抖。写满 REDO_LIMIT 次就停手
+         *   并留痕：最坏结果是这一条显示不全（看得见、能反馈），
+         *   而不是一直抖（看不见原因、也没法用）。 */
+        var writes = it.el.__dycRgWrites || 0;
+        if (writes >= REDO_LIMIT) {
+          stopped++;
+          if (!it.warned) {
+            it.warned = true;
+            noteFact('同一名称被压回 ' + writes + ' 次，已停手（否则会一直抖）', 'skip');
+          }
+        } else {
+          it.el.__dycRgWrites = writes + 1;
+          applyUnclip(it.el, reason);
+          unclipped++;
+        }
+      }
       if (ensureButton(it)) n++;
     }
     /* 数字变化才写诊断。**0 也会写一条** —— 「本页识别 0 个商品名」
      * 正是排查「开关开了没变化」时最需要的那句话：
-     * 有这句 = 脚本进来了但判据没认出来；连这句都没有 = 脚本没注入。 */
-    var sig = cache.length + '/' + n;
+     * 有这句 = 脚本进来了但判据没认出来；连这句都没有 = 脚本没注入。
+     * 2026-11-17 又补了「本轮解开 N 个」：用户在界面上看不到变化时，
+     * 这一个数字就能把「判据没命中（0）」和「写了但被平台洗回（非 0）」分开。 */
+    var sig = cache.length + '/' + n + '/u' + unclipped;
     if (sig !== lastStat) {
       lastStat = sig;
-      noteFact('本页识别 ' + cache.length + ' 个商品名 / 注入 ' + n + ' 个货号按钮', sig);
+      noteFact('本页识别 ' + cache.length + ' 个商品名 / 注入 ' + n + ' 个货号按钮'
+        + ' / 本轮解开 ' + unclipped + ' 个名称'
+        + (stopped ? ' / 停手 ' + stopped + ' 个' : ''), sig);
     }
     return n;
   }
@@ -933,11 +1215,26 @@
     scan();
     if (typeof MutationObserver === 'function' && document.body) {
       observer = new MutationObserver(function (muts) {
-        /* 只认「新增了节点」，纯属性变化不值得重扫（平台动画/高亮会刷属性） */
+        /* 只认「新增了节点」，纯属性变化不值得重扫（平台动画/高亮会刷属性）。
+         *
+         * ★ 2026-11-17 关键改动：新节点**就地补**，不再等任何定时器。
+         *   这一页的商品卡约 1.3 秒整段重渲染一次，新节点上没有标记属性、
+         *   按钮也被删掉 —— 原来靠防抖去补，中间那段空窗就是用户看到的「闪」。
+         *   就地补发生在同一个微任务里，肉眼看不到空窗。
+         *   预算 600 个节点/次：整表重建时也不会把主线程占住。 */
+        var budget = 600;
+        var addedAny = false;
         for (var i = 0; i < muts.length; i++) {
-          if (muts[i].addedNodes && muts[i].addedNodes.length) { dirty = true; break; }
+          var added = muts[i].addedNodes;
+          if (!added || !added.length) continue;
+          dirty = true;
+          addedAny = true;
+          for (var j = 0; j < added.length && budget > 0; j++) {
+            try { budget = patchTree(added[j], budget); } catch (e) { /* 忽略 */ }
+          }
         }
-        scheduleScan();
+        /* 常规复核兜底（幂等：不会重复插按钮，也不会重复打标记） */
+        if (addedAny) scheduleScan();
       });
       try {
         observer.observe(document.body, { childList: true, subtree: true });
@@ -960,10 +1257,19 @@
   /* ---------- 开关联动 ---------- */
 
   var prevOn = null;
+  var lastFlags = null;      // 最近一次开关对象：SPA 换到另一作用页时要按新页的键重算
+
+  /** 按「当前页面」取该页的开关值（两页各有一个键，互不牵连） */
+  function wantNow() {
+    if (!lastFlags) return null;      // 还没读到，别拿猜的值去开关功能
+    return !!(lastFlags[flagKeyNow()] !== false);
+  }
+
   function wire() {
     try {
       dycReadFlags().then(function (flags) {
-        var want = !!(flags && flags.returnGoodsName !== false);
+        lastFlags = flags;
+        var want = wantNow();
         prevOn = want;
         setOn(want);
       });
@@ -972,9 +1278,11 @@
     if (typeof dycWatchFlags === 'function') {
       try {
         dycWatchFlags(function (flags) {
-          var want = !!(flags && flags.returnGoodsName !== false);
+          lastFlags = flags;
+          var want = wantNow();
           if (prevOn !== null && want !== prevOn && typeof toast === 'function') {
-            toast(want ? '已开启' : '已关闭', 'info', { source: '退货地址商品名' });
+            toast(want ? '已开启' : '已关闭', 'info',
+              { source: PAGE_LABEL[pageKey()] || PAGE_LABEL.returnPolicy });
           }
           prevOn = want;
           setOn(want);

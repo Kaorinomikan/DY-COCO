@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "可可助手",
-  "version": "26.11.17.1",
+  "version": "26.11.18.1",
   "description": "抖音抖店、微信小店、中控台小助手",
   "permissions": [
     "storage",
@@ -21,6 +21,8 @@
     "https://liveservice.douyin.com/*",
     "https://store.weixin.qq.com/*",
     "https://channels.weixin.qq.com/*",
+    "https://pgy.xiaohongshu.com/*",
+    "https://ark.xiaohongshu.com/*",
     "https://gitee.com/*",
     "https://raw.giteeusercontent.com/*",
     "https://api.github.com/*",
@@ -172,7 +174,8 @@
         "https://*.jinritemai.com/ffa/merchant/*",
         "https://*.jinritemai.com/dashboard/shopwindow/*",
         "https://*.jinritemai.com/ffa/g/create*",
-        "https://*.jinritemai.com/ffa/morder/logistics/*"
+        "https://*.jinritemai.com/ffa/morder/logistics/*",
+        "https://*.jinritemai.com/ffa/creative/*"
       ],
       "js": [
         "src/content/flags.js",
@@ -352,6 +355,31 @@
     },
     {
       "matches": [
+        "https://pgy.xiaohongshu.com/*",
+        "https://ark.xiaohongshu.com/*"
+      ],
+      "js": [
+        "src/content/flags.js",
+        "src/content/diag.js",
+        "src/content/anchor.js",
+        "src/content/dialog.js",
+        "src/content/cursor-fix.js",
+        "src/content/item-code.js",
+        "src/live/xhs-name-wrap.js",
+        "src/live/xhs-ark-name-wrap.js",
+        "src/live/xhs-copy-code.js",
+        "src/live/xhs-scroll.js",
+        "src/live/xhs-locate.js",
+        "src/content/debug-panel.js"
+      ],
+      "css": [
+        "src/content/style.css",
+        "src/content/msgbox.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
         "https://fxg.jinritemai.com/*"
       ],
       "js": [
@@ -393,9 +421,31 @@
     },
     {
       "matches": [
+        "https://*.jinritemai.com/ffa/creative/*"
+      ],
+      "js": [
+        "src/content/flags.js",
+        "src/content/diag.js",
+        "src/content/anchor.js",
+        "src/content/dialog.js",
+        "src/content/item-code.js",
+        "src/content/return-goods-name.js",
+        "src/live/hide-elements.js",
+        "src/content/debug-panel.js"
+      ],
+      "css": [
+        "src/content/style.css",
+        "src/content/msgbox.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
         "https://*.jinritemai.com/*",
+        "https://*.jinritemai.com/ffa/creative/*",
         "https://*.jinritemai.com/ffa/g/create*",
         "https://anchor.douyin.com/*",
+        "https://ark.xiaohongshu.com/*",
         "https://buyin.jinritemai.com/dashboard/live/control*",
         "https://buyin.jinritemai.com/dashboard/shopwindow/*",
         "https://channels.weixin.qq.com/*",
@@ -411,11 +461,14 @@
         "https://fxg.jinritemai.com/ffa/merchant/*",
         "https://fxg.jinritemai.com/ffa/morder/logistics/*",
         "https://liveservice.douyin.com/*",
+        "https://pgy.xiaohongshu.com/*",
         "https://store.weixin.qq.com/*"
       ],
       "exclude_matches": [
+        "https://*.jinritemai.com/ffa/creative/*",
         "https://*.jinritemai.com/ffa/g/create*",
         "https://anchor.douyin.com/*",
+        "https://ark.xiaohongshu.com/*",
         "https://buyin.jinritemai.com/dashboard/live/control*",
         "https://buyin.jinritemai.com/dashboard/shopwindow/*",
         "https://channels.weixin.qq.com/*",
@@ -430,6 +483,7 @@
         "https://fxg.jinritemai.com/ffa/merchant/*",
         "https://fxg.jinritemai.com/ffa/morder/logistics/*",
         "https://liveservice.douyin.com/*",
+        "https://pgy.xiaohongshu.com/*",
         "https://store.weixin.qq.com/*"
       ],
       "js": [

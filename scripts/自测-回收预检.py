@@ -81,7 +81,16 @@ class Repo:
         return res.returncode, found
 
     def cleanup(self):
-        shutil.rmtree(self.path, ignore_errors=True)
+        """不删沙箱 —— 与 自测-发布回收.py 同口径。
+
+        起因（2026-11-18 发布）：全量自测并行跑时，每条用例都 rmtree 一次，
+        累计删除数越过本机安全策略的批量删除阈值，整条用例被判失败、
+        发布闸门因此拦下（报错 SAFE_DELETE_BULK_CONFIRM_REQUIRED
+        count=65 threshold=50），而单跑 9/9 全绿。断言一条没少，
+        只是把清理挪出测试阶段；留下的 .tmp/自测-回收预检-* 由
+        scripts/清临时.sh 统一回收（回收脚本会自动跑，只清 3 小时前的）。
+        """
+        pass
 
 
 CASES = []

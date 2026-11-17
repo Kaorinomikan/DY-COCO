@@ -1,5 +1,5 @@
 {
-  "version": "26.11.17.1",
+  "version": "26.11.18.1",
   "algorithm": "sha256",
   "files": [
     {
@@ -44,18 +44,18 @@
     },
     {
       "path": "manifest.json",
-      "size": 13789,
-      "sha256": "00ff86d91588cbfeea2ba5f9c4ef9484009dee8c121f728075b4a24f2ced5db1"
+      "size": 15388,
+      "sha256": "769b7d4279e52d04c9b44a9f56ca990d59025b54a36ccc5f823fc0cf6634d87d"
     },
     {
       "path": "src/background/service-worker.js",
-      "size": 91557,
-      "sha256": "6b9a3df034f03deaa9b82ef36b1b5ab6944494b900d05b3edbb17562ffcbf666"
+      "size": 91600,
+      "sha256": "6b591febbd19fe1cf4610d1626dd82bc8219b3ebb52d5ca06f379be6a6dbc679"
     },
     {
       "path": "src/content/anchor.js",
-      "size": 26585,
-      "sha256": "9d528bd6aeb309923d9009390bc671ccb3521a39894368406a92ba6219f0acc8"
+      "size": 26931,
+      "sha256": "4c4be9de6bdd1f87680a62d21100c95aa58d0723ae6b4aaeacf0dc3a64184ae0"
     },
     {
       "path": "src/content/campaign-channel-tick.js",
@@ -94,8 +94,8 @@
     },
     {
       "path": "src/content/cursor-fix.js",
-      "size": 49418,
-      "sha256": "9a74eff31ef6b92fe83f37c0919c8bcf99bcd9e1aa7d881eb4c583893f580487"
+      "size": 51059,
+      "sha256": "c7b244a5e62c25fbaeb8c547a6a27aa27b512ae405a470d1acaa9fe0fafb301f"
     },
     {
       "path": "src/content/debug-panel.js",
@@ -104,8 +104,8 @@
     },
     {
       "path": "src/content/diag.js",
-      "size": 65840,
-      "sha256": "fdd0c85b4b83882a735085f5fd382bf9fe2d4ca70e042af2aa7c3fa473c1fd53"
+      "size": 67138,
+      "sha256": "833f1b2113e52704ed7dc836e4aaf5aa85273b6d9b3d77c755e16405f62cacb0"
     },
     {
       "path": "src/content/dialog.js",
@@ -129,8 +129,8 @@
     },
     {
       "path": "src/content/flags.js",
-      "size": 96064,
-      "sha256": "7aa566b64dabb342f8d2983dd48810cb937aacee570bc946e58767cca4ef387b"
+      "size": 109448,
+      "sha256": "b92e3e6b414a0d266a5aa71c2cf1a8ad45396e4cf95d4a53aba8d29d687e349c"
     },
     {
       "path": "src/content/goods-batch-copy.js",
@@ -189,13 +189,13 @@
     },
     {
       "path": "src/content/page-probe.js",
-      "size": 31129,
-      "sha256": "4ac27678cc427f03d284e9277e116112b9c74b7550ea37ac64854adbd96ddee1"
+      "size": 36846,
+      "sha256": "71761e38ace95e9be1c4ed9593fd2c7fccb179f2489ebb6d37c485d1a60e6c4a"
     },
     {
       "path": "src/content/return-goods-name.js",
-      "size": 42266,
-      "sha256": "83392d698c40a7ca17ecd894cc9c52ffeb9363ea722215f65cdf9526d40b3e5c"
+      "size": 59148,
+      "sha256": "9b98f3411684b7c419447141fcfcf5fc9cc5a278d77c66003034b76abd229489"
     },
     {
       "path": "src/content/row-scan.js",
@@ -319,8 +319,8 @@
     },
     {
       "path": "src/live/hide-elements.js",
-      "size": 25371,
-      "sha256": "085fbfa37fa572e2ff42a748035ceda41abca3557a458e54f3f96ffd2e469c92"
+      "size": 32550,
+      "sha256": "8b15a296da7120e707b4bb91064533213a29c257bac0897fc54d9d4a91d2944f"
     },
     {
       "path": "src/live/live-agent.js",
@@ -393,6 +393,31 @@
       "sha256": "cb844761d27416705fdeb09c56f6f89c8c1f9ba5bf8e0076da3c79a1b6028ec8"
     },
     {
+      "path": "src/live/xhs-ark-name-wrap.js",
+      "size": 23760,
+      "sha256": "e2fb163e5e4c08443ede6a9bb615c5624e2424b0b7848eebd1e169df7e23baea"
+    },
+    {
+      "path": "src/live/xhs-copy-code.js",
+      "size": 40521,
+      "sha256": "2a0101af16a687720724c73d2232849db266552cb610d760ae7819822cb1ca33"
+    },
+    {
+      "path": "src/live/xhs-locate.js",
+      "size": 33280,
+      "sha256": "c74a85aae94ae8bcf01ca22ff9a51b2b3a658796068db36b072058168cf45677"
+    },
+    {
+      "path": "src/live/xhs-name-wrap.js",
+      "size": 9601,
+      "sha256": "6934f2769498f4badc2ad91269b6f4c4c12120926a73d74448b78289ea7516e1"
+    },
+    {
+      "path": "src/live/xhs-scroll.js",
+      "size": 25009,
+      "sha256": "791f207878444da0095767f699206508785fe30f6ef92367f8939807e895d0a5"
+    },
+    {
       "path": "src/offscreen/clipboard.js",
       "size": 3818,
       "sha256": "5aafc49009f85b01a8bd79fa8e4731892c98e1431962059a3d2df5d0fe7d4df2"
@@ -419,8 +444,8 @@
     },
     {
       "path": "src/popup/popup.js",
-      "size": 82065,
-      "sha256": "d5b4bc9a5ff12e32aeee0c3fc5ed076d4734664fd3bb4d489b60e5f71faf8715"
+      "size": 82829,
+      "sha256": "454de5d36498da8febf5de6d7ea24c8e48588463c3941dcaf8655f311f3df35d"
     },
     {
       "path": "src/replay/m3u8.js",

@@ -48,7 +48,7 @@
 // │ 发布会被直接中止。不需要靠人记。                                 │
 // └──────────────────────────────────────────────────────────────────┘
 // 全面整改：后台统一设置写入、私有历史与反馈来源截图，更新导入的开关定义。
-var DYC_BUILD = '26.11.17.1+sw40';
+var DYC_BUILD = '26.11.18.1+sw41';
 
 // classic worker，可以 importScripts（manifest 里没有设 type: module）
 importScripts('../shared/gitee.js', '../content/flags.js', '../shared/live-control-assets.js');
@@ -856,7 +856,7 @@ function delayMs(ms) {
  * 临时授予当前标签）碰运气。**改此处必须同步 manifest.json 的 host_permissions。**
  */
 function isHostPermittedUrl(url) {
-  return /^https:\/\/(fxg|buyin)\.jinritemai\.com\/|^https:\/\/(?:store|channels)\.weixin\.qq\.com\//i.test(url || '');
+  return /^https:\/\/(fxg|buyin)\.jinritemai\.com\/|^https:\/\/(?:store|channels)\.weixin\.qq\.com\/|^https:\/\/(?:pgy|ark)\.xiaohongshu\.com\//i.test(url || '');
 }
 
 /**

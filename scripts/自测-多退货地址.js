@@ -247,10 +247,13 @@ function rootOf(scene) {
   check('按钮文案是「货号」', () => {
     assert.equal(allBtns(A.doc).every((b) => b.textContent === '货号'), true, '文案不对');
   });
-  check('名称元素被写成块级并解掉 line-clamp', () => {
+  check('名称打上「解开」属性（样式由常驻规则提供，不写内联）', () => {
     const nm = A.doc.querySelector('[data-nm="0"]');
-    assert.equal(nm.style.getPropertyValue('display'), 'block', 'display 没改成 block：' + nm.style.display);
-    assert.equal(nm.style.getPropertyValue('-webkit-line-clamp'), 'none', '没解掉 line-clamp');
+    assert.ok(nm.hasAttribute('data-dyc-rgopen'), '没打「解开」属性 —— 名称仍是一行');
+    /* 2026-11-17：解截断改用「常驻 CSS + 属性」，不再写内联 —— 内联会被平台
+     * 重渲染洗掉，真机上表现为名称高度反复跳、按钮跟着抖。 */
+    assert.equal(String(nm.style.getPropertyValue('display') || ''), '',
+      '又写了内联 display —— 平台一洗就回退，会反复跳');
   });
   check('按钮插在「ID:3854…」那一行之后（与小黄车贴着 ID 摆同一思路）', () => {
     const nm = A.doc.querySelector('[data-nm="0"]');
@@ -267,10 +270,10 @@ function rootOf(scene) {
   check('名称未截断 ⇒ 3 枚按钮照样出现', () => {
     assert.equal(allBtns(A2.doc).length, 3, '只有 ' + allBtns(A2.doc).length + ' 枚');
   });
-  check('名称未截断 ⇒ 不改它的任何样式（不白写 display / line-clamp）', () => {
+  check('名称未截断 ⇒ 不打任何标记', () => {
     const nm = A2.doc.querySelector('[data-nm="0"]');
-    assert.equal(String(nm.style.display || ''), '', '未截断却写了 display：' + nm.style.display);
-    assert.equal(String(nm.style.getPropertyValue('-webkit-line-clamp') || ''), '', '未截断却写了 line-clamp');
+    assert.equal(nm.hasAttribute('data-dyc-rgopen'), false, '未截断却打了「解开」标记');
+    assert.equal(String(nm.style.getPropertyValue('display') || ''), '', '未截断却写了内联样式');
   });
 
   /* ========== 一·三、ID 行不能被当成商品名 ========== */
@@ -294,9 +297,9 @@ function rootOf(scene) {
   check('带行内 span 的名称 ⇒ 每卡一枚按钮', () => {
     assert.equal(allBtns(A4.doc).length, 2, '只有 ' + allBtns(A4.doc).length + ' 枚');
   });
-  check('带行内 span 的名称也能解截断（写在外层那个块上）', () => {
+  check('带行内 span 的名称也能解截断（标记打在外层那个块上）', () => {
     const nm = A4.doc.querySelector('[data-nm="0"]');
-    assert.equal(nm.style.getPropertyValue('display'), 'block', '外层没解截断：' + nm.style.display);
+    assert.ok(nm.hasAttribute('data-dyc-rgopen'), '外层没打「解开」标记');
   });
   await checkAsync('带行内 span 的名称仍能取出末尾款号', async () => {
     btnIn(A4.doc, 0).click();
@@ -332,7 +335,7 @@ function rootOf(scene) {
   });
   check('shadow 里的名称照样被解截断', () => {
     const nm = A5.sr.querySelector('[data-nm="0"]');
-    assert.equal(nm.style.getPropertyValue('display'), 'block', '没解截断：' + nm.style.display);
+    assert.ok(nm.hasAttribute('data-dyc-rgopen'), '没打「解开」标记');
   });
 
   /* ========== 一·七、抽屉后开：新渲染的卡片要能进来 ========== */
@@ -354,7 +357,7 @@ function rootOf(scene) {
     const ok = await waitFor(() => A6.doc.querySelectorAll('[data-dyc-rg-btn]').length >= 1, 8000);
     assert.ok(ok, '8 秒内没识别到新卡片（缓存不失效 = 抽屉永远进不来）');
     const nm = card.querySelector('[data-nm="d"]');
-    assert.equal(nm.style.getPropertyValue('display'), 'block', '新卡片没解截断');
+    assert.ok(nm.hasAttribute('data-dyc-rgopen'), '新卡片没打「解开」标记');
   });
 
   /* ========== 一·八、一张卡只许一枚按钮（真机：13 枚对 12 张卡） ========== */
@@ -408,18 +411,17 @@ function rootOf(scene) {
   console.log('\n【三】两行装得下就完整显示，超过三行才钳三行');
   const B2 = boot({ cards: 1, scrollHs: [44] });
   await sleep(60);
-  check('自然两行（44px / 行高 22）⇒ 解截断后不再钳、不写 max-height', () => {
+  check('自然两行（44px / 行高 22）⇒ 完整显示，不钳', () => {
     const nm = B2.doc.querySelector('[data-nm="0"]');
-    assert.equal(nm.style.getPropertyValue('-webkit-line-clamp'), 'none', '两行被钳了：' + nm.style.getPropertyValue('-webkit-line-clamp'));
-    assert.equal(nm.style.getPropertyValue('max-height'), '', '不该写 max-height：' + nm.style.getPropertyValue('max-height'));
-    assert.equal(nm.style.getPropertyValue('line-height'), '1.55', '折行后该补行高');
+    assert.ok(nm.hasAttribute('data-dyc-rgopen'), '没打「解开」标记');
+    assert.equal(nm.hasAttribute('data-dyc-rgcap'), false, '两行被钳了（打了钳制标记）');
   });
   const B5 = boot({ cards: 1, scrollHs: [110] });
   await sleep(60);
-  check('自然五行（110px / 行高 22）⇒ 钳三行 + max-height 兜底', () => {
+  check('自然五行（110px / 行高 22）⇒ 钳三行（换成钳制标记）', () => {
     const nm = B5.doc.querySelector('[data-nm="0"]');
-    assert.equal(nm.style.getPropertyValue('-webkit-line-clamp'), '3', '没钳到三行：' + nm.style.getPropertyValue('-webkit-line-clamp'));
-    assert.equal(nm.style.getPropertyValue('max-height'), '67px', 'max-height 兜底不对：' + nm.style.getPropertyValue('max-height'));
+    assert.ok(nm.hasAttribute('data-dyc-rgcap'), '没钳到三行（没打钳制标记）');
+    assert.equal(nm.hasAttribute('data-dyc-rgopen'), false, '解开与钳制两个标记不能同时存在');
   });
 
   /* ========== 四、幂等 + 重渲染补涂 ========== */
@@ -439,7 +441,7 @@ function rootOf(scene) {
     old.parentElement.replaceChild(fresh, old);
     const n = A.win.__DYC_RETURN_GOODS_NAME_API__.scan();
     assert.ok(n >= 1, '这一轮一个都没注入');
-    assert.equal(fresh.style.getPropertyValue('display'), 'block', '新节点没解截断');
+    assert.ok(fresh.hasAttribute('data-dyc-rgopen'), '新节点没打「解开」标记');
     assert.ok(fresh.parentElement.querySelector('[data-dyc-rg-btn]'), '新节点旁没有按钮');
   });
 
@@ -542,7 +544,15 @@ function rootOf(scene) {
   console.log('\n【九】源码红线');
   check('不用绝对定位写落点（left/top 会被 transform 祖先劫走）', () => {
     assert.equal(/setProperty\(\s*['"](left|top)['"]/.test(SRC), false, '出现了 left/top 定位');
-    assert.equal(/position:\s*(absolute|fixed)/.test(SRC), false, '出现了绝对/固定定位');
+    /* 2026-11-17：素材页的名称右下角按钮用绝对定位（right/bottom，定位上下文
+     * 由名称容器自己的 position:relative 提供），与当年「left/top 贴卡片、
+     * 被 transform 祖先劫走」不是一回事。断言收紧为：绝对定位只允许在 --corner 里。 */
+    const abs = SRC.match(/position:\s*(absolute|fixed)/g) || [];
+    const cornerAbs = (SRC.match(/--corner[\s\S]{0,160}?position:\s*absolute/g) || []).length;
+    assert.equal(abs.length, cornerAbs,
+      '出现了 --corner 以外的绝对/固定定位（' + abs.length + ' 处，corner 内 ' + cornerAbs + ' 处）');
+    assert.equal(/position:\s*(absolute|fixed)[^;]*;\s*left:/.test(SRC), false,
+      '绝对定位配 left —— 会被 transform 祖先劫走');
   });
   check('按钮宽固定 56px（点完换文案不变宽）', () => {
     assert.match(SRC, /width:\s*56px/, '没写死 56px');
@@ -580,8 +590,19 @@ function rootOf(scene) {
     assert.ok(start > 0 && end > start, '定位不到开关元数据表');
     const table = flags.slice(start, end);
     const lastKey = table.lastIndexOf('key: ');
-    assert.equal(table.slice(lastKey, lastKey + 22), "key: 'returnGoodsName'",
-      '本开关不是表尾那一条：' + table.slice(lastKey, lastKey + 24));
+    /* 2026-11-17 当天第二轮：小红书第一批又追加了 4 行
+     * （xhsScrollBtns / xhsBackToTop / xhsBackToBottom / xhsNameWrap），
+     * 同日复制货号追加 xhsCopyCode、猫爪追加 xhsCursorFix ——
+     * 断言跟着推进到最新表尾。守卫的是「新开关必须排最下面」，
+     * 不是某个具体键名 —— 所以每次加开关都要跟着挪。
+     * 同日夜：小红书千帆追加 xhsShopNameWrap（商品名完整显示）⇒ 再推进一次。
+     * （同日三轮：退货页的复制货号按钮按用户要求取消，仍是这条表尾。）
+     * 同日四轮：小红书中控台追加 xhsLocate（商品序号定位）⇒ 再推进一次。 */
+    assert.ok(table.slice(lastKey, lastKey + 26).indexOf("key: 'xhsLocate'") === 0,
+      '本模块的开关不是表尾那一条：' + table.slice(lastKey, lastKey + 26));
+    const returnKey = table.indexOf("key: 'returnGoodsName'");
+    assert.ok(returnKey > 0, '退货页那个开关不见了 —— 两页要各留一个键');
+    assert.ok(returnKey < lastKey, '退货页开关排到了素材页后面 —— 表尾应是最新加的那条');
   });
 
   /* ============ 汇总 ============ */

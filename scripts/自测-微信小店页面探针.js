@@ -11,7 +11,7 @@
  *   ① 候选列表容器能采到 shadow 内的行容器（不再只看到菜单）
  *   ② 交互元素能采到 shadow 内的按钮
  *   ③ 骨架里 shadow 宿主带 `▸shadow` 标记，且展开到 shadow 内一层
- *   ④ 报告新增「六、被截断的文本元素」，且只记字数、不记商品名原文
+ *   ④ 报告新增「被截断的文本元素」一节，且只记字数、不记商品名原文（节号不绑死）
  *
  * ⚠️ jsdom 没有布局引擎，clientWidth / scrollWidth / getBoundingClientRect 全为 0，
  *    而「截断判定」正是靠这几个值。所以这里对原型打了补丁，把尺寸按元素喂进去 ——
@@ -164,13 +164,28 @@ check('页面元素总数把 shadow 内的算进去了', () => {
 });
 
 console.log('\n【三】被截断文本：新增段落 + 判据');
-check('报告有「六、被截断的文本元素」段', () => {
-  assert.ok(report.includes('六、被截断的文本元素'), '缺这一段');
+/* 2026-11-17：报告新增「深度样本」一节插在第三节，原三~六 顺延为四~七。
+ * 这里不再绑死节号（一改编号就红，且红得没有信息量），改为按标题找节。 */
+function sectionOf(title) {
+  /* 只在**节标题行**里找 —— 一句话摘要里也会出现「深度样本 N 类」，
+   * 用 indexOf 全报告找会命中摘要那一行，取到的"节"是空的。 */
+  const all = report.split('\n');
+  for (let i = 0; i < all.length; i++) {
+    if (all[i].indexOf('## ') !== 0 || all[i].indexOf(title) < 0) continue;
+    const rest = all.slice(i);
+    const end = rest.findIndex((l, k) => k > 0 && l.indexOf('## ') === 0);
+    return (end < 0 ? rest : rest.slice(0, end)).join('\n');
+  }
+  return '';
+}
+check('报告有「被截断的文本元素」段', () => {
+  assert.ok(report.includes('被截断的文本元素'), '缺这一段');
+  assert.ok(sectionOf('被截断的文本元素').includes('截断来源'), '该段没有表头');
 });
 check('识别出 nowrap / ellipsis 截断', () => {
   // 只在第六节里找 —— 第三节「行结构样本」也会出现 goods-name，
   // 之前断言取错行，把功能正常误报成失败
-  const sec6 = report.split('## 六、')[1] || '';
+  const sec6 = sectionOf('被截断的文本元素');
   const line = sec6.split('\n').find((l) => l.includes('goods-name')) || '';
   assert.ok(line, '第六节没有采到 goods-name');
   assert.ok(/nowrap|ellipsis/.test(line), '截断来源没判出来：' + line.slice(0, 120));
@@ -197,6 +212,32 @@ check('判据覆盖 line-clamp / ellipsis / nowrap / overflowY 四种', () => {
 check('有节点预算与深度上限（防大列表拖死页面）', () => {
   assert.ok(code.includes('NODE_BUDGET'), '缺节点预算');
   assert.ok(code.includes('SHADOW_DEPTH'), '缺 shadow 深度上限');
+});
+
+console.log('\n【六】深度样本：按重复类名找容器，补候选容器的盲区');
+check('报告有「深度样本」段，且声明了新判据', () => {
+  assert.ok(report.includes('深度样本'), '缺深度样本这一节');
+  assert.ok(report.includes('同一类名组合出现'), '没写清判据，以后没人知道它跟候选容器的区别');
+});
+check('采到了重复出现的卡片类容器（.goods-row）', () => {
+  const sec = sectionOf('深度样本');
+  assert.ok(sec.includes('goods-row'), '深度样本没采到 goods-row：' + sec.slice(0, 200));
+  assert.ok(/出现 \d+ 次/.test(sec), '没有标注出现次数');
+});
+check('深度样本也不泄漏文本内容', () => {
+  const sec = sectionOf('深度样本');
+  assert.ok(!sec.includes(SECRET), '商品名原文泄漏进深度样本');
+  assert.ok(/文本 \d+ 字/.test(sec), '应只记字数');
+});
+check('单类节点数有上限（防大列表把报告撑爆）', () => {
+  assert.ok(code.includes('DEEP_NODES'), '缺单类节点上限');
+  assert.ok(code.includes('DEEP_DEPTH'), '缺展开层数上限');
+});
+check('深度样本排在截断文本之前（体积闸门从尾截断，靠后会丢）', () => {
+  const iDeep = report.indexOf('深度样本');
+  const iClip = report.indexOf('被截断的文本元素');
+  assert.ok(iDeep > 0 && iClip > 0, '两节都要在');
+  assert.ok(iDeep < iClip, '深度样本必须排前面，否则 48KB 上限会把它截掉');
 });
 
 /* ---------- 汇总 ---------- */

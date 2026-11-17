@@ -46,6 +46,14 @@
   var TITLE_MAX = 60;
   var REPORT_MAX = 48 * 1024;  // 报告体积上限(字符数)
 
+  /* 深度样本(2026-11-17 新增):按「重复类名」找容器并展开到 6 层。
+   * 存在的理由见 collectDeepSamples 头注 —— 候选列表容器那条判据要求
+   * 「同签名子元素 ≥ 8」,商品卡只有两三张时永远不达标,子树一次都采不到。 */
+  var MAX_DEEP = 3;            // 采几类容器
+  var DEEP_DEPTH = 6;          // 每类展开层数
+  var DEEP_NODES = 60;         // 每类节点上限
+  var DEEP_MIN_SIZE = 60;      // 宽/高下限:小于此的多半是文本原子,写选择器用不上
+
   /* ---------- 小工具 ---------- */
 
   function clamp(s, n) {
@@ -335,6 +343,109 @@
     return out;
   }
 
+  /* ---------- 三之二、深度样本(2026-11-17 新增) ---------- */
+
+  /**
+   * 按「重复类名」找容器,各展开到 6 层。
+   *
+   * 【为什么需要这一节】
+   *   上游 collectCandidates 的判据是「子元素 ≥ 8 个且同签名占比 ≥ 70%」。
+   *   那条判据是为**满屏长列表**设计的,遇到下面两类页面就直接失效:
+   *     · 未开播的中控台:商品卡只有两三张 ⇒ 永远达不到 8 个;
+   *     · 卡片结构带变体(如 .goods-card 与 .goods-card--dual-identity)
+   *       ⇒ 同签名占比掉到 70% 以下。
+   *   2026-11-17 小红书中控台就是这种情形:候选只认出顶部菜单,商品卡子树
+   *   一个节点都没采到,导致「复制货号 / 商品定位 / 全能搜索」三项无法开工 ——
+   *   不是没有结构,是采集判据看不见它。
+   *
+   * 【这一节的判据,与上游是互补而不是替代】
+   *   不看「子元素个数」,看「同一个类名组合出现了几次」:
+   *     · 出现 ≥ 2 次(重复出现才可能是列表项)
+   *     · 平均子元素 ≥ 1.5(是个容器,不是文本原子)
+   *     · 平均文本长度 ≥ 3(里面有内容)
+   *     · 宽 ≥ 60 且高 ≥ 16(卡片级,不是图标/分隔线)
+   *   按出现次数降序取前 3 类,并做一次「去嵌套」(同一家族的父子类只留外层)。
+   *
+   * 【纪律不变】只采结构:文本一律只记长度,类名照记(写选择器要用),
+   *   不点击、不滚动、不改 DOM。
+   */
+  function collectDeepSamples() {
+    var all = safe(function () {
+      return deepQuery(function (el) {
+        var t = el.tagName;
+        return t !== 'SCRIPT' && t !== 'STYLE' && t !== 'LINK' && t !== 'META' && t !== 'HEAD';
+      }, 6000);
+    }, null) || [];
+
+    var stat = {};
+    var order = [];
+    for (var i = 0; i < all.length; i++) {
+      var el = all[i];
+      if (isExtNode(el)) continue;
+      var cls = classOf(el);
+      if (!cls.length) continue;                  // 无类名:写不出稳定选择器
+      var r = rectOf(el);
+      if (!r || r[2] < DEEP_MIN_SIZE || r[3] < 16) continue;
+
+      var key = el.tagName.toLowerCase() + '.' + cls.slice().sort().join('.');
+      var s = stat[key];
+      if (!s) {
+        s = stat[key] = { key: key, n: 0, first: el, kids: 0, textLen: 0, area: 0 };
+        order.push(key);
+      }
+      s.n++;
+      s.kids += (el.children ? el.children.length : 0);
+      s.textLen += txtLen(el);
+      s.area += r[2] * r[3];
+    }
+
+    var list = [];
+    for (var k = 0; k < order.length; k++) {
+      var v = stat[order[k]];
+      if (v.n < 2) continue;
+      if (v.kids / v.n < 1.5) continue;
+      if (v.textLen / v.n < 3) continue;
+      v.avgArea = v.area / v.n;
+      list.push(v);
+    }
+    list.sort(function (a, b) {
+      if (b.n !== a.n) return b.n - a.n;
+      return b.avgArea - a.avgArea;
+    });
+
+    /* 去嵌套:goods-card 与 goods-card__info-row 会同时入榜,
+     * 采两份等于浪费配额,只留最外层那类。 */
+    var picked = [];
+    for (var m = 0; m < list.length && picked.length < MAX_DEEP; m++) {
+      var cand = list[m];
+      var dup = false;
+      for (var j = 0; j < picked.length; j++) {
+        if (picked[j].first.contains(cand.first) || cand.first.contains(picked[j].first)) {
+          dup = true;
+          break;
+        }
+      }
+      if (!dup) picked.push(cand);
+    }
+
+    return picked.map(function (p) {
+      return { key: p.key, n: p.n, avgArea: p.avgArea, nodes: sampleTree(p.first) };
+    });
+  }
+
+  /** 展开一个国家:层数与节点数双上限,只记 class/尺寸/文本长度。 */
+  function sampleTree(root) {
+    var out = [];
+    (function walk(el, d) {
+      if (d > DEEP_DEPTH - 1 || out.length >= DEEP_NODES) return;
+      var r = rectOf(el);
+      out.push({ d: d, t: tag(el), w: r ? r[2] : 0, h: r ? r[3] : 0, len: txtLen(el) });
+      var kids = el.children || [];
+      for (var i = 0; i < kids.length && i < 10; i++) walk(kids[i], d + 1);
+    })(root, 0);
+    return out;
+  }
+
   /* ---------- 四、关键交互元素 ---------- */
 
   function collectActions() {
@@ -612,6 +723,7 @@
     var scrollables = safe(function () { return collectScrollables(candidates); }, []);
     var iframes = safe(collectIframes, []);
     var clipped = safe(collectClipped, []);
+    var deep = safe(collectDeepSamples, []);
 
     var ver = safe(function () { return chrome.runtime.getManifest().version; }, '?');
 
@@ -622,6 +734,7 @@
       + ' · 骨架 ' + skeleton.length + ' 节点'
       + ' · 候选列表容器 ' + candidates.length + ' 个'
       + ' · 交互元素 ' + actions.length + ' 个'
+      + ' · 深度样本 ' + deep.length + ' 类'
       + ' · 被截断文本 ' + clipped.length + ' 个'
       + ' · 页面元素总数约 ' + (tree.total + (tree.shadowNodes || 0) + (tree.iframeNodes || 0)));
     L.push('');
@@ -662,8 +775,28 @@
     }
     L.push('');
 
-    /* ---- 三、行结构样本 ---- */
-    L.push('## 三、行结构样本(各候选容器的首个真实行,展开 4 层)');
+    /* ---- 三、深度样本(放前列:体积闸门是从尾截断,靠后会被切掉) ---- */
+    L.push('## 三、深度样本(' + deep.length + ' 类重复类名容器,各展开 ' + DEEP_DEPTH + ' 层)');
+    if (!deep.length) {
+      L.push('(没找到重复类名的容器 —— 页面可能还没渲染出内容区)');
+    } else {
+      L.push('> 为什么有这一节:上一节的候选容器要求「同签名子元素 ≥ 8」,'
+        + '商品卡只有两三张、或卡片带变体时永远不达标(2026-11-17 小红书中控台未开播即如此)。'
+        + '这一节改用「同一类名组合出现 ≥ 2 次」作判据。');
+      L.push('');
+      deep.forEach(function (g, idx) {
+        L.push('### 类 ' + (idx + 1) + ':`' + g.key + '`(出现 ' + g.n + ' 次)');
+        g.nodes.forEach(function (n) {
+          L.push('  '.repeat(n.d) + '- `' + n.t + '` · ' + n.w + '×' + n.h
+            + ' · 文本 ' + n.len + ' 字');
+        });
+        L.push('');
+      });
+    }
+    L.push('');
+
+    /* ---- 四、行结构样本 ---- */
+    L.push('## 四、行结构样本(各候选容器的首个真实行,展开 4 层)');
     if (!candidates.length) {
       L.push('(无候选容器)');
     } else {
@@ -683,8 +816,8 @@
     }
     L.push('');
 
-    /* ---- 四、关键交互元素 ---- */
-    L.push('## 四、关键交互元素(' + actions.length + ' 个,最多 40)');
+    /* ---- 五、关键交互元素 ---- */
+    L.push('## 五、关键交互元素(' + actions.length + ' 个,最多 40)');
     if (!actions.length) {
       L.push('(无)');
     } else {
@@ -696,8 +829,8 @@
     }
     L.push('');
 
-    /* ---- 五、环境特性 ---- */
-    L.push('## 五、环境特性');
+    /* ---- 六、环境特性 ---- */
+    L.push('## 六、环境特性');
     L.push('- 页面元素总数:约 ' + (tree.total + (tree.shadowNodes || 0) + (tree.iframeNodes || 0))
       + (tree.total >= MAX_TREE ? '(顶层已达扫描上限,实际更多)' : '')
       + (tree.shadowNodes ? ',其中 shadow 内 ' + tree.shadowNodes + ' 个' : '')
@@ -728,7 +861,7 @@
     L.push('');
 
     /* ---- 六、被截断的文本元素 ---- */
-    L.push('## 六、被截断的文本元素(' + clipped.length + ' 个,最多 ' + MAX_CLIPPED + ')');
+    L.push('## 七、被截断的文本元素(' + clipped.length + ' 个,最多 ' + MAX_CLIPPED + ')');
     if (!clipped.length) {
       L.push('(没找到被截断的文本 —— 可能列表还没渲染,或截断靠 JS 写内联宽度)');
     } else {

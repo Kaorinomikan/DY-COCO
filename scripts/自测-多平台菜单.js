@@ -80,14 +80,21 @@ async function test(name, fn) { await fn(); passed++; console.log('通过：' + 
     }
     assert.deepEqual(f.errors, []); f.close();
   });
-  for (const [url, id] of [
-    ['https://qianfan.xiaohongshu.com/', 'xhs'], ['https://ark.xiaohongshu.com/app', 'xhs'],
-    ['https://www.xiaohongshu.com/explore', 'xhs'], ['https://xiaohongshu.com', 'xhs'],
-    ['https://live.kuaishou.com/', 'ks'], ['https://syt.kwaixiaodian.com/zone/home', 'ks'],
-    ['https://live.taobao.com/', 'tb'], ['https://www.taobao.com/', 'tb']
+  // 2026-11-17：小红书两个子域（ark 千帆 / pgy 中控台）已接入基础设施
+  // （标记 / 调试 / 诊断 / 结构导出）⇒ 「是否支持页」按新口径分两组断言。
+  // 守卫语义不变，而且更严：**认得出平台 ≠ 这个站已注入**，
+  // 已注入的必须判 true，未注入的必须判 false —— 两头都盯住。
+  for (const [url, id, injected] of [
+    ['https://qianfan.xiaohongshu.com/', 'xhs', false],
+    ['https://ark.xiaohongshu.com/app', 'xhs', true],
+    ['https://pgy.xiaohongshu.com/commerce/redlive/live_center_control', 'xhs', true],
+    ['https://www.xiaohongshu.com/explore', 'xhs', false], ['https://xiaohongshu.com', 'xhs', false],
+    ['https://live.kuaishou.com/', 'ks', false], ['https://syt.kwaixiaodian.com/zone/home', 'ks', false],
+    ['https://live.taobao.com/', 'tb', false], ['https://www.taobao.com/', 'tb', false]
   ]) await test('网址优先于历史选择：' + url, async () => {
     const f = fixture(url); await flush(); assert.equal(f.selected(), id); assert.deepEqual(f.errors, []);
-    assert.equal(f.w.dycIsSupportedPage(url), false, '预留平台不代表已注入业务功能');
+    assert.equal(f.w.dycIsSupportedPage(url), injected,
+      injected ? '已接入的站必须判为支持页' : '预留平台不代表已注入业务功能');
     f.close();
   });
   await test('未知网站沿用存档，仿冒域名不匹配', async () => {
@@ -95,9 +102,25 @@ async function test(name, fn) { await fn(); passed++; console.log('通过：' + 
     for (const url of ['https://xiaohongshu.com.evil.test/', 'https://evil.test/xiaohongshu.com/', 'https://notkuaishou.com/', 'https://taobao.com.evil.test/']) assert.equal(f.w.dycDetectPlatform(url), '');
     f.close();
   });
-  await test('小红书两分组、快手淘宝空态与未知存档回退', async () => {
+  await test('支持范围提示由平台表驱动，不在代码里写死站点名', async () => {
+    // 2026-11-17 接入小红书时，两处报错还写着「抖店 / 直播回放页 / 微信小店」——
+    // 页面里明明有调试面板，弹窗却说不在支持范围。断言盯的是推导关系，
+    // 不是那句具体文案：平台表一变，提示词必须跟着变。
+    const f = fixture('https://pgy.xiaohongshu.com/commerce/redlive/live_center_control'); await flush();
+    assert.equal(typeof f.w.supportedScopeText, 'function', '缺少平台表驱动的范围提示函数');
+    const expect = f.w.DYC_PLATFORMS.filter((p) => p.status === '已支持')
+      .map((p) => p.label).join(' / ');
+    assert.equal(f.w.supportedScopeText(), expect);
+    assert(f.w.supportedScopeText().includes('小红书'), '小红书已接入，必须出现在提示里');
+    assert(!/直播回放页/.test(f.w.supportedScopeText()), '提示只列平台，不列细分页面');
+    assert.deepEqual(f.errors, []); f.close();
+  });
+  await test('小红书分组数与平台表一致、快手淘宝空态与未知存档回退', async () => {
     const f = fixture('https://qianfan.xiaohongshu.com/'); await flush();
-    assert.equal(f.d.querySelectorAll('#flags-root > :not([hidden])').length, 2);
+    /* 2026-11-17：小红书新增「小红书中控台」分组（xhsLive）⇒ 原来写死的 2 变成 3。
+     * 断言改为「显示数 = 平台表认领数」，以后再加组不用回来改这里。 */
+    const claimed = f.w.DYC_PLATFORMS.find((p) => p.id === 'xhs').groups.length;
+    assert.equal(f.d.querySelectorAll('#flags-root > :not([hidden])').length, claimed);
     f.choose('ks'); assert.equal(f.selected(), 'ks'); assert.equal(f.d.getElementById('platform-empty').hidden, false);
     assert.equal(f.d.querySelectorAll('#flags-root > :not([hidden])').length, 0);
     f.choose('tb'); assert(f.d.getElementById('platform-empty-title').textContent.includes('淘宝'));

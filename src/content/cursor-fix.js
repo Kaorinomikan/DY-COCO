@@ -112,6 +112,29 @@
   var MARK_ATTR = 'data-dyc-cursor-fix';
   var DRAG_ATTR = 'data-dyc-cursor-dragging';
 
+  /* ==========================================================
+   * 双平台分键（2026-11-17 猫爪上小红书中控台）
+   *
+   * 同一份脚本注入抖店系与小红书系两条 content_scripts 通道，
+   * 开关按作用页分键：pgy /commerce/redlive/ 读 xhsCursorFix，
+   * 其余页维持 cursorFix。两键互不影响 —— 「抖音关掉、小红书也关」
+   * 这种事说不清，所以照第一批「B 小红书专用行」口径各设一键。
+   * ★ dycReadFlags() 返回 Promise，调用方一律 .then（本文件原有纪律）。
+   * ========================================================== */
+
+  function onXhsCtrl() {
+    try {
+      var pat = window.DYC_PAGE_PATTERNS;
+      return !!(pat && pat.xhsCtrl && pat.xhsCtrl.test(location.href));
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function flagKey() {
+    return onXhsCtrl() ? 'xhsCursorFix' : 'cursorFix';
+  }
+
   /**
    * 当前生效的光标值(悬停态 / 按下态各一)。
    *
@@ -325,8 +348,19 @@
         || (e.pointerType && e.pointerType !== 'mouse')) return;
     var target = e.target;
     if (!target || !target.closest) return;
-    if (!target.closest('[data-rbd-drag-handle-draggable-id]')) return;
     if (target.closest('button,input,textarea,select,a,[contenteditable="true"]')) return;
+    /* 拖拽起点判定：
+     *   抖店/百应  react-beautiful-dnd 手柄，认 data-rbd-drag-handle-* 属性；
+     *   小红书中控台  手柄结构未采（2026-11-17），判据 = 按下时**实测光标**
+     *   是 grab / grabbing，或元素已被打标 —— cursor:grab 的本义就是
+     *   「这里可以拖」，误伤面为空。悬停路径通常已先行打标，这里再
+     *   probe(force) 兜一次，防 :hover 规则在按下瞬间才生效的写法漏标。 */
+    if (!target.closest('[data-rbd-drag-handle-draggable-id]')) {
+      if (!onXhsCtrl()) return;
+      probe(target, true);
+      if (!isGrab(cursorOf(target))
+          && !target.closest('[' + MARK_ATTR + ']')) return;
+    }
     endCursorDrag();
     dragPoint = { id: e.pointerId, x: e.clientX, y: e.clientY };
     window.addEventListener('pointermove', moveCursorDrag, true);
@@ -688,7 +722,7 @@
    * ========================================================== */
 
   dycReadFlags().then(function (flags) {
-    if (flags.cursorFix === false) {
+    if (flags[flagKey()] === false) {
       console.log('[DYC-CURSOR] 抓手光标修复:开关为关闭,跳过');
       return;
     }
@@ -697,14 +731,15 @@
 
   // 开关变化即时生效,无需刷新页面
   // 状态条统一反馈(2026-10-11):开关切换报一声,首次对齐不报
-  var prevCursorFix = null;
+  // ★ 键按当前作用页取(SPA 路由切换后下次 watch 事件自动换键)
+  var prevOn = null;
   dycWatchFlags(function (flags) {
-    var on = flags.cursorFix !== false;
-    if (prevCursorFix !== null && on !== prevCursorFix && typeof toast === 'function') {
+    var on = flags[flagKey()] !== false;
+    if (prevOn !== null && on !== prevOn && typeof toast === 'function') {
       toast(on ? '已开启' : '已关闭', 'info', { source: '抓手光标' });
     }
-    prevCursorFix = on;
-    if (flags.cursorFix === false) {
+    prevOn = on;
+    if (flags[flagKey()] === false) {
       disable();
     } else if (!enabled) {
       enable();

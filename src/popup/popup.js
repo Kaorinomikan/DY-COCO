@@ -49,6 +49,20 @@ function onSupportedPage(url) {
   return dycIsSupportedPage(url);
 }
 
+/* 支持范围的**人话列举**（2026-11-17 新增）。
+ *
+ * 为什么单独抽出来：原来两处报错把范围写死成「抖店 / 直播回放页 / 微信小店」，
+ * 每接一个平台都要回来改文案，漏一次就出现「页面里明明有调试面板，弹窗却说
+ * 不在支持范围」的矛盾（接入小红书当天就撞上了）。
+ * 现在按平台表拼，status 已是「已支持」的才列；接入新平台自动跟上。
+ * ★ 只用平台名、不列细分页面：报错要说的是「你在哪个站」，不是功能清单。 */
+function supportedScopeText() {
+  const labels = DYC_PLATFORMS
+    .filter((p) => p.status === '已支持')
+    .map((p) => p.label);
+  return labels.length ? labels.join(' / ') : '当前支持的站点';
+}
+
 const note = document.getElementById('apply-note');
 
 const flagsRoot = document.getElementById('flags-root');
@@ -988,7 +1002,7 @@ function buildProbeBox() {
       // 与 manifest 的 host_permissions 同口径(见文件头的 onSupportedPage):
       // 范围外的页面注入会被拦,提前判掉能给一句人话,而不是把英文报错甩给用户。
       if (!onSupportedPage(tab.url)) {
-        throw new Error('本页不在扩展支持范围（抖店 / 直播回放页 / 微信小店），读不到结构');
+        throw new Error('本页不在扩展支持范围（' + supportedScopeText() + '），读不到结构');
       }
 
       chrome.runtime.onMessage.addListener(onProbeResult);
@@ -1095,7 +1109,7 @@ function buildReportBox() {
 
       // 与 manifest 的 host_permissions 同口径(同「导出当前页结构」的判断)
       if (!onSupportedPage(tab.url)) {
-        throw new Error('本页不在扩展支持范围（抖店 / 直播回放页 / 微信小店），没有调试面板');
+        throw new Error('本页不在扩展支持范围（' + supportedScopeText() + '），没有调试面板');
       }
 
       // 8 秒兜底:页面万一不回话,不能让按钮永远卡在「正在读取」

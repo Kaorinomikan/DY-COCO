@@ -34,6 +34,21 @@
  */
 
 /* ==========================================================
+ * 零、内容脚本构建号(2026-11-17)
+ *
+ * ★ 为什么要有它：用户报「改了没用」时，第一件要分清的事是
+ *   「代码根本没加载（扩展没重载）」还是「代码加载了但逻辑不对」。
+ *   两者在诊断报告里长得一模一样 —— 版本号都是 manifest 里的 26.x，
+ *   刷新页面不会重新加载内容脚本，只有**扩展管理页重载**才会。
+ *
+ *   诊断报告「七、环境」里会带这一行；改功能时**必须同步递增尾号**
+ *   （格式：版本+r序号，序号 = 本版本的第几轮内容脚本改动）。
+ *   自测 scripts/自测-素材页商品名与货号.js 会断言它存在且格式正确。
+ * ========================================================== */
+var DYC_BUILD_TAG = '26.11.18.1+r9';
+try { window.__DYC_BUILD__ = DYC_BUILD_TAG; } catch (e) { /* 非 window 环境忽略 */ }
+
+/* ==========================================================
  * 一、页面匹配
  *
  * 中控台有两个域名入口(2026-10-11 补):
@@ -95,6 +110,15 @@ var DYC_PAGE_PATTERNS = {
   //      exclude_matches,避免 flags.js / hide-elements.js 被重复注入两次。
   returnPolicy:
     /^https:\/\/fxg\.jinritemai\.com\/ffa\/morder\/logistics\//,
+  // 抖店「素材管理」模块(2026-11-17 新增):
+  //   /ffa/creative/material-manage-menu —— 素材管理页,页内商品卡有缩略图 +
+  //   名称(压成一行) + 一行「商品ID:…」。「商品名完整显示 + 复制货号」的作用页。
+  //   ⚠️ 必须排在 shopAll **之前**:diag.js 的 pageKind() 按声明顺序先匹配先返回,
+  //      排在后面这一页永远只报「抖店其他页」。
+  //   ⚠️ 本页**仍属 shopAll**(「隐藏页面元素」等全域开关照旧生效):
+  //      hide-elements 的 pageMatch 是独立正则测试,与此处先后无关。
+  material:
+    /^https:\/\/(?:[a-z0-9-]+\.)*jinritemai\.com\/ffa\/creative\//,
   shopAll:
     /^https:\/\/(?:[a-z0-9-]+\.)*jinritemai\.com\/(?!ffa\/content-tool\/live\/control|dashboard\/live\/control)/,
   // 电商罗盘「直播明细」页(2026-10-15 反馈 #84 新增,方案乙):
@@ -219,6 +243,59 @@ var DYC_PAGE_PATTERNS = {
   wxAll:
     /^https:\/\/(?:store|channels)\.weixin\.qq\.com\//,
   fxgShop: /^https:\/\/fxg\.jinritemai\.com\//,
+
+  /* ==========================================================
+   * 小红书中控台（2026-11-17 新增）
+   *
+   * 本期只铺基础设施 —— 与微信小店 2026-10-30 的做法同一口径：
+   * 左下角标记 / 调试模式 / 诊断 / 页面结构导出 / 消息盒子，
+   * **不带任何业务功能**。用户原话：「先给我兼容调试助手，
+   * 我给你页面结构」⇒ 结构到手前不写业务选择器。
+   *
+ * 六个键的层级与抖店那套对称：
+ *   xhsCtrl    ↔ liveCtrl  直播中控台（pgy /commerce/redlive/ + ark /live_center_control）
+ *   xhsArkList ↔ list      千帆商品列表（ark /app-item/list/shelf 等）
+ *   xhsArkReturn ↔ 无      千帆多地址退货策略（ark /app-order/logistics/multiaddress/）
+   *   xhsPgy     ↔ shopAll   蒲公英整域（直播中控台所在的商业化后台）
+   *   xhsArk     ↔ shopAll   千帆整域（商品 / 店铺等商家后台）
+   *   xhsAll     ↔ wxAll     整域兜底（平台识别与将来主页功能）
+   *
+ * 两个子域是**两套后台**（用户 2026-11-17 分别给了两条地址，都要）：
+ *   pgy.xiaohongshu.com —— 达人/买手侧后台（直播中控台 /commerce/redlive/）
+ *   ark.xiaohongshu.com —— 千帆商家后台（店播一体号中控台 /live_center_control）
+   *
+   * ⚠️ 顺序 = pageKind() 的判定顺序（先匹配先返回）：
+   *    具体路径键（xhsCtrl / xhsArkList）必须在域级键之前，
+   *    域级键必须在 xhsAll 之前，否则诊断报告里永远只报「小红书其他页」。
+   * ⚠️ 两个域都是典型 SPA：子应用之间走 pushState 不重载页面，而
+   *    content_scripts 只在导航时注入 ⇒ 注入范围按**整个子域**放宽
+   *    （manifest 侧为 https://pgy.xiaohongshu.com/* 与
+   *      https://ark.xiaohongshu.com/*），不能卡死单条路径。
+   *    单条路径只用于「功能作用域」与诊断分类。
+   * ========================================================== */
+  /* 中控台两个入口（2026-11-17 夜补 ark）：同一套 redlive 微前端，功能直接生效。
+   *   pgy /commerce/redlive/live_center_control  达人/买手侧
+   *   ark /live_center_control                   店播一体号侧
+   * 依据：ark 结构报告里 div.control-container 1409×826 / overflowY:scroll，
+   * 与 xhs-scroll.js 记录的 pgy 滚动链一致 ⇒ 卡片与滚动结构共用。
+   * ark 段尾部写 (?:\/|[?#]|$) 而非裸前缀：ark 是整域注入，别的路径不许误吃。 */
+  xhsCtrl:
+    /^https:\/\/(?:pgy\.xiaohongshu\.com\/commerce\/redlive\/|ark\.xiaohongshu\.com\/live_center_control(?:\/|[?#]|$))/,
+  xhsArkList:
+    /^https:\/\/ark\.xiaohongshu\.com\/app-item\/list\//,
+  /* 千帆多地址退货策略（2026-11-17 夜）。用户给的地址：
+   *   /app-order/logistics/multiaddress/edit/1198685
+   * 与商品列表是**两个完全不同的子应用**（itemark / fulfillmentorderark），
+   * 卡片结构、名称类名、ID 位置都不同，所以另开一个具体路径键，
+   * 不复用 xhsArkList 的作用域 —— 否则两个页面的开关会互相牵连。 */
+  xhsArkReturn:
+    /^https:\/\/ark\.xiaohongshu\.com\/app-order\/logistics\/multiaddress\//,
+  xhsPgy:
+    /^https:\/\/pgy\.xiaohongshu\.com\//,
+  xhsArk:
+    /^https:\/\/ark\.xiaohongshu\.com\//,
+  xhsAll:
+    /^https:\/\/(?:[a-z0-9-]+\.)*xiaohongshu\.com\//,
 };
 
 /* ==========================================================
@@ -232,8 +309,13 @@ var DYC_FLAG_GROUPS = [
   { id: 'wx', title: '微信小店' },   // 2026-10-31 新增:微信侧第一个业务功能落地
   { id: 'other', title: '其他' },
   { id: 'shared', title: '通用' },
-  { id: 'xhsShop', title: '小红书千帆', placeholder: '功能接入后在这里显示' },
-  { id: 'xhsHome', title: '小红书主页', placeholder: '功能接入后在这里显示' }
+  // 小红书直播中控台（2026-11-17 第一批功能落地）。排在千帆之前：
+  // 用户的中控台是当前主战场，展开小红书平台时它排第一。
+  { id: 'xhsLive', title: '小红书中控台' },
+  // 小红书千帆（ark 商品/店铺后台）。2026-11-17 晚落第一个业务功能
+  // （商品名完整显示）⇒ 按当初约定「千帆将来真落功能时再随功能一并加回分组」
+  // 把这张卡加回来；主页（xhsHome）仍无功能，保持删除状态。
+  { id: 'xhsShop', title: '小红书千帆' }
 ];
 
 /* ==========================================================
@@ -282,8 +364,13 @@ var DYC_PLATFORMS = [
     urlRe: DYC_PAGE_PATTERNS.wxAll
   },
   {
-    id: 'xhs', label: '小红书', mark: '红', color: '#ef3457', status: '待接入',
-    groups: ['xhsShop', 'xhsHome'],
+    id: 'xhs', label: '小红书', mark: '红', color: '#ef3457', status: '已支持',
+    // 2026-11-17：状态由「待接入」改为「已支持」—— pgy（小红书中控台）已接入
+    // 基础设施（标记 / 调试 / 诊断 / 结构导出）。
+    // 同日第一批业务功能落地 ⇒ 新增 xhsLive 分组（小红书专用行，用户选 B）。
+    // 同日晚用户令删 xhsShop / xhsHome 两张占位卡 ⇒ groups 只剩 xhsLive；
+    // 千帆（ark）2026-11-17 夜落第一个功能（商品名完整显示）⇒ 加回 xhsShop。
+    groups: ['xhsLive', 'xhsShop'],
     urlRe: /^https:\/\/(?:[a-z0-9-]+\.)*xiaohongshu\.com\//
   },
   {
@@ -1048,6 +1135,156 @@ var DYC_FLAGS_META = [
     note: '货号按名称末尾取。',
     default: true,
     pages: ['returnPolicy']
+  },
+  /* 2026-11-17 用户要求：「完整名称和复制货号把这两功能兼容到这里」（指素材管理页）。
+   * 与上一项 same 能力、不同页面 —— 开关**分开**是刻意的：
+   * 两页的使用场景不同（一个配置退货策略、一个挑素材绑商品），
+   * 共用一个键会出现「关掉退货页，素材页也跟着没了」的困惑。
+   * ★ 按项目约定追加在表尾，不进表中间（守卫=自测-商品编辑页注入.js 的「表尾两位」断言）。 */
+  {
+    key: 'materialGoodsName',
+    group: 'shop',
+    label: '素材页商品名与货号',
+    desc: '素材管理页商品卡名称完整显示，并加货号复制。',
+    note: '货号按名称末尾取。',
+    default: true,
+    pages: ['material']
+  },
+
+  /* ── 小红书中控台 · 第一批（2026-11-17 用户定：**专用行，不复用抖店同名开关**）
+   *
+   * 为什么不复用：用户明确选 B —— 小红书侧要能独立开关，宁可弹窗长一点。
+   *   抖店的 liveNameWrap / scrollBtns 作用页只认 liveCtrl，语义虽同、
+   *   但两边卡片结构与滚动链完全不同，共用一个键会让「抖音关掉、小红书也关」
+   *   这种事说都说不清。
+   *
+   * 作用页 pages 全部填 xhsCtrl（pgy /commerce/redlive/）：
+   *   千帆（ark）不注入这两个脚本，填了也不会生效，留着只会让
+   *   弹窗的「已应用到 N 个页面」多算两页。
+   *
+   * 折叠组 host = xhsScroll，与抖店 scroll 分开：同名 host 会让两个平台的
+   *   折叠态互相串（展开抖音那组，小红书这组跟着展开）。
+   * ★ 与抖店同纪律：总闸与子开关是「与」关系，总闸关 ⇒ 两枚钮都不注入，
+   *   再开 ⇒ 子开关按自己存的值恢复。 */
+  {
+    key: 'xhsScrollBtns',
+    group: 'xhsLive',
+    label: '页面滚动按钮',
+    desc: '显示回到顶部和滚到底部按钮。',
+    note: '关闭后隐藏两类按钮，保留各按钮设置。',
+    foldHost: 'xhsScroll',
+    default: true,
+    pages: ['xhsCtrl']
+  },
+  {
+    key: 'xhsBackToTop',
+    group: 'xhsLive',
+    label: '上滑到顶',
+    desc: '点击按钮，把页面和商品列表滚回顶部。',
+    note: '到顶后按钮自动隐藏。',
+    default: true,
+    pages: ['xhsCtrl'],
+    foldGroup: 'xhsScroll'
+  },
+  {
+    key: 'xhsBackToBottom',
+    group: 'xhsLive',
+    label: '下滑到底',
+    desc: '点击按钮，把页面和商品列表滚到底部。',
+    note: '到底后按钮自动隐藏。',
+    default: true,
+    pages: ['xhsCtrl'],
+    foldGroup: 'xhsScroll'
+  },
+  {
+    key: 'xhsNameWrap',
+    group: 'xhsLive',
+    label: '商品名完整显示',
+    desc: '商品名写不下时自动换行，完整显示。',
+    note: '只作用于名称，不改变卡片宽度。',
+    default: true,
+    pages: ['xhsCtrl']
+  },
+  {
+    /* 复制货号（2026-11-17 用户定：参考抖店中控台 copy-code）。
+     * 抖店口径照搬：按钮「货号」、原地「已复制」、取不到才按名称尾部推算。
+     * 小红书卡片上没有「货号」字段，取号来源 = __subtitle-row 里的商品 ID 链接，
+     * 形态校验（字母数字 3~40 位整体匹配）不过关就用名称尾部兜底，都不行就报「未取到」。 */
+    key: 'xhsCopyCode',
+    group: 'xhsLive',
+    label: '复制货号按钮',
+    desc: '点击商品旁的「货号」按钮，复制商品 ID。',
+    note: '未显示 ID 时按名称尾部识别。',
+    default: true,
+    pages: ['xhsCtrl']
+  },
+  {
+    /* 商品 ID 小按钮（2026-11-17 用户定：名字就叫「ID」）。
+     * 与「货号」按钮同源、同模块、各自独立开关：
+     *   货号按钮取「ID 行 → 名称末尾款号」，落名称块右下；
+     *   ID 按钮只认商品 ID 行，落 ID 行最右端。 */
+    key: 'xhsCopyId',
+    group: 'xhsLive',
+    label: '复制商品 ID',
+    desc: '在商品 ID 右侧加「ID」小按钮，点一下复制商品 ID。',
+    note: '与「货号」按钮互不影响。',
+    default: true,
+    pages: ['xhsCtrl']
+  },
+  {
+    /* 猫爪光标上小红书中控台（2026-11-17）：cursor-fix.js 双平台复用，
+     * pgy 中控台按本键开关；抖音侧仍是 cursorFix，两键互不影响 ——
+     * 与第一批「B 小红书专用行」同一口径：宁可独立键，不共用。 */
+    key: 'xhsCursorFix',
+    group: 'xhsLive',
+    label: '拖拽猫爪光标',
+    desc: '拖拽排序时显示猫爪光标，按住时爪子收拢。',
+    default: true,
+    pages: ['xhsCtrl']
+  },
+
+  /* ── 小红书千帆 · 商品列表（2026-11-17 夜）
+   *
+   * 用户原话：「小红书千帆商店，也做商品名称不折叠的功能。」
+   * 为什么另开一个键、不复用 xhsNameWrap：
+   *   两套后台（pgy 中控台 / ark 千帆）、两套卡片结构、两套探测判据。
+   *   共用一个键会让「中控台关掉、千帆也关」这种事没法解释 ——
+   *   与第一批「小红书专用行」同一口径：宁可键多，不共用。
+   * 作用页只填 xhsArkList（ark /app-item/list/）：千帆其它页没有商品卡，
+   *   填了只会让弹窗的「已应用到 N 个页面」多算两页。
+   * ★ 脚本 xhs-ark-name-wrap.js 是**运行时探测**（不写死类名）：千帆没有
+   *   结构报告，照抄中控台的选择器必然静默失效（开关开着、页面没变化）。 */
+  {
+    key: 'xhsShopNameWrap',
+    group: 'xhsShop',
+    label: '商品名完整显示',
+    desc: '商品名写不下时自动换行，完整显示。',
+    note: '只展开被折叠的名称，不改列宽。',
+    default: true,
+    // 2026-11-17 夜追加 xhsArkReturn（多地址退货策略页）：用户「多地址退货页
+    // 也要兼容名称不折叠」⇒ 名称这一个功能跨两页，用户视角是同一个
+    // 开关，不另开键（另开会让「关了列表页、退货页还展开」变得没法解释）。
+    pages: ['xhsArkList', 'xhsArkReturn']
+  },
+  {
+    /* 小红书中控台 · 商品序号定位（2026-11-17 夜，用户令「照搬抖音做好的」）。
+     *
+     * 与抖音 liveLocate 的关系：交互与反馈照搬，**代码与开关独立** ——
+     * 两边卡片结构与滚动链完全不同（小红书是 React 全量渲染 + 双层滚动 +
+     * 平台回写 scrollTop），共用一个键会让「抖音关掉、小红书也关」说不清。
+     * 三段一体：输入序号 + 定位按钮 + 「共 N 个」总数（总数不是独立功能，
+     * 抖音 nav.js 里本来就是控件自带的读数）。
+     *
+     * 落点（用户 2026-11-17 23:42 圈定）：商品列表「全部 / 添加分类 /
+     * 搜索框」那一行的搜索框右侧。
+     * ★ 序号口径 = 卡片自带序号框的值（用户定），读不到就明说、不按位次猜。 */
+    key: 'xhsLocate',
+    group: 'xhsLive',
+    label: '商品序号定位',
+    desc: '输入商品序号，滚动到那张卡并高亮，同时显示商品总数。',
+    note: '只滚动与高亮，不改变列表内容。',
+    default: true,
+    pages: ['xhsCtrl']
   }
 ];/* ==========================================================
  * 四、从元数据派生的常量(保持向后兼容)
@@ -1768,5 +2005,8 @@ var DYC_DIAG_WIDGET_NAMES = {
   '.dyc-ar-lamp': '自动刷新指示灯（小黄车）',
   // 2026-10-24 渠道品「下架并删除」的两个入口（诊断报告里好认）
   '.dyc-cd-btn': '渠道品「下架并删除」按钮',
-  '.dyc-cd-batch': '渠道品批量「下架并删除」按钮'
+  '.dyc-cd-batch': '渠道品批量「下架并删除」按钮',
+  // 小红书中控台序号定位（2026-11-17）：输入框 + 定位按钮 + 总数，一个盒子
+  '#dyc-xhs-locate': '序号定位控件',
+  '#dyc-xhs-locate-glow': '序号定位高亮层'
 };

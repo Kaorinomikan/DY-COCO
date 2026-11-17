@@ -142,6 +142,17 @@
   var BAR_DEBOUNCE = 400;
   var BAR_MAX_WAIT = 1200;    // 变更过于频繁时也保证最多这么久扫一次(防防抖饿死)
 
+  /* ★ 2026-11-17:属性(class/style)变化与结构(childList)变化分开排队。
+   *   起因是用户报「素材管理页不停抖动」,实测诊断报告里该页:
+   *     配置 1 套 · 遍历 2104 节点 · ⚠深度截断 · 每 400ms 一轮。
+   *   该页正文 120 万字符、约 4477 个元素,平台又在不停改 class/style
+   *   (微前端容器 + 虚拟滚动 + 图片懒加载),于是 attributes 监听把
+   *   「每一次平台渲染」都翻译成一次全页 BFS + 一轮 getBoundingClientRect
+   *   / getComputedStyle —— 强制同步布局,老内核上就是掉帧、画面抖。
+   *   浮条的**挂载**一定是 childList 变化;class/style 变化只可能是「已挂载
+   *   的浮条由隐藏变可见」,晚一秒半秒完全不影响体感。故属性通道单列慢档。 */
+  var BAR_ATTR_DEBOUNCE = 1500;
+
   // ★ #104(2026-10-24)预算 3000→8000、深度 10→14:
   //   中控台开播后 DOM 动辄两三千节点(开发日志 2026-10-18 原话),3000 预算的
   //   层序遍历会在中途耗尽 —— 排在遍历序后面的浮条子树根本没被走到,扫描
@@ -310,6 +321,107 @@
     return null;
   }
 
+  /* ---------- 右侧带预筛(2026-11-17,治「无关页面跟着抖」) ----------
+   *
+   * 浮条的两个硬特征(见 flags.js 各套 barScan 的几何档):
+   *   · 必须贴右缘(右距 ≤ 60 / 120px);
+   *   · 必须是浮层(fixed / absolute)。
+   * 所以「视口右侧有没有浮层」可以用 15 次 hit-test(3 条竖线 × 5 个高度)问出来,
+   * 代价与页面
+   * 有多大无关;不像全页 BFS,页面越大越贵。
+   *
+   * 判据取「宽 ≤ 该套 maxWidth + 60」而不是严格 maxWidth:
+   *   预筛只回答「值不值得完整扫一遍」,宽一点会多放几次完整扫描,
+   *   漏放(把真浮条判成"没有")才会造成功能回退 —— 宁可多扫,不可漏扫。
+   *
+   * 看不到就**什么都不做**(不打标、也不清旧标):已经被标过的浮条是
+   * pointer-events:none,hit-test 本来就点不到它,若在跳过分支里清标,
+   * 它会在下一帧重新显形 —— 那才是真的"抖动"。
+   */
+  var PRE_SCREEN_GAP = 2000;   // 预筛最多 2 秒一次(缓存结论,期间的触发直接复用)
+  var SKIP_SCAN_EVERY = 10000; // 预筛一直说"没有"时,每 10 秒仍强制完整扫一次
+  var screenPass = true;       // 最近一次预筛结论:true = 值得完整扫
+  var screenAt = 0;
+  var lastFullScanAt = 0;      // 上次完整扫描的时刻(兜底节奏用)
+
+  /** 各套配置里最大的宽度上限 / 最大的右距(预筛取最宽松的一套) */
+  function barMaxWidth(cfgs) {
+    var w = 0;
+    for (var i = 0; i < cfgs.length; i++) {
+      var mw = cfgs[i] && cfgs[i].maxWidth;
+      if (typeof mw === 'number' && mw > w) w = mw;
+    }
+    return w || 200;
+  }
+  function barMaxRightGap(cfgs) {
+    var g = 0;
+    for (var i = 0; i < cfgs.length; i++) {
+      var mg = cfgs[i] && cfgs[i].rightGap;
+      if (typeof mg === 'number' && mg > g) g = mg;
+    }
+    return g || 60;
+  }
+
+  /** 视口右侧带里是否有「像浮条」的元素。false = 本轮不必全页遍历。 */
+  function rightBandMayHaveBar(cfgs) {
+    // 老内核没有 hit-test API / 无布局环境(jsdom 自测)⇒ 一律不跳过,
+    // 退化成原来的全页扫描,宁可慢也不改行为。
+    if (typeof document.elementsFromPoint !== 'function') return true;
+    var vw = window.innerWidth || 0;
+    var vh = window.innerHeight || 0;
+    if (!vw || !vh) return true;
+
+    var maxW = barMaxWidth(cfgs);
+    /* x 由各套的 rightGap 推出来,不写死像素:
+       rightGap = 「浮条右缘距视口右边」的上限,所以浮条整体落在
+       [vw-16-rightGap, vw-16] 这条带里。原先写死 vw-16/-48/-96,
+       右距 120 的那套(中控台运营浮条)三条线全在浮条右侧的空白里 ——
+       预筛永远说"没有",浮条再也拦不住。 */
+    var gap = barMaxRightGap(cfgs);
+    var xs = [vw - 16, vw - 16 - Math.round(gap / 2), vw - 16 - gap];
+    var ys = [];
+    for (var k = 1; k <= 5; k++) ys.push(Math.round(vh * k / 6));
+
+    for (var xi = 0; xi < xs.length; xi++) {
+      if (xs[xi] < 0) continue;
+      for (var yi = 0; yi < ys.length; yi++) {
+        var stack;
+        try { stack = document.elementsFromPoint(xs[xi], ys[yi]) || []; }
+        catch (e) { return true; }          // 问不出来就当有,别漏拦
+        for (var si = 0; si < stack.length && si < 6; si++) {
+          var el = stack[si];
+          if (!el || el.nodeType !== 1) continue;
+          if (/^dy[bc]-/.test(el.id || '')) continue;   // 跳过扩展自己的控件
+          var r;
+          try { r = el.getBoundingClientRect(); } catch (e2) { continue; }
+          if (!r || r.width <= 0 || r.height <= 0) continue;
+          if (r.width > maxW + 60) continue;            // 宽得像内容区,不是浮条
+          if (vw - r.right > gap + 20) continue;        // 不在右缘
+          if (!isFloating(el)) continue;
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /** 预筛结论(带 2 秒缓存)。缓存的意义:被平台的高频渲染连续触发时,
+   *  每 2 秒只问一次,其余触发秒退。 */
+  function mayHaveBar() {
+    var now = Date.now();
+    if (screenAt && now - screenAt < PRE_SCREEN_GAP) return screenPass;
+    screenAt = now;
+    try { screenPass = rightBandMayHaveBar(barCfgs); }
+    catch (e) { screenPass = true; }      // 预筛自身出错 ⇒ 退回完整扫描
+    return screenPass;
+  }
+
+  /** 当前页面上带标记的元素个数(跳过分支也要如实上报,诊断报告才读得出) */
+  function countBarMarks() {
+    try { return document.querySelectorAll('[' + BAR_ATTR + ']').length; }
+    catch (e) { return 0; }
+  }
+
   /** 清掉上次扫描留下的标记(切页面/取消勾选/重新扫描前都要清) */
   function clearBarMarks() {
     var marked;
@@ -323,6 +435,29 @@
    *  多套配置逐套各跑(词表与几何参数独立),命中集合合并去重后统一取最外层。 */
   function scanBars() {
     if (!barCfgs.length) return;
+
+    /* 先问一句「这个页面右侧有浮层吗」。没有就直接收工 ——
+     * 素材管理这类无浮条的页面上,这一步把每轮 2104 节点的全页遍历
+     * 换成 15 次 hit-test(见上方预筛块)。
+     *
+     * 但不许"永远不问":预筛只是取样,点与点之间总有缝隙,万一某形态
+     * 正好落在缝里,也要在 SKIP_SCAN_EVERY 内被完整扫一次 ——
+     * 功能最多晚 10 秒生效,不会永久失效。首轮(lastFullScanAt=0)照旧全扫。 */
+    var nowAt = Date.now();
+    if (!mayHaveBar() && lastFullScanAt && (nowAt - lastFullScanAt) < SKIP_SCAN_EVERY) {
+      window.__dycBarScanMeta = {
+        at: hhmm(),
+        cfgs: barCfgs.length,
+        nodes: 0,
+        budgetOut: false,
+        depthOut: false,
+        marked: countBarMarks(),
+        skipped: '右侧带无浮层'
+      };
+      return;
+    }
+    lastFullScanAt = nowAt;
+
     lastScanStat.nodes = 0;
     lastScanStat.budgetOut = false;
     lastScanStat.depthOut = false;
@@ -386,12 +521,16 @@
    * ★ 再加一道「最长等待」上限:直播大屏这类页面 DOM 几乎不停在变,
    *   纯防抖会让扫描被无限推后(永远等不到 400ms 静默窗口)⇒ 浮条迟迟不藏。
    *   因此从排队开始计时,最长 BAR_MAX_WAIT 必扫一次。
+   *
+   * @param {number} [delay] 本次期望的静默窗口;省略 = BAR_DEBOUNCE(结构变化)。
+   *        属性变化传 BAR_ATTR_DEBOUNCE,见上方 2026-11-17 说明。
    */
-  function scheduleScan() {
+  function scheduleScan(delay) {
     if (!barCfgs.length) return;
     var now = Date.now();
     if (!barSince) barSince = now;
-    var due = Math.min(BAR_DEBOUNCE, Math.max(0, barSince + BAR_MAX_WAIT - now));
+    var want = (typeof delay === 'number' && delay > 0) ? delay : BAR_DEBOUNCE;
+    var due = Math.min(want, Math.max(0, barSince + BAR_MAX_WAIT - now));
     clearTimeout(barTimer);
     barTimer = setTimeout(function () {
       barTimer = null;
@@ -403,6 +542,8 @@
   /** 开/关扫描:配置变化时重扫,DOM 变化时合批重扫 */
   function setBarScan(cfgs) {
     barCfgs = cfgs || [];
+    screenAt = 0;          // 配置换了,预筛结论立即作废(各套几何档可能不同)
+    screenPass = true;
     if (!barCfgs.length) {
       if (barObserver) { barObserver.disconnect(); barObserver = null; }
       clearTimeout(barTimer);
@@ -413,8 +554,16 @@
     }
     try { scanBars(); } catch (e) { /* 尽力而为 */ }
     if (!barObserver && typeof MutationObserver === 'function' && document.body) {
-      // 回调里只做「排一次扫描」,不做任何查询 —— 避免每条变异都触发遍历
-      barObserver = new MutationObserver(function () { scheduleScan(); });
+      // 回调里只做「排一次扫描」,不做任何查询 —— 避免每条变异都触发遍历。
+      // 2026-11-17:结构变化(childList)走快档,class/style 变化走慢档;
+      // 一批记录里只要有一条是 childList(浮条挂载)就按快档排。
+      barObserver = new MutationObserver(function (records) {
+        var structural = false;
+        for (var i = 0; i < records.length; i++) {
+          if (records[i].type === 'childList') { structural = true; break; }
+        }
+        scheduleScan(structural ? BAR_DEBOUNCE : BAR_ATTR_DEBOUNCE);
+      });
       barObserver.observe(document.body, {
         childList: true,
         subtree: true,
