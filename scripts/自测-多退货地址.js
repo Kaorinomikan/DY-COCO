@@ -583,26 +583,19 @@ function rootOf(scene) {
     assert.ok((light.exclude_matches || []).some((m) => m.indexOf('/ffa/morder/logistics/') > -1),
       '没写进 exclude_matches');
   });
-  check('开关 append 在 DYC_FLAGS_META 表尾（最新排最下面）', () => {
+  check('退货页开关保持追加位置，后续开关不改变原有顺序', () => {
     const flags = fs.readFileSync(path.join(ROOT, 'src/content/flags.js'), 'utf8');
     const start = flags.indexOf('var DYC_FLAGS_META = [');
     const end = flags.indexOf('\n];', start);
     assert.ok(start > 0 && end > start, '定位不到开关元数据表');
     const table = flags.slice(start, end);
-    const lastKey = table.lastIndexOf('key: ');
-    /* 2026-11-17 当天第二轮：小红书第一批又追加了 4 行
-     * （xhsScrollBtns / xhsBackToTop / xhsBackToBottom / xhsNameWrap），
-     * 同日复制货号追加 xhsCopyCode、猫爪追加 xhsCursorFix ——
-     * 断言跟着推进到最新表尾。守卫的是「新开关必须排最下面」，
-     * 不是某个具体键名 —— 所以每次加开关都要跟着挪。
-     * 同日夜：小红书千帆追加 xhsShopNameWrap（商品名完整显示）⇒ 再推进一次。
-     * （同日三轮：退货页的复制货号按钮按用户要求取消，仍是这条表尾。）
-     * 同日四轮：小红书中控台追加 xhsLocate（商品序号定位）⇒ 再推进一次。 */
-    assert.ok(table.slice(lastKey, lastKey + 26).indexOf("key: 'xhsLocate'") === 0,
-      '本模块的开关不是表尾那一条：' + table.slice(lastKey, lastKey + 26));
-    const returnKey = table.indexOf("key: 'returnGoodsName'");
-    assert.ok(returnKey > 0, '退货页那个开关不见了 —— 两页要各留一个键');
-    assert.ok(returnKey < lastKey, '退货页开关排到了素材页后面 —— 表尾应是最新加的那条');
+    // 检查本功能当初追加的边界；不把后来新增的任意开关绑成永久表尾。
+    const keys = Array.from(table.matchAll(/\bkey\s*:\s*['"]([^'"]+)['"]/g), (m) => m[1]);
+    const returnKey = keys.indexOf('returnGoodsName');
+    assert.ok(returnKey > 0, '退货页开关不见了');
+    assert.equal(keys.filter((key) => key === 'returnGoodsName').length, 1, '退货页开关重复');
+    assert.equal(keys[returnKey - 1], 'replayResume', '退货页开关应追加在回放续传之后');
+    assert.equal(keys[returnKey + 1], 'materialGoodsName', '素材页开关应在退货页之后追加');
   });
 
   /* ============ 汇总 ============ */

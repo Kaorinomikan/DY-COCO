@@ -39,6 +39,12 @@
  *   ⇒ 视觉照搬抖店 nav.css：输入框 80×30 白底灰边、实心蓝按钮 #0075ff、
  *     11px 灰读数「共 N 个商品」，不另创一套设计。
  *
+ * 【2026-11-18 13:20 事故：用户「序号定位功能不要在抽屉出现」】
+ *   「添加商品」抽屉里也有一枚「请输入商品名称」的搜索框，第三路（占位文案）
+ *   命中它，控件被插进抽屉的竖排列表 —— 诊断报告量到
+ *   `#dyc-xhs-locate` 为 212×873（正常约 190×30）。修复：三路锚点一律跳过
+ *   浮层内的候选（inOverlay）；控件一旦被平台搬进浮层，心跳本拍就拆掉重挂。
+ *
  * 【序号口径：只认卡片自带的序号框（用户 2026-11-17 定）】
  *   卡片左侧有 .goods-card__index（拖动柄 + 序号输入框），用户屏幕上看到的
  *   「1、2、3…」就是它。**按它的值匹配，不按列表位次**。
@@ -76,6 +82,16 @@
   /* 平台搜索框的 placeholder 片段。不写全等 —— 这页是
    * 「请输入商品名称、序号或ID」，平台随时可能再改标点。 */
   var ANCHOR_PH = '请输入商品名称';
+
+  /* 平台浮层（抽屉 / 弹窗 / 气泡）：锚点与控件都不许落在里面。
+   * 【2026-11-18 事故：控件跑到「添加商品」抽屉里】
+   *   抽屉里也有「请输入商品名称」的搜索框（add-goods-table 顶部）。
+   *   第三路（占位文案）命中它，控件被插进抽屉的竖排列表 ——
+   *   诊断报告里 #dyc-xhs-locate 量到 212×873，正常应约 190×30。
+   *   类名用 d-design 全家族 + role 兜底；`[class*=]` 兼顾带 hash 的形态。 */
+  var OVERLAY_SEL = '.d-drawer,.d-modal,.d-dialog,.d-popover,.d-drawer-mask,'
+    + '[class*="d-drawer"],[class*="d-modal"],[class*="d-dialog"],[class*="d-popover"],'
+    + '[role="dialog"],[role="drawer"]';
 
   var SCROLL_MS = 300;
   var GLOW_MS = 3000;
@@ -126,6 +142,12 @@
     var r;
     try { r = el.getBoundingClientRect(); } catch (e) { return false; }
     return r.width > 0 && r.height > 0;
+  }
+
+  /** 元素是否位于平台浮层（抽屉 / 弹窗 / 气泡）之内 */
+  function inOverlay(el) {
+    if (!el || el.nodeType !== 1 || !el.closest) return false;
+    try { return !!el.closest(OVERLAY_SEL); } catch (e) { return false; }
   }
 
   function say(message, type, opts) {
@@ -515,6 +537,10 @@
    *   只认一种实现就是赌，赌错时整条功能消失，而用户看到的只会是
    *   「你说做完了，其实没做」—— 这比功能不好用更伤信任。
    *   所以按「越确定越先试」排三条，全落空就返回 null，由心跳报人话 + 留诊断。
+   *
+   * 【三条路共同的排除项（2026-11-18 真机）】
+   *   平台抽屉里也有同名搜索框，文字/placeholder 一模一样。凡位于浮层内的候选
+   *   一律跳过（inOverlay）—— 否则控件会被挂进抽屉，随抽屉列表竖排拉伸。
    */
   function findAnchor() {
     var i, el;
@@ -526,6 +552,7 @@
       el = ins[i];
       if ((el.getAttribute('placeholder') || '').indexOf(ANCHOR_PH) === -1) continue;
       if (!visible(el)) continue;
+      if (inOverlay(el) || el.closest('[data-dyc-skip]')) continue;        // 抽屉里的同名搜索框不是工具栏锚点
       return { el: el, via: 'placeholder' };
     }
 
@@ -537,6 +564,7 @@
       var lab = (el.getAttribute('aria-label') || '') + '|' + (el.getAttribute('title') || '');
       if (lab.indexOf(ANCHOR_PH) === -1) continue;
       if (!visible(el)) continue;
+      if (inOverlay(el) || el.closest('[data-dyc-skip]')) continue;
       return { el: el, via: 'label' };
     }
 
@@ -548,6 +576,7 @@
       if (el.children && el.children.length > 0) continue;
       if (clean(el.textContent).indexOf(ANCHOR_PH) !== 0) continue;
       if (!visible(el)) continue;
+      if (inOverlay(el) || el.closest('[data-dyc-skip]')) continue;
       return { el: el, via: 'text' };
     }
 
@@ -591,6 +620,24 @@
     }
     return box;
   }
+
+  // 循环讲解也使用该锚点，独立于序号定位开关。
+  window.dycFindXhsSearchBox = function () {
+    var anchor = findAnchor();
+    if (!anchor) return null;
+    var el = anchor.el;
+    var wrapper = el.closest('.d-input-wrapper');
+    if (visible(wrapper)) return wrapper;
+    if (anchor.via === 'text') {
+      // 模拟占位文案可能比搜索框窄，先找同一盒子里的实际输入框。
+      for (var i = 0, node = el.parentElement; node && i < 4; i++, node = node.parentElement) {
+        var inputs = node.querySelectorAll('input');
+        if (inputs.length > 1 || node.querySelector('button')) break;
+        if (inputs.length === 1 && visible(inputs[0])) return searchBoxOf(inputs[0]);
+      }
+    }
+    return searchBoxOf(el);
+  };
 
   /**
    * 两个元素的竖直区间是否重叠 —— 「是不是同一行」的唯一判据。
@@ -639,7 +686,8 @@
         parent.insertBefore(el, n.nextSibling);
       } catch (e) { continue; }
       inserted = true;
-      if (sameRow(anchor, el)) return k === 0 ? 'same-row' : ('same-row+' + k);
+      /* 落点还必须在浮层外：抽屉开着时祖先链可能整条都在抽屉里 */
+      if (!inOverlay(el) && sameRow(anchor, el)) return k === 0 ? 'same-row' : ('same-row+' + k);
       if (k < nodes.length - 1) {
         try { parent.removeChild(el); } catch (e2) { /* 忽略 */ }
         inserted = false;
@@ -688,6 +736,16 @@
   }
 
   /* ---------- 定位 ---------- */
+
+  // 粘贴加车用商品 ID 找到卡片后，与序号定位共用居中和高亮。
+  window.dycRevealXhsGoodsCard = function (card, done) {
+    if (!onCtrlPage() || !card || !card.isConnected || !card.closest(LIST_SEL)) { done(false); return; }
+    reveal(card, function (ok) {
+      if (!onCtrlPage() || !card.isConnected) { done(false); return; }
+      glowOn(card);
+      done(ok);
+    });
+  };
 
   function handleGo(e) {
     if (e) {
@@ -742,8 +800,7 @@
     }
 
     var name = nameOf(hit);
-    reveal(hit, function (ok) {
-      glowOn(hit);
+    window.dycRevealXhsGoodsCard(hit, function (ok) {
       refreshCount();
       if (!ok) {
         // 落点被平台改回：不谎报成功，但也不假装没发生 —— 人话说明并给位置
@@ -771,6 +828,16 @@
   var misBeats = 0;   // 连续几拍「控件不在搜索框同一行」
 
   function heartbeat() {
+    /* 控件落在浮层里 ⇒ 本拍就拆掉重挂，不等两拍错位判定。
+     * 2026-11-18 真机：抽屉打开后控件被插进抽屉列表，被竖排拉成 212×873，
+     * 用户看到的就是「序号定位跑到抽屉里去了」。 */
+    var cur = document.getElementById(BOX_ID);
+    if (cur && inOverlay(cur)) {
+      try { cur.parentNode.removeChild(cur); } catch (e) { /* 忽略 */ }
+      host = null; inputEl = null; countEl = null; lastCount = -1; misBeats = 0;
+      noteDiag('控件在浮层内｜已拆掉重挂', '移出');
+    }
+
     if (!document.getElementById(BOX_ID)) {
       host = null;
       misBeats = 0;

@@ -27,14 +27,58 @@
  *
  * 【只动名称元素自己 + 一处列宽】
  *
- *   按截断原因写**最少的一组**内联属性（读-写分离，不遍历全树）：
- *     · nowrap 型（单行省略号）→ white-space:normal + text-overflow:clip + overflow:visible
- *     · line-clamp 型（-webkit-box 钳行）→ display:block + -webkit-line-clamp:none
- *     · 定高型（祖先 fixed height）→ max-height:none + height:auto
- *   三档都补 word-break:normal + overflow-wrap:break-word（款号整体参与折行）。
+ *   按截断原因给名称元素打**一个状态属性**（样式见下方【常驻 CSS】），不碰结构：
+ *     · nowrap 型（单行省略号）/ line-clamp 型（钳行）/ 定高型 ⇒ 一律 OPEN 属性，
+ *       规则里已包含 white-space:normal、去 line-clamp、overflow:visible、解 max-height；
+ *     · 折成两行以上再补 MULTI 属性（行距与下内边距），单行名字保持平台原样；
+ *     · 超过三行换 CAP 属性（钳三行 + 省略号）。
  *
- *   折成两行以上时再补 line-height:1.55 与 padding-bottom:2px（与微信侧同口径）：
- *   平台默认行高约 1.43，两行会贴在一起；单行名字**不动**这两项。
+ * 【为什么不写内联样式（2026-11-18 治抖，口径同素材页 / 多地址退货页）】
+ *
+ *   真机现象：抖店商品管理页鼠标指向商品时，名称在 1 行与多行之间来回跳，
+ *   行高跟着变，整行内容上下抖。
+ *   根因：解截断原本写的是内联样式，而平台重渲染会整段重写 style 属性，
+ *   我们的值被抹掉 ⇒ 计算值回到截断态 ⇒ 下一轮扫描又写回去。
+ *   每一轮都是「解开 → 变高 → 被洗回 → 再解开」，用户看到的就是抖动。
+ *   → 改成「元素属性 + 常驻 CSS 规则（!important）」：平台洗得掉内联，
+ *     洗不掉属性；属性在规则就在，显示稳定，循环自然断开。
+ *
+ *   配套两条硬约束：
+ *     · truncationReason 见到状态属性**直接判「不再截断」**（断环口，不能省）；
+ *     · 关开关 / 窗口缩放要逐个摘属性，否则规则一直匹配，页面回不到原样。
+ *
+ * 【鼠标悬停的那一块一律不写（2026-11-18 第二版，治「指上去就抖」）】
+ *
+ *   真机证据（用户两张截图对比）：鼠标进入商品行时，平台会把商品信息切成**宽布局** ——
+ *   名称列变宽、右侧这时才出现价格与编辑图标，末尾货号被挤到下一行。也就是说
+ *   **hover 期间布局还在变**。而我们每轮扫描都会做两件"按当前宽度算"的事：
+ *     · widenNameColumn —— 列宽目标按 gap 现算，hover 一变宽就判「没加过」重新加宽；
+ *     · releaseWidthCaps —— 只在「容器比格子窄」时写，宽度一变就满足条件。
+ *   两边互相踢：我们加宽 → 表格重排 → hover 布局再变 → 我们再算再加宽 …… 就是抖动。
+ *   所以：**hover 落在哪一行/哪张卡，那一块不写；鼠标在页面上时列宽整体不写**；
+ *   鼠标离开 300ms 后再补（避开平台收拢布局的那一下）。解截断是幂等的，照常跑。
+ *
+ *   ⚠️ 代价：hover 期间若平台换掉了节点，新节点上没有属性，会短暂显示成平台的截断态，
+ *   鼠标移开 300ms 后补上。这是刻意取舍 —— 宁可晚一帧，也不在鼠标底下改布局。
+ *
+ * 【块高锁（2026-11-18 第三版，治「指上去就折成三行」）】
+ *
+ *   用户原话：「只要鼠标指到那一方，哪一行就会折成三行导致跳动」。
+ *   原因不是谁洗样式，而是**「完整显示」和「悬停变窄」的根本冲突**：
+ *   平台在 hover 时把名称区压窄（给价格与编辑图标让位），我们解开后的名称就多折一行，
+ *   块变高，整行随之下移。只要行数跟着宽度变，就必然抖。
+ *   → 解开时按**当时量到的行数**把块高锁死（h="2" / h="3"，值即行数）：
+ *     之后宽度再怎么变，盒子就这个高，多出来的行裁在盒子里，行高恒定。
+ *   hover 期间若节点被换新导致锁丢失，relock() 按缓存行数直接补锁 —— 只写属性、
+ *   不做任何测量，所以补锁本身不会引发新的布局计算。
+ *   代价：悬停如果让名称变窄到装不下，最后一行会被裁掉（此刻本来就看不全）；
+ *   鼠标移开后重新扫描才按新宽度重算。
+ *
+ * 【幂等 = 属性 + 计算值双判据】
+ *
+ *   属性在 ⇒ 规则已接管，不再重复读写（这就是上面那条断环口）。
+ *   属性被抹（平台换了新节点）⇒ 计算值回到截断态，重新打一次；重复打不重复备份。
+ *   列宽仍需复核「名字格当前宽是否仍等于我们设的目标」，被洗掉就重算重写。
  *
  * 【口径：两行优先、最多三行（2026-11-01 用户定，取代「无限折行」）】
  *
@@ -66,14 +110,6 @@
  *
  *   写完立刻量一次实际宽度：没变就记成 no-effect（写一条诊断），
  *   不再每轮白写 —— 谎报「已加宽」比不加宽更糟。
- *
- * 【幂等 = 标记 + 计算值双条件】
- *
- *   平台重渲染会整段重写 style 属性，我们的内联属性被抹掉，而陌生属性标记会留下。
- *   只看标记会「样式被抹 → 永不补涂 → 永久省略号」。所以每次扫描复核计算值：
- *   仍是 nowrap 或仍被钳行 ⇒ 视为没处理过，重写一遍；**重复写不重复备份**，
- *   否则备份里会存进我们自己写的值，关开关还原不回去。
- *   列宽同理：复核「名字格当前宽是否仍等于我们设的目标」，被洗掉就重算重写。
  *
  * 【触发时机与开销】
  *
@@ -110,6 +146,18 @@
 
   /* 标记：告诉我们「这个节点已经处理过」，同时方便调试面板取证 */
   var MARK = 'data-dyc-shopname';
+  /* 解截断的两个状态属性 + 常驻 CSS（2026-11-18 治抖，口径同素材页/退货页）：
+   *   OPEN_ATTR  = 完整显示（display:block / 去 line-clamp / overflow:visible ...）
+   *   CAP_ATTR   = 超过三行的钳回三行
+   *   MULTI_ATTR = 折成两行以上才补行距与下内边距（单行保持平台原样）
+   * 样式由本模块注入的 <style> 提供，带 !important。平台重渲染只洗内联 style，
+   * 洗不掉属性 —— 这是「解开 → 被洗回 → 再解开」死循环的断点。 */
+  var OPEN_ATTR = 'data-dyc-nameopen';
+  var CAP_ATTR = 'data-dyc-namecap';
+  var MULTI_ATTR = 'data-dyc-namemulti';
+  /* 块高锁：值是行数（"2" / "3"）。见 lockHeight() —— 这是治「悬停变窄就折行跳」的那把锁。 */
+  var H_ATTR = 'data-dyc-nameh';
+  var STYLE_ID = 'dyc-shopname-style';
   /* 扫描防抖与最长等待 */
   var SCAN_DEBOUNCE = 400;
   var SCAN_MAX_WAIT = 1200;
@@ -154,6 +202,8 @@
   var widenedTables = [];
   /* 解除过宽度上限的内部容器（关开关时逐个还原） */
   var cappedEls = [];
+  /* 打过名称状态属性的元素（关开关 / 窗口缩放时按它摘属性；节点换新即失效，不泄漏） */
+  var touchedNames = [];
   /* 窗口缩放监听是否已挂（缩放后空位变了，列宽要全部撤销重算） */
   var resizeBound = false;
   var queuedAt = 0;
@@ -161,6 +211,22 @@
   var rowCache = [];
   /* 首次成功展开过没有 —— 只用来给调试留痕，不弹消息 */
   var appliedAt = 0;
+  /* 上一轮解开数 / 上次记诊断的时间：用来在诊断报告里暴露「解开数来回跳」（抖动证据） */
+  var lastCount = -1;
+  var lastNoteAt = 0;
+  /* 鼠标当前悬停的目标元素（2026-11-18 治抖第二版）。
+   *
+   * 真机证据（用户两张截图）：鼠标进入商品行时，平台会把整块商品信息切成**宽布局** ——
+   * 名称列变宽、右侧这时才出现价格与编辑图标，折行位置也跟着变（末尾货号被挤到下一行）。
+   * 布局在 hover 期间还在变，我们就写列宽 / 解截断 / 量行数，两边互相踢：
+   *   我们加宽 → 平台收拢 → 我们复核「目标宽对不上」→ 再加宽 …… 鼠标指哪儿抖哪儿。
+   * 所以：hover 落在哪一行（或哪张商品卡），那一块一律不写；鼠标离开 300ms 后再补。
+   * 属性方案照旧 —— 鼠标没落在的行，命中属性就不再重复写。 */
+  var hoverTarget = null;
+  var hoverTimer = null;
+  var hoverBound = false;
+  /* 离开后等这么久再补：平台收拢布局有一下过渡，太早补会自己制造第二次跳动 */
+  var HOVER_SETTLE = 300;
 
   /** 取文本并压掉多余空白 */
   function textOf(el) {
@@ -182,13 +248,26 @@
     return false;
   }
 
+  /** 这个名称元素是否已由我们的常驻规则接管（属性在 ⇒ 规则在，平台洗不掉） */
+  function isHandled(el) {
+    if (!el || !el.getAttribute) return false;
+    try {
+      return !!(el.getAttribute(OPEN_ATTR) || el.getAttribute(CAP_ATTR));
+    } catch (e) { return false; }
+  }
+
   /**
    * 这个元素现在被**哪一种**方式截断。
    *
    * @return {string} 'clamp' | 'nowrap' | 'height' | ''（空串 = 没截断）
    */
-  function truncationReason(el) {
+  function truncationReason(el, raw) {
     if (!el || !el.getBoundingClientRect) return '';
+    /* ★ 断环口（2026-11-18）：属性在 ⇒ 常驻规则已接管，不再判它「被截断」。
+     * 不这么写就会每轮看到 CAP 态里的 line-clamp:3 或 OPEN 后量到的溢出，
+     * 于是「解开 → 钳回 → 再解开」无限循环 —— 用户看到的就是名称行高来回跳。
+     * raw=true 时按计算值原样判，给 findNameInRow 复选候选用。 */
+    if (!raw && isHandled(el)) return '';
     var cs = null;
     try { cs = window.getComputedStyle ? window.getComputedStyle(el) : null; } catch (e) { return ''; }
     if (!cs) return '';
@@ -240,10 +319,11 @@
         try { href = a.getAttribute('href') || ''; } catch (e2) { href = ''; }
         if (!/detail|product|\/ffa\/g\/|item/i.test(href)) continue;
         if (!looksLikeName(textOf(a))) continue;
-        /* 截断可能落在 <a> 自己，也可能落在它的包裹层 */
-        if (truncationReason(a)) return a;
+        /* 截断可能落在 <a> 自己，也可能落在它的包裹层。
+         * 已由常驻规则接管的（属性在）也算命中 —— 行被重渲染后要能认回同一个。 */
+        if (truncationReason(a) || isHandled(a)) return a;
         var pa = a.parentElement;
-        if (pa && !isOurNode(pa) && truncationReason(pa)) return pa;
+        if (pa && !isOurNode(pa) && (truncationReason(pa) || isHandled(pa))) return pa;
       }
     }
 
@@ -276,7 +356,8 @@
     var bestLeft = Infinity;
     for (var j = 0; j < cands.length; j++) {
       var cand = cands[j];
-      if (!truncationReason(cand)) continue;
+      /* raw=true：按计算值原样判，不受「属性在就不算截断」影响 */
+      if (!truncationReason(cand, true) && !isHandled(cand)) continue;
       var r = null;
       try { r = cand.getBoundingClientRect(); } catch (e3) { r = null; }
       var left = r ? r.left : Infinity;
@@ -320,50 +401,72 @@
    */
   function applyUnclip(el, reason) {
     if (!el) return false;
-    var wrote = false;
+    if (reason !== 'clamp' && reason !== 'nowrap' && reason !== 'height') return false;
 
-    if (reason === 'clamp') {
-      setProp(el, 'display', 'block');
-      setProp(el, '-webkit-line-clamp', 'none');
-      setProp(el, '-webkit-box-orient', 'horizontal');
-      setProp(el, 'overflow', 'visible');
-      wrote = true;
-    } else if (reason === 'nowrap') {
-      setProp(el, 'white-space', 'normal');
-      setProp(el, 'text-overflow', 'clip');
-      setProp(el, 'overflow', 'visible');
-      wrote = true;
-    } else if (reason === 'height') {
-      setProp(el, 'max-height', 'none');
-      setProp(el, 'height', 'auto');
-      setProp(el, 'overflow', 'visible');
-      wrote = true;
-    }
-    if (!wrote) return false;
-
-    /* 折行质量：款号整体参与折行，长串放不下才允许内部折断 */
-    setProp(el, 'word-break', 'normal');
-    setProp(el, 'overflow-wrap', 'break-word');
-
-    /* 折成两行以上才补留白（单行名字保持平台原样） */
+    /* 只打属性、不写内联 —— 具体样式由常驻 CSS 提供。
+     * 平台重渲染会整段重写 style 属性（我们的内联被抹掉），但不动属性，
+     * 所以「属性在 ⇒ 规则在 ⇒ 显示就是解开的」，不会再回到截断态。 */
     try {
-      var cs = window.getComputedStyle ? window.getComputedStyle(el) : null;
-      var fs = cs ? parseFloat(cs.fontSize) || 14 : 14;
-      var lh = cs ? parseFloat(cs.lineHeight) : NaN;
-      if (!isFinite(lh) || lh <= 0) lh = fs * 1.43;
-      if (el.scrollHeight > lh * 1.6) {
-        setProp(el, 'line-height', '1.55');
-        setProp(el, 'padding-bottom', '2px');
-      }
-    } catch (e) { /* 量不到就按单行处理，不因为量尺寸失败而整条放弃 */ }
+      el.setAttribute(OPEN_ATTR, '1');
+      el.removeAttribute(CAP_ATTR);
+      el.setAttribute(MARK, '1');
+    } catch (e) { return false; }
 
-    try { el.setAttribute(MARK, '1'); } catch (e4) { /* 忽略 */ }
+    if (touchedNames.indexOf(el) < 0) touchedNames.push(el);
     if (!appliedAt) appliedAt = Date.now();
 
-    /* 「尽量两行」（2026-11-01 用户定）：解截断后量自然行数，超过两行就钳回两行。
-     * 顺序必须是「先解截断、再量、再钳」—— 不先解开就量不到真实自然行数。 */
+    /* 折成两行以上才补行距与下内边距（规则生效后才量得到真实行数） */
+    var lines = naturalLines(el);
+    try {
+      if (lines >= 2) el.setAttribute(MULTI_ATTR, '1');
+      else el.removeAttribute(MULTI_ATTR);
+    } catch (e2) { /* 忽略 */ }
+
+    /* ★ 锁块高（2026-11-18 第三版，治「指上去折成三行」）：
+     * 平台在 hover 时会把名称区压窄给价格/编辑图标让位，解开后的名称就多折一行、
+     * 块变高、整行跳动。把块高按**当前行数**锁死之后，宽度再怎么变，块高都不变，
+     * 行高自然不动（多出来的行被裁在盒子里，鼠标移开重算时再放开）。
+     * 记到元素上也记到行上：hover 期间节点被平台换新时，按缓存行数直接补锁，不重新量。 */
+    lockHeight(el, lines);
+
+    /* 「两行优先、最多三行」：超过三行就换成 CAP 属性（钳三行 + 省略号） */
     capLines(el);
     return true;
+  }
+
+  /**
+   * 按行数锁死块高（2 行 / 3 行）。
+   * 行数未知（0）或多个行数时不动 —— 不知道就别锁，免得把内容裁错。
+   */
+  function lockHeight(el, lines) {
+    if (!el || !el.setAttribute) return;
+    try {
+      if (lines === 2) el.setAttribute(H_ATTR, '2');
+      else if (lines === 3) el.setAttribute(H_ATTR, '3');
+      else el.removeAttribute(H_ATTR);
+    } catch (e) { /* 忽略 */ }
+    if (lines === 2 || lines === 3) el.__dycNameLines = lines;
+  }
+
+  /**
+   * hover 期间唯一允许的写操作：把丢失的块高锁按**缓存行数**补回去。
+   *
+   * 平台在 hover 时若换掉节点，属性会跟着节点一起没了 —— 那一刻盒子会变回"随宽度折行"，
+   * 又开始跳。这里不做任何测量（不量宽、不量行数），只把缓存的行数写回属性，
+   * 所以补锁本身不会引发布局重算，也就不会自己制造抖动。
+   */
+  function relock(row) {
+    if (!row) return;
+    var el = row.__dycNameEl;
+    if (!el || !el.isConnected || (row.contains && !row.contains(el))) return;
+    var n = el.__dycNameLines || 0;
+    if (n !== 2 && n !== 3) return;
+    try {
+      if (el.getAttribute && el.getAttribute(H_ATTR) === String(n)) return;   /* 锁还在 */
+      el.setAttribute(OPEN_ATTR, '1');
+      el.setAttribute(MULTI_ATTR, '1');
+      el.setAttribute(H_ATTR, String(n));
+    } catch (e) { /* 忽略 */ }
   }
 
   /**
@@ -393,31 +496,33 @@
    *   两行差几个字符装不下 ⇒ 放宽到第 3 行（2026-11-01 两次截图都卡在最后几个字）；
    *   3 行还装不下 ⇒ 钳 3 行加省略号，别让超长名一路撑到五行把列表拉散。
    *
-   * 两道并列手段（老内核只认其中之一也能挡住）：
-   *   · `-webkit-line-clamp:N` —— 现代内核的标准做法，带省略号；
-   *   · `max-height = N × 行高` —— 不认 -webkit-box 的内核靠它保底（无省略号但不会撑高）。
+   * 具体钳法在常驻 CSS 的 CAP 规则里（line-clamp:N + max-height 兜底），
+   * 这里只负责「要不要钳」以及切属性（2026-11-18 起不再写内联）。
    */
   function capLines(el) {
+    if (!el) return false;
     var lines = naturalLines(el);
+    /* 量不到行数（节点还没渲染 / 老内核量不出）⇒ 不知道就不钳，别乱改 */
     if (!lines || lines <= MAX_LINES) return false;
-    setProp(el, 'display', '-webkit-box');
-    setProp(el, '-webkit-box-orient', 'vertical');
-    setProp(el, '-webkit-line-clamp', String(MAX_LINES));
-    setProp(el, 'overflow', 'hidden');
-    setProp(el, 'text-overflow', 'ellipsis');
+    /* 换成 CAP 属性：摘掉 OPEN 与块高锁，规则来自常驻 CSS（带 !important 压过平台类样式） */
     try {
-      var cs = window.getComputedStyle ? window.getComputedStyle(el) : null;
-      var lh = cs ? parseFloat(cs.lineHeight) : NaN;
-      if (!isFinite(lh) || lh <= 0) lh = (cs ? parseFloat(cs.fontSize) : 14) * 1.43;
-      if (lh > 0) setProp(el, 'max-height', (Math.ceil(lh * MAX_LINES) + 1) + 'px');
-    } catch (e) { /* 量不到行高就只靠 line-clamp */ }
+      el.removeAttribute(OPEN_ATTR);
+      el.removeAttribute(H_ATTR);
+      el.setAttribute(CAP_ATTR, '1');
+    } catch (e) { return false; }
     return true;
   }
 
-  /** 还原一个元素上我们写过的全部内联属性（关开关 / 行被回收时） */
+  /** 关开关 / 行回收：摘状态属性 + 还原我们写过的内联（列宽等） */
   function restoreOne(el) {
-    if (!el || !el.__dycShopNameOrig) return;
+    if (!el) return;
+    /* 先摘状态属性：常驻规则靠它们匹配，属性一去就回到平台原样。
+     * ⚠️ 不能早退于「没有内联备份」—— 属性方案下名称元素上通常没有内联可还原
+     * （解截断不再写内联），老实现第一行判空就 return，关开关后名称仍是展开态。 */
+    clearNameAttrs(el);
+
     var bak = el.__dycShopNameOrig;
+    if (!bak) return;
     for (var prop in bak) {
       if (!Object.prototype.hasOwnProperty.call(bak, prop)) continue;
       try {
@@ -426,7 +531,74 @@
       } catch (e) { /* 忽略单条失败 */ }
     }
     el.__dycShopNameOrig = null;
-    try { el.removeAttribute(MARK); } catch (e2) { /* 忽略 */ }
+  }
+
+  /** 摘掉一个名称元素上的全部状态属性（关开关 / 宽度重判时用） */
+  function clearNameAttrs(el) {
+    if (!el) return;
+    try {
+      el.removeAttribute(OPEN_ATTR);
+      el.removeAttribute(CAP_ATTR);
+      el.removeAttribute(MULTI_ATTR);
+      el.removeAttribute(H_ATTR);
+      el.removeAttribute(MARK);
+    } catch (e) { /* 忽略 */ }
+  }
+
+  /* ---------- 常驻 CSS（2026-11-18 治抖核心）----------
+   *
+   * 为什么放弃内联：平台重渲染会整段重写 style 属性（我们有极值重要级也照样被抹），
+   * 抹掉后计算值回到截断态，下一轮扫描又写回去 —— 每一轮都是「解开 → 变高 →
+   * 被洗回 → 再解开」，名称高度在 1 行与多行之间反复跳，鼠标悬停时最明显。
+   * 属性不会被平台重写，规则一旦匹配就一直生效，循环就此断开。
+   * 选择器不加 html/body 前缀（本页名称都在主文档里，但保持与其它页一致的习惯）。 */
+  var CSS = [
+    '[' + OPEN_ATTR + '] {',
+    '  display: block !important;',
+    '  -webkit-line-clamp: none !important;',
+    '  -webkit-box-orient: horizontal !important;',
+    '  overflow: visible !important;',
+    '  max-height: none !important;',
+    '  height: auto !important;',
+    '  text-overflow: clip !important;',
+    '  white-space: normal !important;',
+    '  word-break: normal !important;',
+    '  overflow-wrap: break-word !important;',
+    '}',
+    /* 折成两行以上才补行距与下内边距（单行名字保持平台原样） */
+    '[' + MULTI_ATTR + '] { line-height: 1.55 !important; padding-bottom: 2px !important; }',
+    /* ---------- 块高锁（2026-11-18 第三版）----------
+     * 平台在 hover 时把名称区压窄，解开后的名称会多折一行、块变高、整行跳动。
+     * 这里按「当时量到的行数」把块高固定住：宽度再怎么变，盒子就这个高，
+     * 多出来的行裁在盒子里，行高恒定。
+     * 用 em（跟着字号走），1.55em/行 与 MULTI 的行距一致；box-sizing 用 border-box，
+     * 这样下内边距不会把盒子顶出去。 */
+    '[' + H_ATTR + '] { box-sizing: border-box !important; overflow: hidden !important; padding-bottom: 0 !important; }',
+    '[' + H_ATTR + '="2"] { height: 3.1em !important; max-height: 3.1em !important; }',
+    '[' + H_ATTR + '="3"] { height: 4.65em !important; max-height: 4.65em !important; }',
+    '[' + CAP_ATTR + '] {',
+    '  display: -webkit-box !important;',
+    '  -webkit-box-orient: vertical !important;',
+    '  -webkit-line-clamp: ' + MAX_LINES + ' !important;',
+    '  overflow: hidden !important;',
+    '  text-overflow: ellipsis !important;',
+    /* 老内核兜底：不认 -webkit-box 时靠限高，别让超长名一路把列表撑长
+     * （1.6em/行 × 3 行，与 line-height:1.55 留出余量） */
+    '  max-height: ' + (MAX_LINES * 1.6) + 'em !important;',
+    '}'
+  ].join('\n');
+
+  /** 注入常驻样式（本页名称元素都在主文档，不涉及 shadow 树） */
+  function ensureStyle() {
+    try {
+      var head = document.head || document.documentElement;
+      if (!head) return;
+      if (document.getElementById && document.getElementById(STYLE_ID)) return;
+      var st = document.createElement('style');
+      st.id = STYLE_ID;
+      st.textContent = CSS;
+      head.appendChild(st);
+    } catch (e) { /* 插不进去也不能退回内联（那正是抖动源），仅失去“稳定”这一层保障 */ }
   }
 
   /**
@@ -729,6 +901,13 @@
     for (var k = 0; k < rowCache.length; k++) {
       var row = rowCache[k];
       if (!rowAlive(row)) continue;
+      /* ★ 鼠标正指着这一行 ⇒ 整行不重量、不重写（名称、列宽、解宽度上限全跳过）。
+       * 平台此时正在压窄名称区，我们一量一写就跟着折行跳。
+       * 唯一例外：节点被换新导致块高锁丢了 ⇒ 按缓存行数补锁（不测量，不会引起新布局）。 */
+      if (hoverTarget && isRelated(hoverTarget, row)) {
+        relock(row);
+        continue;
+      }
       var el = row.__dycNameEl;
       /* 缓存的名称元素被重渲染换掉了 ⇒ 重新找一次 */
       if (!el || !el.isConnected || (row.contains && !row.contains(el))) {
@@ -736,16 +915,35 @@
         row.__dycNameEl = el || null;
       }
       if (!el) continue;
+      /* 商品卡的名称未必在 tr 里（平台新版结构），再按名称元素判一次悬停 */
+      if (hoverTarget && isRelated(hoverTarget, el)) continue;
       /* ① 先给名字列腾地方（找出名称元素才知道是哪一格）；
        * ② 再解除格子内部的宽度上限（列变宽了，容器写死宽也不会跟着变）；
-       * ③ 最后解截断 + 按新宽度量行数。顺序反了会拿窄宽度算行数，白钳一遍。 */
-      widenNameColumn(el);
+       * ③ 最后解截断 + 按新宽度量行数。顺序反了会拿窄宽度算行数，白钳一遍。
+       *
+       * ★ ①② 在「鼠标落在页面上」时整体停手：列宽是**表级**的，一行 hover 就会
+       *   改变整张表的宽度，我们按新宽度重算再加宽 → 表格重排 → hover 布局再变，
+       *   正是那两个截图里「悬停瞬间宽度跳一下」的来源。③ 是幂等的（属性在就不再写），
+       *   可以照常跑。 */
       var cell = cellOf(el);
-      if (cell) releaseWidthCaps(el, cell);
+      if (!hoverTarget) {
+        widenNameColumn(el);
+        if (cell) releaseWidthCaps(el, cell);
+      }
       if (refreshName(el)) count++;
     }
     /* 排版类改动一律静默生效（用户 2026-11-01：「这个功能不需要弹提示」）。
      * 列宽到底改没改，证据在 __dycDiag 的「商品名排版」轨迹里，不在消息里。 */
+    /* 治抖取证：解开数来回变 = 有东西在反复抹掉成果（含 0 也要记，
+     * 否则「N↔0 交替」在报告里看不出来）。每 3 秒最多一条。 */
+    if (count !== lastCount) {
+      lastCount = count;
+      var now = Date.now();
+      if (now - lastNoteAt > 3000) {
+        lastNoteAt = now;
+        noteFact('本轮解开 ' + count + ' 个名称');
+      }
+    }
     return count;
   }
 
@@ -768,6 +966,66 @@
     }, SCAN_DEBOUNCE);
   }
 
+  /* ---------- 鼠标悬停（治抖第二版，2026-11-18）----------
+   *
+   * 平台在鼠标进出商品行时会切换商品信息的布局（名称列变宽、价格与编辑图标这时才出现）。
+   * 这段时间任何人写布局都会和它互相踢，所以这一块先不写，鼠标走了再补。
+   * 用 pointerover / pointerout（capture 阶段）而不是 mousemove：进出才需要处理，
+   * 移动不要触发任何计算。
+   * ========================================================== */
+
+  /** 两个节点是否在一条链上（自身 / 祖先 / 后代都算） */
+  function isRelated(a, b) {
+    if (!a || !b) return false;
+    if (a === b) return true;
+    try { if (a.contains && a.contains(b)) return true; } catch (e) { /* 忽略 */ }
+    try { if (b.contains && b.contains(a)) return true; } catch (e2) { /* 忽略 */ }
+    return false;
+  }
+
+  function onHoverIn(e) {
+    var t = e && e.target;
+    if (!t || t.nodeType !== 1) return;
+    if (isOurNode(t)) return;          /* 自家控件（状态条 / 调试面板）不算悬停商品 */
+    hoverTarget = t;
+    if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+  }
+
+  function onHoverOut(e) {
+    var t = e && e.target;
+    if (!t) return;
+    var to = e.relatedTarget;
+    /* 还在同一块里移动（进子元素 / 从子元素出来）⇒ 不算离开 */
+    if (to && hoverTarget && isRelated(to, hoverTarget)) return;
+    hoverTarget = null;
+    if (hoverTimer) clearTimeout(hoverTimer);
+    hoverTimer = setTimeout(function () {
+      hoverTimer = null;
+      scheduleScan();   /* 鼠标走了再补——晚 300ms，避开平台收拢布局的那一下 */
+    }, HOVER_SETTLE);
+  }
+
+  function bindHover() {
+    if (hoverBound) return;
+    try {
+      document.addEventListener('pointerover', onHoverIn, true);
+      document.addEventListener('pointerout', onHoverOut, true);
+      hoverBound = true;
+    } catch (e) { hoverBound = false; }
+  }
+
+  function unbindHover() {
+    if (hoverBound) {
+      try {
+        document.removeEventListener('pointerover', onHoverIn, true);
+        document.removeEventListener('pointerout', onHoverOut, true);
+      } catch (e) { /* 忽略 */ }
+      hoverBound = false;
+    }
+    hoverTarget = null;
+    if (hoverTimer) { clearTimeout(hoverTimer); hoverTimer = null; }
+  }
+
   /* ---------- 起停 ---------- */
 
   function clearBootTimers() {
@@ -779,10 +1037,15 @@
   function onResize() {
     if (!on) return;
     restoreColumns();
+    /* 宽度变了行数也会变：把名称上的状态属性摘掉，让下一轮按新宽度重判一次。
+     * （CAP 态下变宽本来就会少占行，但「4 行降到 3 行」这类边界值得重判一次） */
+    for (var i = 0; i < touchedNames.length; i++) clearNameAttrs(touchedNames[i]);
+    touchedNames = [];
     scheduleScan();
   }
 
   function stopAll() {
+    unbindHover();   /* 关开关就彻底撒手：不再跟踪鼠标、不再延时补涂 */
     if (observer) {
       try { observer.disconnect(); } catch (e) { /* 忽略 */ }
       observer = null;
@@ -803,10 +1066,16 @@
       restoreOne(row.__dycNameEl);
       row.__dycNameEl = null;
     }
+    /* 名称元素可能已不在缓存里（行被换掉 / 名称换选过），按 touchedNames 再兜一遍 */
+    for (var t = 0; t < touchedNames.length; t++) clearNameAttrs(touchedNames[t]);
+    touchedNames = [];
     rowCache = [];
+    lastCount = -1;
   }
 
   function startAll() {
+    ensureStyle();   /* 常驻规则先就位，否则打上属性也不会有样式 */
+    bindHover();     /* 先知道鼠标在哪，首轮扫描才不会写到手底下的那一行 */
     scan();
     if (!resizeBound) {
       try { window.addEventListener('resize', onResize); resizeBound = true; } catch (e) { resizeBound = false; }

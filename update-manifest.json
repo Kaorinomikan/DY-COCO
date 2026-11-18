@@ -1,5 +1,5 @@
 {
-  "version": "26.11.18.1",
+  "version": "26.11.19.1",
   "algorithm": "sha256",
   "files": [
     {
@@ -44,13 +44,13 @@
     },
     {
       "path": "manifest.json",
-      "size": 15388,
-      "sha256": "769b7d4279e52d04c9b44a9f56ca990d59025b54a36ccc5f823fc0cf6634d87d"
+      "size": 15505,
+      "sha256": "d1cdf5bd934cfe00b67c1fb0dae816e7d65e4633b67eace814197ab04641c6f5"
     },
     {
       "path": "src/background/service-worker.js",
       "size": 91600,
-      "sha256": "6b591febbd19fe1cf4610d1626dd82bc8219b3ebb52d5ca06f379be6a6dbc679"
+      "sha256": "048b8f4dc1fd613b533878d116e3eb6f1a3e3feda334a5e2a2b02cda73844026"
     },
     {
       "path": "src/content/anchor.js",
@@ -99,8 +99,8 @@
     },
     {
       "path": "src/content/debug-panel.js",
-      "size": 51972,
-      "sha256": "096bde37b3f5340a1e88187bbc6422d5530028f9d79f4cbcba5547fe8223cca1"
+      "size": 52083,
+      "sha256": "71bb5847a592b52d931635aa86ca25ba8df152b5cdde0a812f55a6de6573cf6b"
     },
     {
       "path": "src/content/diag.js",
@@ -129,8 +129,8 @@
     },
     {
       "path": "src/content/flags.js",
-      "size": 109448,
-      "sha256": "b92e3e6b414a0d266a5aa71c2cf1a8ad45396e4cf95d4a53aba8d29d687e349c"
+      "size": 110755,
+      "sha256": "9ce1999891d5188544db696a3738efb4d3af7141352963b750bad01a02b18d13"
     },
     {
       "path": "src/content/goods-batch-copy.js",
@@ -209,8 +209,8 @@
     },
     {
       "path": "src/content/shop-list-name.js",
-      "size": 38099,
-      "sha256": "9c22cfd7bdfbf521d6896565d70dee6b6a0cfbe73b81f95bbce737fc3965acb2"
+      "size": 53678,
+      "sha256": "42d59a787279e0373a0ea775aefe0e4af1bb4a54f9fa45f4b8e14914a576d6da"
     },
     {
       "path": "src/content/shop-paste.js",
@@ -229,18 +229,18 @@
     },
     {
       "path": "src/content/stock-net-probe-main.js",
-      "size": 12526,
-      "sha256": "3d680231dcb8067e0eebccc9f210de04d47a077563be5b2f930011dc97c8fb9b"
+      "size": 20867,
+      "sha256": "b1715458a1fbf946dd659e2a2295ebba4057b397fb27340b7f24ecdb4cfdbe35"
     },
     {
       "path": "src/content/stock-net-probe.js",
-      "size": 9661,
-      "sha256": "b8219ec45931be19903fcd8536ebdb25b860a4a1394eb07ff448b0d4adfe87cb"
+      "size": 11984,
+      "sha256": "ca40c886d9b3e71bd0391766819d3c769f1efa664ebdd825e0efb2a205067d7c"
     },
     {
       "path": "src/content/style.css",
-      "size": 15516,
-      "sha256": "1d059a048c4b243b9707b2c907b8c1ccbd0f2417d44cef0a38dc6ffcbcb3309d"
+      "size": 15810,
+      "sha256": "1310e500203707ea3ff0ddc8ba4af8ae02ad3e11bdc2801047d5ffe8e4687af2"
     },
     {
       "path": "src/content/wx-goods-title.js",
@@ -398,14 +398,24 @@
       "sha256": "e2fb163e5e4c08443ede6a9bb615c5624e2424b0b7848eebd1e169df7e23baea"
     },
     {
+      "path": "src/live/xhs-auto-loop.js",
+      "size": 53911,
+      "sha256": "d4d16c2684a63d9d8726d618ff46d8f28b031722e726262bc1e5350b4eb27117"
+    },
+    {
+      "path": "src/live/xhs-cart-paste.js",
+      "size": 19200,
+      "sha256": "c43dee815fe00ea93c23fbeb95f7e1e6cf321fe90a4ce8fe457db89826f890a9"
+    },
+    {
       "path": "src/live/xhs-copy-code.js",
       "size": 40521,
       "sha256": "2a0101af16a687720724c73d2232849db266552cb610d760ae7819822cb1ca33"
     },
     {
       "path": "src/live/xhs-locate.js",
-      "size": 33280,
-      "sha256": "c74a85aae94ae8bcf01ca22ff9a51b2b3a658796068db36b072058168cf45677"
+      "size": 37141,
+      "sha256": "6d978a237ea2d64a66f9557b1b113b72eded78c502be62eb97cf6c433784884b"
     },
     {
       "path": "src/live/xhs-name-wrap.js",
@@ -414,8 +424,8 @@
     },
     {
       "path": "src/live/xhs-scroll.js",
-      "size": 25009,
-      "sha256": "791f207878444da0095767f699206508785fe30f6ef92367f8939807e895d0a5"
+      "size": 24539,
+      "sha256": "bf1776b328c3008795504c2c0ccb8598f94294128bfd1dd1cfe4254062fcdae7"
     },
     {
       "path": "src/offscreen/clipboard.js",

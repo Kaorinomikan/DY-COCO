@@ -29,6 +29,11 @@
 
   if (window.__DYC_STOCK_PROBE__) return;
 
+  var xhs = /(?:^|\.)xiaohongshu\.com$/i.test(location.hostname);
+  function available() {
+    return !xhs || !!(window.DYC_PAGE_PATTERNS && window.DYC_PAGE_PATTERNS.xhsCtrl.test(location.href));
+  }
+
   var MAX_RECORDS = 120;
   var records = [];
   var ready = false;          // MAIN world 探针是否已回话
@@ -37,6 +42,8 @@
   var ensureTimer = null;
   var sendSeq = 0;            // 转发请求序号
   var pendingSends = {};      // id → resolve
+  var paramsSeq = 0;          // 参数查询序号
+  var pendingParams = {};     // id → resolve
   var readyWaiters = [];      // ensureReady 的等待者(ready 消息到达时逐个唤醒)
 
   function say(msg) {
@@ -118,6 +125,14 @@
         resolve({ status: m.status || 0, text: m.text || '' });
       }
     }
+
+    if (m.type === 'paramsResult' && m.id != null) {
+      var settle = pendingParams[m.id];
+      if (settle) {
+        delete pendingParams[m.id];
+        settle(m.params || null);
+      }
+    }
   });
 
   /**
@@ -127,7 +142,9 @@
    */
   function ensureReady(timeoutMs) {
     if (ready) return Promise.resolve(true);
-    injectViaScriptTag();
+    // 小红书页面的 CSP 会拦 chrome-extension:// 脚本，script 标签每次都失败并
+    // 在诊断报告里留一条红色报错；后台直注（chrome.scripting）不受 CSP 管，只走它。
+    if (!xhs) injectViaScriptTag();
     injectViaBackground();
     return new Promise(function (resolve) {
       var done = false;
@@ -176,10 +193,39 @@
           window.postMessage({
             source: 'DYC_STOCK_PROBE_CMD', type: 'send', id: id,
             url: String(url), method: opts.method || 'GET',
-            body: opts.body != null ? String(opts.body) : null
+            body: opts.body != null ? String(opts.body) : null,
+            // 跨子域请求要带登录凭证，否则平台回 401「缺失登录凭证」
+            credentials: !!opts.credentials
           }, '*');
         } catch (e) {
           if (pendingSends[id]) { delete pendingSends[id]; resolve({ status: 0, text: '' }); }
+        }
+      });
+    });
+  }
+
+  /**
+   * 取平台最近一次商品池请求的公共参数（source / scene_id / plan_id）。
+   *
+   * 为什么照抄而不是写死：plan_id 随直播场次变化，写死会加错场次；
+   * 抄平台自己的请求，平台改参数我们自动跟随。没开过商品池就返回 null，
+   * 调用方自行用默认值兜底，不许把 null 当成功。
+   *
+   * @returns {Promise<null|{source:string, scene_id:string, plan_id:string}>}
+   */
+  function apiParams() {
+    return ensureReady(2000).then(function (ok) {
+      if (!ok) return null;
+      return new Promise(function (resolve) {
+        var id = ++paramsSeq;
+        pendingParams[id] = resolve;
+        setTimeout(function () {
+          if (pendingParams[id]) { delete pendingParams[id]; resolve(null); }
+        }, 1500);
+        try {
+          window.postMessage({ source: 'DYC_STOCK_PROBE_CMD', type: 'params', id: id }, '*');
+        } catch (e) {
+          if (pendingParams[id]) { delete pendingParams[id]; resolve(null); }
         }
       });
     });
@@ -190,12 +236,13 @@
    * @param {number} ttlMs 窗口时长（毫秒），默认 30 秒
    */
   function arm(ttlMs) {
+    if (!available()) return;
     records = [];
     ready = false;
     armedEver = true;
     pendingTtl = ttlMs > 0 ? ttlMs : 30000;
 
-    injectViaScriptTag();
+    if (!xhs) injectViaScriptTag();
     injectViaBackground();
 
     // 2.5 秒还没 ready 就留日志证据 —— 报告附加段会如实标注「未注入」
@@ -207,9 +254,10 @@
 
   /** 诊断报告附加段：无记录也要给状态行，让分析侧分得清「没抓到」和「没在抓」 */
   function reportSection() {
+    if (!available() || (xhs && !armedEver)) return '';
     var lines = [];
     lines.push('');
-    lines.push('## 库存清零·网络监听');
+    lines.push(xhs ? '## 小红书中控台·接口取样（已脱敏）' : '## 库存清零·网络监听');
 
     if (!ready && records.length === 0) {
       if (!armedEver) {
@@ -222,7 +270,8 @@
 
     lines.push('- 状态:已注入,记录 ' + records.length + ' 条(只记本站接口,静态资源不计)');
     if (records.length === 0) {
-      lines.push('- 本轮窗口内没有本站请求经过(确认操作是否发生在点击「清空库存」后的 30 秒内)');
+      lines.push(xhs ? '- 未采到请求，请在开始接口取样后 30 秒内搜索并保存。' :
+        '- 本轮窗口内没有本站请求经过(确认操作是否发生在点击「清空库存」后的 30 秒内)');
       return lines.join('\n');
     }
 
@@ -231,6 +280,7 @@
       lines.push('');
       lines.push('### 请求#' + (i + 1) + ' ' + (r.method || '?') + ' ' +
                  (r.url || '?') + '  [' + (r.status != null ? r.status : '?') + ']');
+      if (xhs && r.business) lines.push('- 业务参数: ' + JSON.stringify(r.business));
       if (r.reqBody) lines.push('- 请求体: ' + r.reqBody);
       if (r.respText) lines.push('- 响应体: ' + r.respText);
     }
@@ -238,15 +288,19 @@
   }
 
   window.__DYC_STOCK_PROBE__ = {
+    available: available,
     arm: arm,
     reportSection: reportSection,
     sendRequest: sendRequest,
+    apiParams: apiParams,
     records: function () { return records.slice(); },
     clear: function () { records = []; }
   };
 
   // 模块加载即装 MAIN 侧探针(与开窗解耦):渠道品直提的「转发请求」依赖它就绪,
   // 页面一打开就装好,点击时零等待。被动记录仍只在 arm 开窗后发生。
-  injectViaScriptTag();
-  injectViaBackground();
+  if (!xhs) {
+    injectViaScriptTag();
+    injectViaBackground();
+  }
 })();

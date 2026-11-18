@@ -197,25 +197,38 @@ async function testScroll() {
     win.close();
   });
 
-  await check('嵌套滚动容器一起滚（第一版只滚外层，内层商品列表没动）', async () => {
-    /* 2026-11-17 真机：外层 .control-container 只多 135px，内层 .goods-card-list
-     * 内容 28382 —— 第一版把内层当「嵌套」丢掉，点下去画面几乎不动。
-     * 现在必须两层都归位。 */
-    const { win, doc } = makeDom('<!doctype html><body><div id="outer"><div id="inner"></div></div></body>');
-    const outer = doc.getElementById('outer');
-    const inner = doc.getElementById('inner');
-    outer.style.overflowY = 'auto';
-    inner.style.overflowY = 'auto';
-    geo(outer, { clientHeight: 849, scrollHeight: 984, clientWidth: 1440, scrollWidth: 1440, scrollTop: 0 });
-    geo(inner, { clientHeight: 711, scrollHeight: 28382, clientWidth: 1112, scrollWidth: 1112, scrollTop: 0 });
+  await check('商品列表与划线外层同时到顶到底，评论滚动位置不变', async () => {
+    const { win, doc } = makeDom('<!doctype html><body>'
+      + '<div id="ctrl" class="control-container">'
+      + '<div id="list" class="goods-card-list"></div>'
+      + '<div class="comment-container"><div id="cmt" class="comments"></div></div>'
+      + '</div></body>');
+    const ctrl = doc.getElementById('ctrl');
+    const list = doc.getElementById('list');
+    const cmt = doc.getElementById('cmt');
+    ctrl.style.overflowY = 'auto';
+    list.style.overflowY = 'auto';
+    cmt.style.overflowY = 'auto';
+    geo(ctrl, { clientHeight: 849, scrollHeight: 984, clientWidth: 1440, scrollWidth: 1440, scrollTop: 0 });
+    geo(list, { clientHeight: 711, scrollHeight: 28382, clientWidth: 1112, scrollWidth: 1112, scrollTop: 0 });
+    geo(cmt, { clientHeight: 316, scrollHeight: 798, clientWidth: 280, scrollWidth: 280, scrollTop: 120 });
+
     win.__flags = { xhsScrollBtns: true, xhsBackToTop: true, xhsBackToBottom: true };
     win.eval(SCROLL);
     await sleep(30);
 
     doc.getElementById('dyb-xhs-scroll').querySelector('[data-role="down"]').click();
     await sleep(420);
-    assert.equal(outer.scrollTop, 135, '外层应到底');
-    assert.equal(inner.scrollTop, 27671, '内层商品列表也必须到底 —— 这才是用户要看的那一层');
+    assert.equal(list.scrollTop, 27671, '商品列表必须到底 —— 这才是用户要看的那一列');
+    assert.equal(cmt.scrollTop, 120, '评论区被带着滚了 —— 用户明确要求不牵涉评论区');
+    assert.equal(ctrl.scrollTop, 135, '划线的外层页面滚动条也必须到底');
+
+    /* 上滑同理：列表归零，评论保持原值 */
+    doc.getElementById('dyb-xhs-scroll').querySelector('[data-role="up"]').click();
+    await sleep(420);
+    assert.equal(list.scrollTop, 0, '商品列表应回到顶');
+    assert.equal(ctrl.scrollTop, 0, '划线的外层页面滚动条也必须回顶');
+    assert.equal(cmt.scrollTop, 120, '上滑也不许动评论区');
     win.close();
   });
 
@@ -246,11 +259,14 @@ async function testScroll() {
   });
 
   await check('落点被平台改回：重试仍不动要报三段式消息（不许静默失效）', async () => {
-    const { win, doc } = makeDom('<!doctype html><body><div id="box"></div></body>');
+    const { win, doc } = makeDom('<!doctype html><body><div id="box" class="control-container"><div class="goods-card-list"></div></div></body>');
     const box = doc.getElementById('box');
     box.style.overflowY = 'auto';
     geo(box, { clientHeight: 400, scrollHeight: 2000, clientWidth: 800, scrollWidth: 800, scrollTop: 0 });
-    /* 模拟中控台把 scrollTop 立刻写回 0（写入无效） */
+    const list = doc.querySelector('.goods-card-list');
+    list.style.overflowY = 'scroll';
+    geo(list, { clientHeight: 300, scrollHeight: 3000, clientWidth: 700, scrollWidth: 700, scrollTop: 0 });
+    /* 商品列表正常滚动，外层 scrollTop 被回写，必须识别外层失败。 */
     Object.defineProperty(box, 'scrollTop', { get() { return 0; }, set() {}, configurable: true });
     const said = [];
     win.setStatus = (m, t, o) => said.push({ m, t, o });
@@ -260,10 +276,38 @@ async function testScroll() {
 
     doc.getElementById('dyb-xhs-scroll').querySelector('[data-role="down"]').click();
     await sleep(900);
+    assert.equal(list.scrollTop, 2700, '列表滚到底不能掩盖外层失败');
     assert.equal(said.length, 1, '滚不动时必须留一条消息，且只一条');
     assert.equal(said[0].t, 'warning');
     assert.equal(said[0].o.source, '滚动按钮');
     assert.equal(said[0].o.count, '未滚到底');
+    win.close();
+  });
+
+
+  await check('按钮不可拖动：不绑 pointerdown，也不读写历史位置', async () => {
+    /* 2026-11-18 用户令：「上滑下滑的按钮不可以拖动，要固定位置」。
+     * 拖动整套（pointerdown/move/up + savePos/restorePos + dybXhsScrollPos）必须删干净，
+     * 否则用户一按一拖还是会跑位。 */
+    assert.equal(/addEventListener\s*\(\s*['"]pointerdown['"]/.test(SCROLL), false, '还在绑拖动');
+    assert.equal(/setPointerCapture\s*\(/.test(SCROLL), false, '还在抓指针');
+    assert.equal(/['"]dybXhsScrollPos['"]/.test(SCROLL), false, '还在读写拖动记住的位置');
+  });
+
+  await check('位置固定：右下 72 / 56，left/top 归 auto', async () => {
+    const { win, doc } = makeDom('<!doctype html><body><div id="box"></div></body>');
+    const box = doc.getElementById('box');
+    box.style.overflowY = 'auto';
+    geo(box, { clientHeight: 400, scrollHeight: 2000, clientWidth: 800, scrollWidth: 800, scrollTop: 0 });
+    win.__flags = { xhsScrollBtns: true, xhsBackToTop: true, xhsBackToBottom: true };
+    win.eval(SCROLL);
+    await sleep(30);
+
+    const host = doc.getElementById('dyb-xhs-scroll');
+    assert.equal(host.style.right, '72px', '固定距右侧 72');
+    assert.equal(host.style.bottom, '56px', '固定距底部 56');
+    assert.equal(host.style.left, 'auto', '不写 left —— 写了就不能靠 right 固定');
+    assert.equal(host.style.top, 'auto', '不写 top');
     win.close();
   });
 

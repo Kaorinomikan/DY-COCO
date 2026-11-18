@@ -605,7 +605,9 @@
      * 让用户以为自己弄坏了什么。
      * 用 style.display 而不是 hidden：面板 CSS 给按钮设了显示规则，
      * hidden 属性会被 display 规则覆盖掉。 */
-    if (btnNetArm && !(window.__DYC_STOCK_PROBE__ && typeof window.__DYC_STOCK_PROBE__.arm === 'function')) {
+    var netProbe = window.__DYC_STOCK_PROBE__;
+    if (btnNetArm && !(netProbe && typeof netProbe.arm === 'function' &&
+        (!netProbe.available || netProbe.available()))) {
       btnNetArm.style.display = 'none';
     }
 
@@ -620,7 +622,7 @@
     if (btnNetArm) {
       btnNetArm.addEventListener('click', function () {
         var probe = window.__DYC_STOCK_PROBE__;
-        if (!probe || typeof probe.arm !== 'function') {
+        if (!probe || typeof probe.arm !== 'function' || (probe.available && !probe.available())) {
           say('监听模块不在场(本页脚本未含或未刷新)', 'err');
           return;
         }

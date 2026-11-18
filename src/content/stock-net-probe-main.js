@@ -40,9 +40,11 @@
 
   var armedUntil = 0;        // 监听窗口截止时间戳
   var MAX_TEXT = 6000;       // 单条请求/响应体截断长度（字符）
+  var xhs = /(?:^|\.)xiaohongshu\.com$/i.test(location.hostname);
+  var xhsCtrl = /^https:\/\/(?:pgy\.xiaohongshu\.com\/commerce\/redlive\/|ark\.xiaohongshu\.com\/live_center_control(?:\/|[?#]|$))/;
 
   function armed() {
-    return Date.now() < armedUntil;
+    return Date.now() < armedUntil && (!xhs || xhsCtrl.test(location.href));
   }
 
   /** 只认本站接口；静态资源与第三方域名一律不记 */
@@ -51,6 +53,12 @@
   function interested(url) {
     if (!url || typeof url !== 'string') return false;
     if (STATIC_RE.test(url)) return false;
+    if (xhs) {
+      try {
+        var target = new URL(url, location.href);
+        return target.protocol === 'https:' && /^(?:pgy|ark|edith)\.xiaohongshu\.com$/i.test(target.hostname);
+      } catch (e) { return false; }
+    }
     // 相对路径按本站算
     if (!/^https?:\/\//i.test(url)) return true;
     try {
@@ -131,14 +139,152 @@
     return out;
   }
 
-  function clip(s) {
+  // 小红书请求和响应正文只保留字段结构。直提所需的业务枚举另按接口白名单取样。
+  function shape(value, depth) {
+    if (value === null) return null;
+    if (typeof value !== 'object') return typeof value;
+    if (depth >= 6) return Array.isArray(value) ? 'array' : 'object';
+    if (Array.isArray(value)) return value.slice(0, 2).map(function (item) { return shape(item, depth + 1); });
+    var result = Object.create(null);
+    Object.keys(value).slice(0, 36).forEach(function (key) {
+      if (/^[a-z_][a-z0-9_.-]{0,63}$/i.test(key) && !/^[a-f0-9]{16,}$/i.test(key)) {
+        result[key] = shape(value[key], depth + 1);
+      }
+    });
+    return result;
+  }
+  function xhsBodyShape(s, request) {
+    if (!s) return '';
+    try { return JSON.stringify(shape(JSON.parse(s), 0)); } catch (e) {
+      if (request && /^[a-z_][a-z0-9_.-]*=/i.test(s)) {
+        return JSON.stringify(shape(Object.fromEntries(new URLSearchParams(s)), 0));
+      }
+      return '[非 JSON 内容已省略]';
+    }
+  }
+  function clip(s, request) {
+    if (xhs) s = xhsBodyShape(s, request);
     s = slim(s);
     return s.length > MAX_TEXT
       ? s.slice(0, MAX_TEXT) + '…[已截断,共' + s.length + '字符]'
       : s;
   }
 
-  function emit(rec) {
+  var XHS_SEARCH = '/api/edith/live/commerce/v1/cps_goods/search';
+  var XHS_POOL = '/api/edith/live/commerce/v1/cps_goods/list';
+  var XHS_ADD = '/api/edith/live/commerce/live/center/goods/add';
+  var XHS_CART = '/api/edith/live/commerce/v1/live_center/goods/list';
+
+  function parseJson(text) {
+    try { return JSON.parse(text); } catch (e) { return null; }
+  }
+  function businessEnum(value) {
+    if (Number.isInteger(value) && Math.abs(value) <= 999999) return value;
+    if (typeof value === 'string' && /^(?:[0-9]{1,6}|[a-z]{1,24}(?:_[a-z]{1,24}){0,3})$/i.test(value)) return value;
+    return value == null || value === '' ? value : '[值已省略]';
+  }
+  function queryParamSample(value) {
+    if (value == null || value === '') return value;
+    var data = parseJson(value);
+    if (!data || typeof data !== 'object') return '[非 JSON 参数值已省略]';
+    return shape(data, 0);
+  }
+  function xhsBusiness(url, method, request, response) {
+    // 中控台有两个域：pgy（达人/买手侧）与 ark（千帆商家侧）。直提接口 path 相同、
+    // 只是 host 不同；只认 ark 会让 pgy 页面的 business 恒为空，参数永远采不到。
+    if (!/(?:^|\.)xiaohongshu\.com$/i.test(url.hostname)) return null;
+    var query = url.searchParams;
+    if (method === 'GET' && url.pathname === XHS_SEARCH) {
+      var result = parseJson(response);
+      var items = result && result.data && result.data.items;
+      var id = query.get('query') || '';
+      var hit = Array.isArray(items) && /^[a-f0-9]{24}$/i.test(id) && items.find(function (item) {
+        return item && item.goods_id && String(item.goods_id.new_item_id).toLowerCase() === id.toLowerCase();
+      });
+      return {
+        source: businessEnum(query.get('source')),
+        scene_id: businessEnum(query.get('scene_id')),
+        // plan_id 是直播场次标识，直提必须原样回放；不采值就只能靠猜。
+        plan_id: query.get('plan_id'),
+        query_param: queryParamSample(query.get('query_param')),
+        queryMatchesNewItemId: !!hit,
+        matchedType: hit ? businessEnum(hit.type) : null
+      };
+    }
+    if (method === 'POST' && url.pathname === XHS_ADD) {
+      var payload = parseJson(request);
+      var list = payload && payload.goods_list;
+      var reply = parseJson(response);
+      return {
+        type: businessEnum(payload && payload.type),
+        goodsCount: Array.isArray(list) ? list.length : null,
+        goodsType: Array.isArray(list) && list[0] ? businessEnum(list[0].goods_type) : null,
+        success: reply && typeof reply.success === 'boolean' ? reply.success : null,
+        code: reply && Number.isInteger(reply.code) ? businessEnum(reply.code) : null
+      };
+    }
+    if (method === 'GET' && url.pathname === XHS_CART) {
+      return {
+        type: businessEnum(query.get('type')), source: businessEnum(query.get('source')),
+        page: businessEnum(query.get('page')), page_size: businessEnum(query.get('page_size'))
+      };
+    }
+    return null;
+  }
+
+  /* ---- 直提参数照抄（2026-11-18）----
+   * 商品池接口必须带 source / scene_id / plan_id，其中 plan_id 随直播场次变化，
+   * 写死会加错场次。这里把**平台自己**发过的同类请求的公共参数记下来，
+   * 直提时原样照抄：平台改参数我们自动跟随，也不需要在扩展里存业务 ID。
+   * 只在内存里留最近一次，不进 storage、不进诊断报告以外的任何地方。 */
+  var apiParams = null;
+  var PARAMS_KEY = 'dycXhsApiParams';
+  // 刷新页面后内存会丢，但同一场直播的 plan_id 不变 —— 存会话级（关标签即失），
+  // 两小时后作废，避免跨场次把商品加到上一场。
+  try {
+    var savedParams = JSON.parse(sessionStorage.getItem(PARAMS_KEY) || 'null');
+    if (savedParams && savedParams.plan_id && Date.now() - (savedParams.t || 0) < 7200000) {
+      apiParams = {
+        source: savedParams.source || '',
+        scene_id: savedParams.scene_id || '',
+        plan_id: savedParams.plan_id || ''
+      };
+    }
+  } catch (e) { /* 读不到就走默认参数，直提侧自己兜底 */ }
+
+  function rememberParams(url) {
+    if (!xhs) return;
+    try {
+      var u = new URL(url, location.href);
+      if (u.pathname !== XHS_SEARCH && u.pathname !== XHS_POOL) return;
+      var p = {
+        source: u.searchParams.get('source') || '',
+        scene_id: u.searchParams.get('scene_id') || '',
+        plan_id: u.searchParams.get('plan_id') || ''
+      };
+      if (!p.source && !p.scene_id && !p.plan_id) return;
+      apiParams = p;
+      try {
+        sessionStorage.setItem(PARAMS_KEY, JSON.stringify({
+          source: p.source, scene_id: p.scene_id, plan_id: p.plan_id, t: Date.now()
+        }));
+      } catch (e2) { /* 存不下就只留内存 */ }
+    } catch (e) { /* 参数读不出来就不记，直提侧会退到默认值 */ }
+  }
+
+  function emit(rec, request, response) {
+    if (xhs) {
+      try {
+        var u = new URL(rec.url, location.href);
+        rec.business = xhsBusiness(u, rec.method, request, response);
+        var query = shape(Object.fromEntries(u.searchParams), 0);
+        rec.url = u.origin + u.pathname.split('/').map(function (part) {
+          return /^[a-z_][a-z0-9_.-]{0,63}$/i.test(part) && !/^[a-f0-9]{16,}$/i.test(part) ? part : part ? ':value' : '';
+        }).join('/');
+        if (Object.keys(query).length) rec.url += ' 参数 ' + JSON.stringify(query);
+        if (rec.status === 0) rec.respText = '[网络请求失败]';
+      } catch (e) { return; }
+    }
     rec.t = Date.now();
     try {
       window.postMessage({ source: 'DYC_STOCK_PROBE', type: 'record', data: rec }, '*');
@@ -152,26 +298,44 @@
     if (!m || m.source !== 'DYC_STOCK_PROBE_CMD') return;
 
     if (m.type === 'arm') {
+      if (xhs && !xhsCtrl.test(location.href)) return;
       var ttl = Number(m.ttl);
+      if (xhs) ttl = Math.min(30000, ttl);
       armedUntil = Date.now() + (isFinite(ttl) && ttl > 0 ? ttl : 30000);
+      return;
+    }
+
+    /* ---- 直提参数查询：隔离世界问「平台最近一次商品池请求带了什么参数」 ---- */
+    if (m.type === 'params') {
+      try {
+        window.postMessage({
+          source: 'DYC_STOCK_PROBE', type: 'paramsResult', id: m.id, params: apiParams
+        }, '*');
+      } catch (e) { /* 回不去就让隔离世界超时兜底 */ }
       return;
     }
 
     /* ---- 转发请求(2026-10-24 渠道品直提):隔离世界发的请求缺平台请求库
      * 注入的安全头,会被平台判「当前环境存在风险」。在这里用**页面世界的
      * XHR** 发同一请求 —— 平台对 XMLHttpRequest.prototype 的全局注入
-     * (签名/平台校验头)会自动作用到这个 XHR 上,与页面自己的请求同权。 ---- */
+     * (签名/平台校验头)会自动作用到这个 XHR 上,与页面自己的请求同权。
+     * 2026-11-18 小红书直提同走这条通道：与平台点「保存」发出的请求同权。 ---- */
     if (m.type === 'send') {
-      doSend(m.id, m.url, m.method, m.body);
+      doSend(m.id, m.url, m.method, m.body, m.credentials);
       return;
     }
   });
 
   /** 在页面侧转发一个 XHR,结果经 postMessage 送回隔离世界 */
-  function doSend(id, url, method, body) {
+  function doSend(id, url, method, body, credentials) {
     try {
       var xhr = new XMLHttpRequest();
       xhr.open(method || 'GET', url, true);
+      // pgy 页面请求 ark 接口属跨子域：XHR 默认不带 cookie，服务端会判
+      // 「缺失登录凭证」(-13000)。平台自己的请求是带凭证发的，这里必须跟齐。
+      if (credentials) {
+        try { xhr.withCredentials = true; } catch (e) { /* 老内核忽略 */ }
+      }
       if (body != null && method !== 'GET') {
         try { xhr.setRequestHeader('Content-Type', 'application/json;charset=UTF-8'); } catch (e) {}
       }
@@ -232,6 +396,8 @@
       } catch (e) { /* 读参失败不影响原请求 */ }
 
       var p = _fetch.apply(this, arguments);
+      // 不论是否在监听窗口内，都记一下商品池请求的公共参数，供直提照抄。
+      try { rememberParams(url); } catch (e) { /* 记录失败不影响原请求 */ }
 
       if (cap) {
         p.then(function (res) {
@@ -247,8 +413,8 @@
             .then(function (r) {
               emit({
                 kind: 'fetch', url: String(url), method: method,
-                reqBody: clip(r[0]), status: status, respText: clip(r[1])
-              });
+                reqBody: clip(r[0], true), status: status, respText: clip(r[1])
+              }, r[0], r[1]);
             })
             .catch(function () {
               emit({
@@ -282,6 +448,7 @@
         method: String(method || 'GET').toUpperCase(),
         url: String(url == null ? '' : url)
       };
+      rememberParams(this.__dycProbe.url);
     } catch (e) { /* 不影响原 open */ }
     return _xhrOpen.apply(this, arguments);
   };
@@ -295,7 +462,8 @@
     try { cap = !!info && armed() && interested(info.url); } catch (e) {}
 
     if (cap) {
-      var reqBody = clip(bodyText(body));
+      var rawRequest = bodyText(body);
+      var reqBody = clip(rawRequest, true);
       var finished = false;
 
       var finish = function () {
@@ -320,7 +488,7 @@
         emit({
           kind: 'xhr', url: info.url, method: info.method,
           reqBody: reqBody, status: status, respText: clip(resp)
-        });
+        }, rawRequest, resp);
       };
 
       xhr.addEventListener('load', finish);

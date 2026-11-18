@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "可可助手",
-  "version": "26.11.18.1",
+  "version": "26.11.19.1",
   "description": "抖音抖店、微信小店、中控台小助手",
   "permissions": [
     "storage",
@@ -370,7 +370,10 @@
         "src/live/xhs-copy-code.js",
         "src/live/xhs-scroll.js",
         "src/live/xhs-locate.js",
-        "src/content/debug-panel.js"
+        "src/live/xhs-auto-loop.js",
+        "src/content/stock-net-probe.js",
+        "src/content/debug-panel.js",
+        "src/live/xhs-cart-paste.js"
       ],
       "css": [
         "src/content/style.css",

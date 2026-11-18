@@ -78,6 +78,14 @@ function cardsHtml(serials, withInput) {
 function pageHtml(serials, opts) {
   const o = opts || {};
   return '<!doctype html><body>'
+    /* 抽屉与它同名搜索框刻意放在**最前面**：querySelectorAll 会先命中它，
+     * 正是真机上「控件被挂进添加商品抽屉」的成因（2026-11-18 用户报）。 */
+    + (o.withDrawer
+      ? '<div class="d-drawer d-drawer-right detail-add-goods-drawer"><div class="add-table">'
+        + '<div id="dph">请输入商品名称、序号或ID</div>'
+        + '<input id="dq" placeholder="请输入商品名称、序号或ID">'
+        + '</div></div>'
+      : '')
     + '<div class="top-bar"><div class="top-bar-menu"></div></div>'
     + '<div id="row">'
     + '<div id="tabs">全部</div>'
@@ -123,6 +131,13 @@ function makeDom(html, flags) {
   if (q) rect(q, 200, 20, 300, 32);
   const ph = doc.getElementById('ph');
   if (ph) rect(ph, 210, 22, 280, 28);
+  /* 抽屉几何：真机里抽屉从右侧滑出、占满视口高度 */
+  const dq = doc.getElementById('dq');
+  if (dq) rect(dq, 1300, 56, 180, 32);
+  const dph = doc.getElementById('dph');
+  if (dph) rect(dph, 1300, 58, 170, 28);
+  const drawer = doc.querySelector('.d-drawer');
+  if (drawer) rect(drawer, 1226, 0, 481, 929);
   rect(doc.getElementById('searchbox'), 196, 18, 310, 36);
   rect(doc.getElementById('searchcol'), 196, 18, 310, 36);
   rect(doc.getElementById('row'), 0, 18, 1100, 36);
@@ -266,6 +281,39 @@ async function testPlacement() {
     assert.ok(/没找到商品列表工具栏/.test(st.m), '实际：' + st.m);
     assert.ok(win.__diag.some((x) => x.a === '序号定位' && /插不上/.test(x.d)),
       '诊断轨迹里要留下候选，供下一份报告定位');
+    win.close();
+  });
+
+  await check('A8 抽屉里的同名搜索框不算锚点：控件只挂工具栏，不进抽屉', async () => {
+    /* 2026-11-18 用户报「序号定位功能不要在抽屉出现」：
+     * 「添加商品」抽屉里也有一枚「请输入商品名称」的搜索框，第三路会命中它，
+     * 控件被插进抽屉列表并竖排拉伸（真机量到 212×873）。 */
+    const { win, doc } = makeDom(pageHtml([1, 2, 3], { withDrawer: true }));
+    win.eval(LOCATE);
+    await sleep(40);
+
+    const box = doc.getElementById('dyc-xhs-locate');
+    assert.ok(box, '控件没挂上');
+    assert.equal(box.closest('.d-drawer'), null, '控件不许出现在抽屉里');
+    assert.equal(box.parentElement.id, 'row', '应挂在商品列表工具栏那一行');
+    win.close();
+  });
+
+  await check('A9 控件被平台搬进抽屉后，一拍内拆掉重挂回工具栏', async () => {
+    const { win, doc } = makeDom(pageHtml([1, 2], { withDrawer: true }));
+    win.eval(LOCATE);
+    await sleep(40);
+    const box = doc.getElementById('dyc-xhs-locate');
+    assert.ok(box, '初始没挂上');
+
+    doc.querySelector('.add-table').appendChild(box);   // 模拟抽屉重渲染把它卷走
+    assert.ok(box.closest('.d-drawer'), '前提：此刻控件确实在抽屉里');
+
+    await sleep(1300);                                   // 一拍心跳
+    const now = doc.getElementById('dyc-xhs-locate');
+    assert.ok(now, '控件被拆后必须重挂回来');
+    assert.equal(now.closest('.d-drawer'), null, '不许留在抽屉里');
+    assert.equal(now.parentElement.id, 'row', '要回到工具栏那一行');
     win.close();
   });
 

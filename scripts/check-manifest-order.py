@@ -130,6 +130,8 @@ SELF_BOOTING = {
     # (main.js / toolbar.js 都只管别的页),按钮由脚本自己读开关、自己订阅、
     # 自己挂到平台「添加商品」左边,故整条以自启动脚本收尾。
     'src/content/shop-paste.js',
+    # 小红书粘贴加车自行读取/订阅开关并挂载按钮，不依赖 main/toolbar。
+    'src/live/xhs-cart-paste.js',
 }
 
 FLAGS = 'src/content/flags.js'

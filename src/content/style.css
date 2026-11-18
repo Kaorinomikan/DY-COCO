@@ -530,3 +530,9 @@
   line-height: 9px;
   z-index: 4;
 }
+
+/* 小红书中控台：平台抽屉打开时，滚动按钮和循环讲解控件一起让位。 */
+body:has(:is(.d-drawer, .detail-add-goods-drawer):not([hidden], [aria-hidden="true"], [hidden] *, [aria-hidden="true"] *))
+  :is(#dyb-xhs-scroll, #dyc-xhs-loop) {
+  display: none !important;
+}

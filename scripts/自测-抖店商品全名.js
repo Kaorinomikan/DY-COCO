@@ -162,19 +162,23 @@ function sliceVar(src, name) {
 }
 
 const FN_NAMES = [
-  'textOf', 'isOurNode', 'truncationReason', 'looksLikeName', 'findNameInRow',
+  'textOf', 'isOurNode', 'isHandled', 'isRelated', 'truncationReason', 'looksLikeName', 'findNameInRow',
   'backupOf', 'setProp', 'applyUnclip', 'naturalLines', 'capLines',
-  'restoreOne', 'refreshName', 'restoreStyleProp', 'restoreOneTable',
+  'restoreOne', 'clearNameAttrs', 'ensureStyle', 'refreshName', 'restoreStyleProp', 'restoreOneTable',
+  'lockHeight', 'relock',
   'restoreColumns', 'cellOf', 'noteFact', 'releaseOneWidth', 'releaseWidthCaps',
-  'restoreCaps', 'widenNameColumn',
+  'restoreCaps', 'widenNameColumn', 'onHoverIn', 'onHoverOut', 'bindHover', 'unbindHover',
   'rowAlive', 'collectRows', 'scan'
 ];
 const VAR_NAMES = [
   'MARK', 'SCAN_DEBOUNCE', 'SCAN_MAX_WAIT', 'BOOT_DELAYS', 'NODE_BUDGET',
   'NAME_MIN_LEN', 'NAME_MAX_LEN', 'NOT_NAME_RE', 'NUMERIC_RE', 'ACTION_RE',
   'MAX_LINES', 'WIDEN_MIN_GAP', 'WIDEN_KEEP',
+  'OPEN_ATTR', 'CAP_ATTR', 'MULTI_ATTR', 'H_ATTR', 'STYLE_ID', 'CSS',
   'on', 'observer', 'bootTimers', 'debounceTimer', 'queuedAt', 'rowCache',
-  'appliedAt', 'widenedTables', 'cappedEls', 'resizeBound'
+  'appliedAt', 'widenedTables', 'cappedEls', 'touchedNames', 'resizeBound',
+  'lastCount', 'lastNoteAt',
+  'hoverTarget', 'hoverTimer', 'hoverBound', 'HOVER_SETTLE'
 ];
 
 /** findProductRows 是 anchor.js 的全局函数，由用例按需替换 */
@@ -187,12 +191,13 @@ function buildModule(opts) {
   for (const f of FN_NAMES) parts.push(sliceFunction(src, f));
   const prelude = [
     'on = ' + (opts && opts.on === false ? 'false' : 'true') + ';',
-    'function __setRows(r) { rowCache = r; }'
+    'function __setRows(r) { rowCache = r; }',
+    'function __setHover(x) { hoverTarget = x; }'
   ].join('\n');
   /* ⚠️ prelude 必须排在变量声明**之后**：源码里 `var on = false;` 自带初始值，
    *    放在它前面会被这一句覆盖掉（第一版就写反了，两条行缓存用例全红）。 */
   const body = parts.join('\n') + '\n' + prelude + '\nreturn {' +
-    FN_NAMES.concat(VAR_NAMES).concat(['__setRows']).join(',') + '};';
+    FN_NAMES.concat(VAR_NAMES).concat(['__setRows', '__setHover']).join(',') + '};';
   // eslint-disable-next-line no-new-func
   const fn = new Function('window', 'document', 'findProductRows', body);
   const m = fn(win, doc, () => productRowsImpl());
@@ -321,69 +326,84 @@ group('E. 自家节点一律排除');
   line('E1~E5 自家节点排除', true);
 }
 
-/* ---------- F. 按原因写最少一组属性 ---------- */
-group('F. 按截断原因写属性（不写死宽高）');
+/* ---------- F. 名称解截断 = 只打属性（2026-11-18 治抖口径） ---------- */
+group('F. 名称解截断只打属性，不写内联');
 {
   const m = buildModule();
   const el = new FakeEl({ text: '加厚保暖羊毛围巾女秋冬款', cs: { whiteSpace: 'nowrap' }, sw: 420, cw: 288, sh: 40, ch: 20 });
   const wrote = m.applyUnclip(el, 'nowrap');
-  ok('F1 nowrap ⇒ 写 white-space:normal', el.style.getPropertyValue('white-space') === 'normal');
-  ok('F2 去掉省略号', el.style.getPropertyValue('text-overflow') === 'clip');
-  ok('F3 放开 overflow', el.style.getPropertyValue('overflow') === 'visible');
-  ok('F4 补折行规则', el.style.getPropertyValue('word-break') === 'normal' && el.style.getPropertyValue('overflow-wrap') === 'break-word');
-  ok('F5 打上标记', el.getAttribute('data-dyc-shopname') === '1');
-  ok('F6 没有设 width / max-width（列宽归平台）',
+  ok('F1 nowrap ⇒ 打 OPEN 属性', el.getAttribute('data-dyc-nameopen') === '1');
+  ok('F2 ★ 一条内联都没写（抖动源就在这里）',
+    el.style.getPropertyValue('white-space') === '' &&
+    el.style.getPropertyValue('display') === '' &&
+    el.style.getPropertyValue('overflow') === '',
+    JSON.stringify([el.style.getPropertyValue('white-space'), el.style.getPropertyValue('display')]));
+  ok('F3 折成两行 ⇒ 打 MULTI（行距与下内边距由规则给）', el.getAttribute('data-dyc-namemulti') === '1');
+  ok('F4 打上标记', el.getAttribute('data-dyc-shopname') === '1');
+  ok('F5 真正处理了 ⇒ 返回 true', wrote === true);
+  ok('F6 不设 width / max-width（列宽归平台）',
     el.style.getPropertyValue('width') === '' && el.style.getPropertyValue('max-width') === '');
-  ok('F7 真正写了 ⇒ 返回 true', wrote === true);
+  ok('F7 记进 touchedNames（关开关按它摘属性）', m.touchedNames.indexOf(el) >= 0);
 
-  // clamp 型另一组
-  const el2 = new FakeEl({ text: '很长的商品名称', cs: { display: '-webkit-box', webkitLineClamp: '2' } });
+  // clamp 型：不再分三档写不同内联，统一 OPEN 属性
+  const el2 = new FakeEl({ text: '很长的商品名称', cs: { display: '-webkit-box', webkitLineClamp: '2' }, sh: 20, ch: 20 });
   m.applyUnclip(el2, 'clamp');
-  ok('F8 clamp ⇒ display:block + line-clamp:none',
-    el2.style.getPropertyValue('display') === 'block' &&
-    el2.style.getPropertyValue('-webkit-line-clamp') === 'none');
+  ok('F8 clamp ⇒ 同样是 OPEN 属性（不走内联）',
+    el2.getAttribute('data-dyc-nameopen') === '1' && el2.style.getPropertyValue('display') === '');
 
-  // 不认识的 reason ⇒ 什么都不写
+  // 定高型
+  const el4 = new FakeEl({ text: '很长的商品名称', cs: { overflow: 'hidden' }, sh: 20, ch: 20 });
+  m.applyUnclip(el4, 'height');
+  ok('F9 height ⇒ OPEN 属性', el4.getAttribute('data-dyc-nameopen') === '1');
+
+  // 不认识的 reason ⇒ 什么都不做
   const el3 = new FakeEl({ text: '很长的商品名称' });
-  ok('F9 reason 为空 ⇒ 不写、返回 false', m.applyUnclip(el3, '') === false && el3.getAttribute('data-dyc-shopname') === null);
-  line('F1~F9 属性写入', true);
+  ok('F10 reason 为空 ⇒ 不写、返回 false',
+    m.applyUnclip(el3, '') === false && el3.getAttribute('data-dyc-nameopen') === null);
+  line('F1~F10 属性方案', true);
 }
 
-/* ---------- G. 备份只做一次 ---------- */
-group('G. 备份只做一次');
+/* ---------- G. 平台原有内联我们不碰 ---------- */
+group('G. 打属性不产生内联备份');
 {
   const m = buildModule();
   const el = new FakeEl({ text: '加厚保暖羊毛围巾女秋冬款', cs: { whiteSpace: 'nowrap' }, sw: 420, cw: 288, sh: 40, ch: 20 });
-  // 平台原本就有一条内联 white-space（非 important），备份要能记住它
+  // 平台原本就有一条内联，我们不写内联所以它应当原样不动
   el.style.setProperty('white-space', 'nowrap', '');
   m.applyUnclip(el, 'nowrap');
-  const bakFirst = JSON.parse(JSON.stringify(el.__dycShopNameOrig));
-  ok('G1 备份记下平台原值', bakFirst['white-space'] && bakFirst['white-space'].v === 'nowrap', JSON.stringify(bakFirst['white-space']));
+  ok('G1 平台原有内联原样保留', el.style.getPropertyValue('white-space') === 'nowrap');
+  ok('G2 没有内联备份（解截断不再写内联，不需要备份）', !el.__dycShopNameOrig);
 
-  // 第二次（补涂）不许覆盖备份 —— 否则会把我们自己写的 normal 当成「原值」
   m.applyUnclip(el, 'nowrap');
-  const bakSecond = JSON.parse(JSON.stringify(el.__dycShopNameOrig));
-  ok('G2 重复写不覆盖备份', bakSecond['white-space'].v === 'nowrap', JSON.stringify(bakSecond['white-space']));
-  line('G1/G2 备份幂等', true);
+  ok('G3 重复处理不重复记账', el.getAttribute('data-dyc-nameopen') === '1' && m.touchedNames.length === 1);
+  line('G1~G3 无内联、无重复记账', true);
 }
 
-/* ---------- H. 幂等：洗完再补 ---------- */
-group('H. 平台洗掉 style 后自动补涂');
+/* ---------- H. 幂等：属性在就不再处理（断环口） ---------- */
+group('H. 属性在就不重复处理（治抖的关键一拍）');
 {
   const m = buildModule();
   const el = new FakeEl({ text: '加厚保暖羊毛围巾女秋冬款', cs: { whiteSpace: 'nowrap' }, sw: 420, cw: 288, sh: 40, ch: 20 });
-  ok('H1 仍截断 ⇒ 补涂返回 true', m.refreshName(el) === true);
-  ok('H2 补涂后会写样式', el.style.getPropertyValue('white-space') === 'normal');
+  ok('H1 仍截断 ⇒ 处理返回 true', m.refreshName(el) === true);
+  ok('H2 处理后带 OPEN 属性', el.getAttribute('data-dyc-nameopen') === '1');
 
-  // 模拟平台重渲染：样式被洗掉，计算值回到 nowrap
-  const wiped = new FakeEl({ text: '加厚保暖羊毛围巾女秋冬款', cs: { whiteSpace: 'nowrap' }, sw: 420, cw: 288, sh: 40, ch: 20 });
-  wiped.__dycShopNameOrig = { 'white-space': { v: '', p: '' } };
-  ok('H3 已标记但计算值仍截断 ⇒ 重写一遍', m.refreshName(wiped) === true && wiped.style.getPropertyValue('white-space') === 'normal');
+  /* ★ 这两条是抖动的根：平台把内联洗回截断态 ⇒ 我们每轮又解开 ⇒ 行高来回跳。
+   *   属性方案下「属性在 ⇒ 不再判被截断 ⇒ 不再重写」，循环就断了。 */
+  ok('H3 ★ 属性在 ⇒ truncationReason 返回空（平台洗不回来）', m.truncationReason(el) === '');
+  ok('H4 ★ 再复核一轮 ⇒ false（不重写）', m.refreshName(el) === false);
 
-  // 已经放开了 ⇒ 不再动
+  // 平台换掉节点：属性没了，计算值仍截断 ⇒ 重新处理（这不叫抖动，是赶上新节点）
+  const fresh = new FakeEl({ text: '加厚保暖羊毛围巾女秋冬款', cs: { whiteSpace: 'nowrap' }, sw: 420, cw: 288, sh: 40, ch: 20 });
+  ok('H5 新节点（无属性）⇒ 重新处理', m.refreshName(fresh) === true && fresh.getAttribute('data-dyc-nameopen') === '1');
+
+  // 本来就没截断 ⇒ 不动
   const okEl = new FakeEl({ text: '短名', cs: { whiteSpace: 'normal' }, sw: 100, cw: 288 });
-  ok('H4 已不截断 ⇒ false（不重复写入）', m.refreshName(okEl) === false);
-  line('H1~H4 幂等补涂', true);
+  ok('H6 本来不截断 ⇒ false', m.refreshName(okEl) === false);
+
+  // raw=true 给 findNameInRow 复选候选：按计算值判，不被属性短路
+  const rawEl = new FakeEl({ text: '很长的商品名称', cs: { display: '-webkit-box', webkitLineClamp: '2' }, attrs: { 'data-dyc-nameopen': '1' } });
+  ok('H7 raw=true ⇒ 按计算值判（不被属性短路）', m.truncationReason(rawEl, true) === 'clamp');
+  line('H1~H7 断环', true);
 }
 
 /* ---------- I. 行缓存 ---------- */
@@ -418,70 +438,124 @@ group('J. 关开关还原平台原样');
   const el = new FakeEl({ text: '加厚保暖羊毛围巾女秋冬款', cs: { whiteSpace: 'nowrap' }, sw: 420, cw: 288, sh: 40, ch: 20 });
   el.style.setProperty('white-space', 'nowrap', '');
   m.applyUnclip(el, 'nowrap');
-  ok('J1 展开后是 normal', el.style.getPropertyValue('white-space') === 'normal');
+  ok('J1 展开后带属性', el.getAttribute('data-dyc-nameopen') === '1');
 
   m.restoreOne(el);
-  ok('J2 还原成平台原值 nowrap', el.style.getPropertyValue('white-space') === 'nowrap', el.style.getPropertyValue('white-space'));
+  ok('J2 三个状态属性全摘（规则不再匹配 ⇒ 回到平台原样）',
+    el.getAttribute('data-dyc-nameopen') === null &&
+    el.getAttribute('data-dyc-namecap') === null &&
+    el.getAttribute('data-dyc-namemulti') === null);
   ok('J3 标记已清', el.getAttribute('data-dyc-shopname') === null);
-  ok('J4 备份已释放', !el.__dycShopNameOrig);
-  line('J1~J4 还原', true);
+  ok('J4 平台原有内联没被改', el.style.getPropertyValue('white-space') === 'nowrap', el.style.getPropertyValue('white-space'));
+
+  // 只有内联的场景（解除宽度上限的容器）仍要能还原
+  const box = new FakeEl({});
+  box.style.setProperty('max-width', '240px', '');
+  m.setProp(box, 'max-width', 'none');
+  ok('J5 宽度容器：写了内联', box.style.getPropertyValue('max-width') === 'none');
+  m.restoreOne(box);
+  ok('J6 宽度容器：还原成平台原值', box.style.getPropertyValue('max-width') === '240px', box.style.getPropertyValue('max-width'));
+  line('J1~J6 还原', true);
 }
 
 /* ---------- K. 源码红线 ---------- */
 group('K. 源码红线');
 {
   const src = fs.readFileSync(SRC_PATH, 'utf8');
-  ok('K1 只用 setProperty 写内联（老内核也不怕驼峰写错）', /style\.setProperty\(prop, value/.test(src));
-  ok('K2 有「重复写不覆盖备份」的实现', /hasOwnProperty\.call\(bak, prop\)/.test(src));
-  ok('K3 列宽只经 setProperty 写（col / 表头 TH / 单元格三处），不写 .style.width =',
+
+  /* ★ 2026-11-18 治抖红线：名称解截断不许再写内联。
+   *   平台重渲染会整段重写 style 属性，内联被抹 ⇒ 每轮重写 ⇒ 行高来回跳。 */
+  const unclipBody = (src.match(/function applyUnclip\(el, reason\)\s*\{[\s\S]*?\n  \}/) || [''])[0];
+  ok('K1 ★ applyUnclip 体内一次 setProperty 都没有（只打属性）',
+    unclipBody.length > 0 && !/setProperty/.test(unclipBody));
+  ok('K2 ★ 有断环口：见状态属性直接判「不截断」',
+    /if \(!raw && isHandled\(el\)\) return '';/.test(src));
+  ok('K3 有常驻 CSS 注入，且启动时先注入再扫描',
+    /var CSS = \[/.test(src) && /function ensureStyle\(\)/.test(src) && /ensureStyle\(\);/.test(src));
+  ok('K4 关开关 / 缩放会摘状态属性（否则规则一直匹配，回不到原样）',
+    /function clearNameAttrs\(el\)/.test(src) && /clearNameAttrs\(touchedNames\[i\]\)/.test(src));
+
+  ok('K5 备份机制仍在（列宽 / 解宽度上限还要靠它还原）', /hasOwnProperty\.call\(bak, prop\)/.test(src));
+  ok('K6 列宽只经 setProperty 写（col / 表头 TH / 单元格三处），不写 .style.width =',
     !/\.style\.width\s*=/.test(src) && !/td\.style\.width/.test(src) &&
     /style\.setProperty\('width'/.test(src));
-  ok('K4 有开关键 shopListNameWrap 的读取与订阅', /shopListNameWrap/.test(src) && /dycWatchFlags/.test(src));
-  ok('K5 观察器挂在 body 且只排一次防抖', /observer\.observe\(document\.body/.test(src) && /scheduleScan\(\)/.test(src));
-  ok('K6 防抖配最长等待（列表页 DOM 一直在动）', /SCAN_MAX_WAIT/.test(src) && /now - queuedAt >= SCAN_MAX_WAIT/.test(src));
+  ok('K7 有开关键 shopListNameWrap 的读取与订阅', /shopListNameWrap/.test(src) && /dycWatchFlags/.test(src));
+  ok('K8 观察器挂在 body 且只排一次防抖', /observer\.observe\(document\.body/.test(src) && /scheduleScan\(\)/.test(src));
+  ok('K9 防抖配最长等待（列表页 DOM 一直在动）', /SCAN_MAX_WAIT/.test(src) && /now - queuedAt >= SCAN_MAX_WAIT/.test(src));
 
   /* 2026-11-01 用户：「这个功能不需要弹提示」——
    * 排版类改动一律静默生效，只保留用户主动切开关时那句「已开启 / 已关闭」。
    * 这两条是防回潮的闸门：以后谁再往生效路径里塞 toast，自测立刻红。 */
   const scanBody = (src.match(/function scan\(\)\s*\{[\s\S]*?\n  \}/) || [''])[0];
-  ok('K7 生效路径（scan）体内不出现 toast', scanBody.length > 0 && !/toast\(/.test(scanBody));
-  ok('K8 全文只剩一处 toast —— 开关切换的回执', (src.match(/toast\(/g) || []).length === 1);
-  line('K1~K8 源码红线（含「不弹提示」）', true);
+  ok('K10 生效路径（scan）体内不出现 toast', scanBody.length > 0 && !/toast\(/.test(scanBody));
+  ok('K11 全文只剩一处 toast —— 开关切换的回执', (src.match(/toast\(/g) || []).length === 1);
+
+  /* ★ 2026-11-18 第二版防回潮：scan 里必须先判 hover 再动列宽。
+   *   一旦有人把 widenNameColumn 挪到 hover 判断之前，抖动会原样回来。 */
+  ok('K12 ★ scan 里列宽写入被 hover 守卫包住', /if \(!hoverTarget\) \{[\s\S]{0,200}widenNameColumn/.test(scanBody));
+  ok('K13 ★ scan 里先跳掉悬停中的那一行', /isRelated\(hoverTarget, row\)\) \{[\s\S]{0,120}continue;/.test(scanBody));
+  ok('K13b ★ 悬停行只补块高锁、不做测量', /function relock\(row\)/.test(src) && /relock\(row\);/.test(scanBody));
+  ok('K14 悬停进出事件有绑定也有解绑', /addEventListener\('pointerover'/.test(src) && /removeEventListener\('pointerover'/.test(src));
+  line('K1~K14 源码红线（属性方案 + 悬停不写 + 不弹提示）', true);
 }
 
 /* ---------- L. 两行优先、最多三行 ---------- */
 group('L. 两行优先、最多三行');
 {
   const m = buildModule();
+  const cssTxt = String(m.CSS);
 
   // 自然 2 行 ⇒ 一个字不藏
   const two = new FakeEl({ text: '加厚保暖羊毛围巾女秋冬款', cs: { whiteSpace: 'nowrap', lineHeight: '20px' }, sw: 420, cw: 288, sh: 40, ch: 20 });
   ok('L1 自然行数 = 2', m.naturalLines(two) === 2, '得到 ' + m.naturalLines(two));
   m.applyUnclip(two, 'nowrap');
-  ok('L2 两行装得下 ⇒ 不钳（不写 line-clamp）',
-    two.style.getPropertyValue('-webkit-line-clamp') === '', JSON.stringify(two.style.getPropertyValue('-webkit-line-clamp')));
+  ok('L2 两行装得下 ⇒ 不钳（无 CAP 属性）', two.getAttribute('data-dyc-namecap') === null);
+  ok('L3 两行 ⇒ 补 MULTI（行距不贴在一起）', two.getAttribute('data-dyc-namemulti') === '1');
 
   // 自然 3 行 ⇒ 也完整显示（2026-11-01 两次截图都卡在「两行差几个字」）
   const three = new FakeEl({ text: '加厚保暖羊毛围巾女秋冬款', cs: { whiteSpace: 'nowrap', lineHeight: '20px' }, sw: 420, cw: 288, sh: 60, ch: 20 });
-  ok('L3 自然行数 = 3', m.naturalLines(three) === 3, '得到 ' + m.naturalLines(three));
+  ok('L4 自然行数 = 3', m.naturalLines(three) === 3, '得到 ' + m.naturalLines(three));
   m.applyUnclip(three, 'nowrap');
-  ok('L4 ★ 三行装得下 ⇒ 不钳（这一条就是「有些还是不完整」的修复点）',
-    three.style.getPropertyValue('-webkit-line-clamp') === '', JSON.stringify(three.style.getPropertyValue('-webkit-line-clamp')));
+  ok('L5 ★ 三行装得下 ⇒ 不钳（「有些还是不完整」的修复点）', three.getAttribute('data-dyc-namecap') === null);
 
   // 自然 4 行 ⇒ 钳到三行
   const four = new FakeEl({ text: '加厚保暖羊毛围巾女秋冬款', cs: { whiteSpace: 'nowrap', lineHeight: '20px' }, sw: 420, cw: 288, sh: 80, ch: 20 });
-  ok('L5 自然行数 = 4', m.naturalLines(four) === 4, '得到 ' + m.naturalLines(four));
+  ok('L6 自然行数 = 4', m.naturalLines(four) === 4, '得到 ' + m.naturalLines(four));
   m.applyUnclip(four, 'nowrap');
-  ok('L6 超三行 ⇒ 钳制：display:-webkit-box', four.style.getPropertyValue('display') === '-webkit-box', four.style.getPropertyValue('display'));
-  ok('L7 写入 -webkit-line-clamp:3', four.style.getPropertyValue('-webkit-line-clamp') === '3', four.style.getPropertyValue('-webkit-line-clamp'));
-  ok('L8 带省略号', four.style.getPropertyValue('text-overflow') === 'ellipsis');
-  ok('L9 老内核兜底 max-height 有限值', parseFloat(four.style.getPropertyValue('max-height')) > 0, four.style.getPropertyValue('max-height'));
-  ok('L10 超三行时 capLines 返回 true', m.capLines(four) === true);
+  ok('L7 超三行 ⇒ 打 CAP 属性', four.getAttribute('data-dyc-namecap') === '1');
+  ok('L8 同时摘掉 OPEN（两条规则不能同时命中）', four.getAttribute('data-dyc-nameopen') === null);
+  ok('L9 CAP 规则钳 MAX_LINES 行',
+    new RegExp('-webkit-line-clamp: ' + m.MAX_LINES + ' !important').test(cssTxt));
+  ok('L10 CAP 规则带省略号', /text-overflow: ellipsis !important/.test(cssTxt));
+  ok('L11 老内核兜底 max-height（em，不认 line-clamp 也不撑高）', /max-height: [\d.]+em !important/.test(cssTxt));
+  ok('L12 超三行时 capLines 返回 true', m.capLines(four) === true);
 
   // 单行不钳
   const one = new FakeEl({ text: '短名', cs: { whiteSpace: 'normal', lineHeight: '20px' }, sh: 20, ch: 20 });
-  ok('L11 单行 ⇒ 不钳', m.capLines(one) === false);
-  line('L1~L11 两行优先三行兜底', true);
+  ok('L13 单行 ⇒ 不钳', m.capLines(one) === false);
+  line('L1~L13 两行优先三行兜底', true);
+}
+
+/* ---------- Q. 常驻 CSS（平台洗不掉的那一层） ---------- */
+group('Q. 常驻 CSS 与抖动断环');
+{
+  const m = buildModule();
+  const css = String(m.CSS);
+  ok('Q1 OPEN 规则存在且带 !important', /\[data-dyc-nameopen\] \{[\s\S]*display: block !important/.test(css));
+  ok('Q2 OPEN 规则去钳行 + 放开 overflow', /-webkit-line-clamp: none !important/.test(css) && /overflow: visible !important/.test(css));
+  ok('Q3 OPEN 规则恢复换行与折词', /white-space: normal !important/.test(css) && /overflow-wrap: break-word !important/.test(css));
+  ok('Q4 MULTI 只在多行时补行距（单行不动）', /\[data-dyc-namemulti\] \{ line-height: 1\.55 !important/.test(css));
+  ok('Q5 样式表 id 固定', m.STYLE_ID === 'dyc-shopname-style');
+
+  /* 抖动回归闸：这两条一旦被改回去（属性不再短路 / 又重新写内联），下面就会红 */
+  const el = new FakeEl({ text: '加厚保暖羊毛围巾女秋冬款', cs: { whiteSpace: 'nowrap' }, sw: 420, cw: 288, sh: 40, ch: 20 });
+  m.applyUnclip(el, 'nowrap');
+  ok('Q6 ★ 解开后每轮复核都是 false（不产生写入 → 不会抖）',
+    m.refreshName(el) === false && m.refreshName(el) === false);
+
+  // 垫片里没有 head，ensureStyle 必须安静跳过而不是抛错
+  ok('Q7 ensureStyle 在缺 head 的环境里不抛错', (() => { try { m.ensureStyle(); return true; } catch (e) { return false; } })());
+  line('Q1~Q7 常驻规则与断环', true);
 }
 
 /* ---------- M. 右侧空位 → 名字列加宽 ---------- */
@@ -622,6 +696,130 @@ group('P. 列宽写不进去时不空转');
   ok('P1 写完宽度没变 ⇒ no-effect（不谎报 done）', r === 'no-effect', '得到 ' + r);
   ok('P2 记成 no-effect 后不再重复写', m.widenNameColumn(nameEl) === 'no-effect');
   line('P1/P2 写不进去的兜底', true);
+}
+
+/* ---------- R. 鼠标悬停的那一块一个字都不写（治抖第二版） ---------- */
+group('R. 悬停中的行/卡片一律不写');
+{
+  const m = buildModule({ on: true });
+
+  const el = new FakeEl({ text: '加厚保暖羊毛围巾女秋冬款', cs: { whiteSpace: 'nowrap' }, sw: 420, cw: 288, sh: 40, ch: 20 });
+  const row = new FakeEl({ children: [el] });
+  el.parentElement = row;
+  row.__dycNameEl = el;
+
+  m.__setRows([row]);
+  m.__setHover(row);
+  ok('R1 鼠标停在这一行 ⇒ 扫描不动它', m.scan() === 0);
+  ok('R2 一个状态属性都没打（平台切换布局期间不写）',
+    el.getAttribute('data-dyc-nameopen') === null && el.getAttribute('data-dyc-namecap') === null);
+  ok('R3 也没有内联写入', el.style.getPropertyValue('white-space') === '');
+
+  m.__setHover(null);
+  ok('R4 鼠标离开 ⇒ 正常处理（补上）', m.scan() === 1 && el.getAttribute('data-dyc-nameopen') === '1');
+
+  /* 平台新版商品卡：名称的父链可能不是 tr，悬停在"包着名称的卡片"上一样要跳过 */
+  const m2 = buildModule({ on: true });
+  const el2 = new FakeEl({ text: '加厚保暖羊毛围巾女秋冬款', cs: { whiteSpace: 'nowrap' }, sw: 420, cw: 288, sh: 40, ch: 20 });
+  const row2 = new FakeEl({ children: [el2] });
+  el2.parentElement = row2;
+  row2.__dycNameEl = el2;
+  const card = new FakeEl({ text: '商品卡' });
+  card.children = [el2];
+  el2.parentElement = card;
+
+  m2.__setRows([row2]);
+  m2.__setHover(card);
+  ok('R5 悬停在包着名称的卡片上（卡片不在 tr 内）⇒ 也不写', m2.scan() === 0);
+
+  m2.__setHover(null);
+  ok('R6 离开后照常处理', m2.scan() === 1);
+
+  ok('R7 isRelated 认自身 / 祖先 / 后代，不相关的返回 false',
+    m2.isRelated(card, el2) === true && m2.isRelated(el2, card) === true &&
+    m2.isRelated(el2, el2) === true && m2.isRelated(el2, row) === false);
+
+  // 自家控件上的悬停不算（点调试面板不该让整页停摆）
+  const m3 = buildModule({ on: true });
+  m3.onHoverIn({ target: new FakeEl({ id: 'dyb-debug-panel' }) });
+  ok('R8 自家控件上的悬停不算悬停商品', m3.hoverTarget === null);
+
+  /* 列宽是表级的：鼠标在页面上任何地方，都不许趁 hover 重排去改列宽 */
+  const m4 = buildModule({ on: true });
+  const nameEl = new FakeEl({ text: '加厚保暖羊毛围巾女秋冬款', cs: { whiteSpace: 'nowrap' }, sw: 420, cw: 288, sh: 40, ch: 20 });
+  const td = new FakeEl({ tag: 'td', rect: rectOf(100, 100, 288, 60) });
+  td.cellIndex = 1;
+  const th0 = new FakeEl({ tag: 'th' });
+  const th1 = new FakeEl({ tag: 'th' });
+  const table = new FakeEl({ tag: 'table', rect: rectOf(0, 80, 1000, 400) });
+  table.tHead = { rows: [{ cells: [th0, th1] }] };
+  table._sel = { 'colgroup > col': [new FakeEl({ tag: 'col' }), new FakeEl({ tag: 'col' })] };
+  const box = new FakeEl({ rect: rectOf(0, 80, 1200, 400) });   // 空位 200px，够加宽
+  table.parentElement = box;
+  const row4 = new FakeEl({ children: [td] });
+  td.parentElement = row4;
+  td.children = [nameEl];
+  nameEl.parentElement = td;
+  row4.parentElement = table;
+  row4.__dycNameEl = nameEl;
+
+  m4.__setRows([row4]);
+  m4.__setHover(new FakeEl({ text: '页面别处' }));
+  m4.scan();
+  ok('R9 鼠标在页面别处 ⇒ 列宽一个字都不动（表级重排同理）', table.__dycWideState !== 'done');
+
+  m4.__setHover(null);
+  m4.scan();
+  ok('R10 鼠标离开后才加宽', table.__dycWideState === 'done');
+  line('R1~R10 悬停不写', true);
+}
+
+/* ---------- S. 块高锁：宽度变了行高不变（治「指上去折成三行」） ---------- */
+group('S. 块高锁');
+{
+  const m = buildModule();
+  const css = String(m.CSS);
+
+  // 自然 2 行 ⇒ 锁 2 行高
+  const two = new FakeEl({ text: '加厚保暖羊毛围巾女秋冬款', cs: { whiteSpace: 'nowrap', lineHeight: '20px' }, sw: 420, cw: 288, sh: 40, ch: 20 });
+  m.applyUnclip(two, 'nowrap');
+  ok('S1 两行 ⇒ 打 h="2"', two.getAttribute('data-dyc-nameh') === '2');
+
+  // 自然 3 行 ⇒ 锁 3 行高
+  const three = new FakeEl({ text: '加厚保暖羊毛围巾女秋冬款', cs: { whiteSpace: 'nowrap', lineHeight: '20px' }, sw: 420, cw: 288, sh: 60, ch: 20 });
+  m.applyUnclip(three, 'nowrap');
+  ok('S2 三行 ⇒ 打 h="3"', three.getAttribute('data-dyc-nameh') === '3');
+
+  // 超过三行 ⇒ 交给 CAP，摘掉块高锁（两套高度规则不许打架）
+  const four = new FakeEl({ text: '加厚保暖羊毛围巾女秋冬款', cs: { whiteSpace: 'nowrap', lineHeight: '20px' }, sw: 420, cw: 288, sh: 80, ch: 20 });
+  m.applyUnclip(four, 'nowrap');
+  ok('S3 超三行 ⇒ 走 CAP、不留块高锁',
+    four.getAttribute('data-dyc-namecap') === '1' && four.getAttribute('data-dyc-nameh') === null);
+
+  ok('S4 CSS 里 h2 / h3 有固定高度（宽度再怎么变盒子都不动）',
+    /\[data-dyc-nameh="2"\] \{ height: 3\.1em !important/.test(css) &&
+    /\[data-dyc-nameh="3"\] \{ height: 4\.65em !important/.test(css));
+  ok('S5 块高锁用 border-box + overflow:hidden（裁在盒子里，不顶出行高）',
+    /\[data-dyc-nameh\] \{ box-sizing: border-box !important; overflow: hidden !important/.test(css));
+
+  /* ★ 悬停期间节点被平台换新：锁必须能按缓存行数补回来，且不许重新测量 */
+  const m2 = buildModule({ on: true });
+  const el = new FakeEl({ text: '加厚保暖羊毛围巾女秋冬款', cs: { whiteSpace: 'nowrap' }, sw: 420, cw: 288, sh: 40, ch: 20 });
+  const row = new FakeEl({ children: [el] });
+  el.parentElement = row;
+  row.__dycNameEl = el;
+  el.__dycNameLines = 2;                 // 之前解算好的行数
+  m2.__setRows([row]);
+  m2.__setHover(row);                    // 鼠标正指着这一行
+  m2.scan();
+  ok('S6 ★ 悬停中锁丢了 ⇒ 按缓存行数补回（不重量）',
+    el.getAttribute('data-dyc-nameh') === '2' && el.getAttribute('data-dyc-nameopen') === '1');
+  ok('S7 补锁不碰宽度 / 不改内联', el.style.getPropertyValue('width') === '' && el.style.getPropertyValue('height') === '');
+
+  // 关开关把锁也摘掉
+  m2.restoreOne(el);
+  ok('S8 关开关摘块高锁（页面回到平台原样）', el.getAttribute('data-dyc-nameh') === null);
+  line('S1~S8 块高锁', true);
 }
 
 /* ============================================================

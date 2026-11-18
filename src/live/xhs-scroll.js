@@ -30,8 +30,8 @@
  *   全部内联；唯一需要动画的「环绕圈」用 Web Animations 实现，也不依赖样式表。
  *   普通 DOM 还有一个好处：开发者工具能直接选中。
  *
- * 【位置】默认贴右侧空白区（right 20 / 组底 56），可按住拖动，松手记住
- *   （chrome.storage.local，按 right/bottom 存，窗口缩放后仍贴右并夹在视口内）。
+ * 【位置】固定贴右侧空白区（right 72 / 组底 56），**不可拖动**（2026-11-18 用户令）。
+ *   用 right/bottom 表达，窗口缩放天然贴住右下；不再读也不再写 dybXhsScrollPos。
  *
  * 【开关】xhsScrollBtns（总闸）与 xhsBackToTop / xhsBackToBottom 是「与」关系。
  *   ★ dycReadFlags() 返回 **Promise**，必须 .then —— 第一版同步取用导致全黑。
@@ -47,13 +47,21 @@
  *   ⇒ 现在：① 每次点击**先重扫**再滚；② 落点用「可滚距离最大」的容器做校验，
  *     被平台改回或节点换掉就重扫补滚一次；③ 仍旧滚不动就报一条三段式消息，
  *     **不许静默失效**。
+ *
+ * 【第六轮 · 2026-11-18 用户令「上下滑动，不要牵涉到评论区」】
+ *   第五轮及以前的实现是「把收集到的每个可滚容器都滚一遍」，其中就包括
+ *   评论列 .comments（真机 内容高 798 / 可见 316）和它的外层躯干。
+ *   结果点一次上下滑，正在读的评论被顶走，整个页面躯干也跟着挪。
+ *   现在：
+ *     ① collectScrollers 排除评论容器（COMMENT_SEL）；
+ *     ② 控制商品列表及其外层 .control-container（用户截图划线的滚动条）；
+ *     ③ 评论列表自身的 scrollTop 保持不变。
  * ============================================================
  */
 (function () {
   'use strict';
 
   var HOST_ID = 'dyb-xhs-scroll';
-  var POS_KEY = 'dybXhsScrollPos';
   var BTN = 52.8;               // 直径（固定 px，对齐抖店 BTN_SIZE）
   var GAP = 8;                  // 两枚之间（抖店 116.8 - 56 - 52.8 = 8）
   /* 2026-11-17 第四轮：用户要求「浮动按钮可以距离浏览器边界有一段距离」。
@@ -62,7 +70,6 @@
   var DEF_RIGHT = 72;           // 默认距视口右
   var DEF_BOTTOM = 56;          // 组底距视口底（抖店下面那枚 56px）
   var MIN_AREA_RATIO = 0.05;    // 可滚容器的最小可见面积（占视口）
-  var DRAG_THRESHOLD = 5;       // 超过这个位移算拖动，不算点击
   var SCROLL_MS = 300;          // 自驱动画时长
 
   /* 图标与抖店同构：细线环 + 线条箭头，48×48 显示在 52.8px 按钮内 */
@@ -99,7 +106,6 @@
   var rafPending = false;
   var recollectTimer = null;
   var mo = null;
-  var suppressClick = false;
   var animRafs = [];
 
   /* ---------- 页面判定 ---------- */
@@ -111,6 +117,21 @@
   }
 
   /* ---------- 可滚容器 ---------- */
+  /* ★ 2026-11-18 用户令「上下滑动，不要牵涉到评论区」。
+   *   旧实现把 collectScrollers() 收到的**所有**可滚容器一起滚 ——
+   *   评论列（.comments，内容高 798 / 可见 316）也在里面，
+   *   于是点一次上下滑，正在看的评论被顶走。
+   *   只控制商品列表与外层页面滚动条，不写入评论列表的滚动位置。
+   *   评论列有自己的滚动条，要动它请直接滚那一列，不该由本按钮代劳。 */
+  var COMMENT_SEL = '.comment-container,.comment-detail,.comment-list,.comments,'
+    + '[class*="comment-popover"],[class*="comment-panel"]';
+  var LIST_SEL = '.goods-card-list';
+
+  function inComments(el) {
+    if (!el || !el.closest) return false;
+    try { return !!el.closest(COMMENT_SEL); } catch (e) { return false; }
+  }
+
   function scrollableBy(el) {
     if (!el || el.nodeType !== 1) return false;
     if (el.id === HOST_ID) return false;
@@ -136,6 +157,7 @@
       /* 先用两个便宜判据筛掉绝大多数（9000+ 元素里真正可滚的只有个位数），
        * 再对幸存者读 computedStyle。 */
       if (el.clientWidth * el.clientHeight < minArea) continue;
+      if (inComments(el)) continue;          // 评论列不参与「上下滑动」
       if (!scrollableBy(el)) continue;
       out.push(el);
     }
@@ -178,20 +200,46 @@
     animRafs.push(requestAnimationFrame(step));
   }
 
-  /* 主目标 = 可滚距离最大的容器。外层 .control-container 只有 135px，
-   * 商品列表 2981px，取 maxTop 最大者即可无歧义选中「用户真正在看的那一列」。 */
+  /** 用户真正的「上下滑动」目标：商品列表本身（2026-11-18 口径） */
+  function listScroller() {
+    var list;
+    try { list = document.querySelector(LIST_SEL); } catch (e) { return null; }
+    if (!list || inComments(list)) return null;
+    return scrollableBy(list) ? list : null;
+  }
+
+  /* 主目标 = 商品列表优先；不可滚时退回最大可滚容器（排除评论区）。 */
   function scrollTarget() {
+    var list = listScroller();
+    if (list) return list;
+
     var doc = document.scrollingElement || document.documentElement;
     var best = null;
     var bestTop = 0;
     for (var i = 0; i < scrollers.length; i++) {
       var el = scrollers[i];
       if (el === doc) continue;
+      if (inComments(el)) continue;
       var mt = maxTop(el);
       if (mt > bestTop) { bestTop = mt; best = el; }
     }
     if (best) return best;
     return (doc && maxTop(doc) > 4) ? doc : null;
+  }
+
+  function scrollTargets() {
+    var target = scrollTarget();
+    var targets = target ? [target] : [];
+    var list = document.querySelector(LIST_SEL);
+    var outer = list ? list.closest('.control-container') : document.querySelector('.control-container');
+    if (outer && outer !== target && !inComments(outer) && scrollableBy(outer)) targets.push(outer);
+    return targets;
+  }
+
+  function unlandedTarget(want) {
+    return scrollTargets().find(function (el) {
+      return !el.isConnected || Math.abs(el.scrollTop - (want ? maxTop(el) : 0)) > 8;
+    });
   }
 
   function describeEl(el) {
@@ -221,22 +269,21 @@
     } catch (e) { /* 消息盒子不可用时不影响滚动本身 */ }
   }
 
-  /* 落点校验：动画走完后确认「主目标」真的到位。
+  /* 落点校验：动画走完后确认商品列表与外层都到位。
    * 没到位 ⇒ 先硬写一次；还不行多半是节点已被 React 换掉，重扫后对新节点
    * 再滚一次；第三次仍不动才报人话（平台回写 / 列表锁定）。 */
   function verifyLanding(want, retried) {
-    var target = scrollTarget();
-    if (!target) return;                       // 已无滚动区，按钮也随之隐藏，不必打扰
-    var goal = want ? maxTop(target) : 0;
-    if (target.isConnected && Math.abs(target.scrollTop - goal) <= 8) return;
-
-    if (target.isConnected) {
-      try { target.scrollTop = goal; } catch (e) {}
-      if (Math.abs(target.scrollTop - goal) <= 8) return;
-    }
+    scrollTargets().forEach(function (el) {
+      var goal = want ? maxTop(el) : 0;
+      if (el.isConnected && Math.abs(el.scrollTop - goal) > 8) {
+        try { el.scrollTop = goal; } catch (e) {}
+      }
+    });
+    var target = unlandedTarget(want);
+    if (!target) return;
     if (!retried) {
       recollect();                             // 快照可能指向已脱连的旧节点
-      var next = scrollTarget();
+      var next = unlandedTarget(want);
       if (next && next !== target) {
         animateTo(next, want ? maxTop(next) : 0);
         setTimeout(function () { verifyLanding(want, true); }, SCROLL_MS + 70);
@@ -251,13 +298,12 @@
     /* ★ 点击时重扫：不用首次 bind 的死快照 ——
      *   中控台先出页面外壳、19 张商品卡后到且会被 React 换节点。 */
     recollect();
-    /* 从内到外：先让商品列表走，再让外层页面容器归位。
-     * 反过来的话外层位移会把内层的可视基准一起带走，看起来像「跳了一下」。 */
-    var ordered = scrollers.slice().reverse();
-    for (var i = 0; i < ordered.length; i++) {
-      var el = ordered[i];
-      animateTo(el, toBottom ? maxTop(el) : 0);
-    }
+
+    // 外层滚动条和商品列表都归位，评论列表自身的滚动位置不变。
+    scrollTargets().forEach(function (target) {
+      animateTo(target, toBottom ? maxTop(target) : 0);
+    });
+
     if (!toBottom) {
       try { if (window.scrollY > 0) window.scrollTo({ top: 0, behavior: 'smooth' }); } catch (e) {}
     }
@@ -274,96 +320,17 @@
     return false;
   }
 
-  /* ---------- 位置 ---------- */
+  /* ---------- 位置（固定，不可拖动） ----------
+   * 2026-11-18 用户令：「上滑下滑的按钮不可以拖动，要固定位置」。
+   * 于是删掉整套拖动：pointerdown/move/up、savePos/restorePos、
+   * applyLeftTop 与 suppressClick 一并移除。
+   * 固定用 right/bottom 表达，窗口缩放时天然贴住右下，不需要重算。 */
   function applyRightBottom(right, bottom) {
     if (!host) return;
     host.style.right = right + 'px';
     host.style.bottom = bottom + 'px';
     host.style.left = 'auto';
     host.style.top = 'auto';
-  }
-
-  function applyLeftTop(left, top) {
-    if (!host) return;
-    var w = host.offsetWidth || BTN;
-    var h = host.offsetHeight || (BTN * 2 + GAP);
-    var maxL = Math.max(0, window.innerWidth - w);
-    var maxT = Math.max(0, window.innerHeight - h);
-    host.style.left = Math.min(Math.max(0, left), maxL) + 'px';
-    host.style.top = Math.min(Math.max(0, top), maxT) + 'px';
-    host.style.right = 'auto';
-    host.style.bottom = 'auto';
-  }
-
-  function savePos() {
-    try {
-      var r = host.getBoundingClientRect();
-      var patch = {};
-      patch[POS_KEY] = {
-        right: Math.round(window.innerWidth - (r.left + r.width)),
-        bottom: Math.round(window.innerHeight - (r.top + r.height))
-      };
-      if (window.chrome && chrome.storage && chrome.storage.local) {
-        chrome.storage.local.set(patch);
-      }
-    } catch (e) { /* 存不下就下次仍用默认位置 */ }
-  }
-
-  function restorePos() {
-    try {
-      if (!(window.chrome && chrome.storage && chrome.storage.local)) return;
-      chrome.storage.local.get(POS_KEY, function (r) {
-        var p = r && r[POS_KEY];
-        if (!p || typeof p.right !== 'number' || typeof p.bottom !== 'number') return;
-        if (!host || !host.isConnected) return;
-        var keep = 64;
-        applyRightBottom(
-          Math.max(0, Math.min(p.right, window.innerWidth - keep)),
-          Math.max(0, Math.min(p.bottom, window.innerHeight - keep))
-        );
-      });
-    } catch (e) { /* 忽略 */ }
-  }
-
-  /* ---------- 拖动 ---------- */
-  function bindDrag(btn) {
-    var pid = null, sx = 0, sy = 0, sl = 0, st = 0, dragging = false;
-
-    btn.addEventListener('pointerdown', function (ev) {
-      if (ev.button !== undefined && ev.button !== 0) return;
-      suppressClick = false;
-      dragging = false;
-      pid = (ev.pointerId === undefined) ? 'mouse' : ev.pointerId;
-      sx = ev.clientX; sy = ev.clientY;
-      var r = host.getBoundingClientRect();
-      sl = r.left; st = r.top;
-      try {
-        if (btn.setPointerCapture && ev.pointerId !== undefined) btn.setPointerCapture(ev.pointerId);
-      } catch (e) { /* 忽略 */ }
-    });
-
-    btn.addEventListener('pointermove', function (ev) {
-      if (pid === null) return;
-      var dx = ev.clientX - sx;
-      var dy = ev.clientY - sy;
-      if (!dragging) {
-        if (Math.abs(dx) + Math.abs(dy) < DRAG_THRESHOLD) return;
-        dragging = true;
-      }
-      applyLeftTop(sl + dx, st + dy);
-      ev.preventDefault();
-    });
-
-    function end() {
-      if (pid === null) return;
-      pid = null;
-      if (dragging) {
-        suppressClick = true;   // 拖动结束不要顺带触发一次滚动
-        savePos();
-      }
-    }
-    btn.addEventListener('pointerup', end);
-    btn.addEventListener('pointercancel', end);
   }
 
   /* ---------- 按钮（全内联样式，视觉对齐抖店） ---------- */
@@ -463,28 +430,25 @@
       btnUp.addEventListener('click', function (ev) {
         ev.preventDefault();
         ev.stopPropagation();
-        if (suppressClick) { suppressClick = false; return; }
         scrollListTo(false);
         setTimeout(paint, SCROLL_MS + 60);
       });
       btnDown.addEventListener('click', function (ev) {
         ev.preventDefault();
         ev.stopPropagation();
-        if (suppressClick) { suppressClick = false; return; }
         scrollListTo(true);
         setTimeout(paint, SCROLL_MS + 60);
       });
-      bindDrag(btnUp);
-      bindDrag(btnDown);
 
       host.appendChild(btnUp);
       host.appendChild(btnDown);
       (document.body || document.documentElement).appendChild(host);
       applyRightBottom(DEF_RIGHT, DEF_BOTTOM);
-      restorePos();
     } else {
       btnUp = host.querySelector('[data-role="up"]');
       btnDown = host.querySelector('[data-role="down"]');
+      /* 已存在也强制归位：上一版允许拖动，可能留下 left/top 的旧坐标 */
+      applyRightBottom(DEF_RIGHT, DEF_BOTTOM);
     }
     return !!(btnUp && btnDown);
   }
