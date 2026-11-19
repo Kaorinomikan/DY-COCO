@@ -97,7 +97,9 @@
   var statusEl = null;
   var panelEl = null;
   var searchAnchor = null;
-  var positionFrame = null;
+  var categoryAnchor = null;
+  var slotEl = null;
+  var sizeObserver = null;
 
   var missCount = 0;
   var warned = false;
@@ -634,7 +636,7 @@
 
   // 小红书工具栏：30px 矩形组合按钮，展开后使用同一套小圆角分组与平台蓝。
   var CSS = [
-    "#dyc-xhs-loop{all:initial;position:fixed;visibility:hidden;display:inline-flex;align-items:center;width:224px;height:30px;vertical-align:middle;border:1px solid #d9dce1;border-radius:4px;background:#fff;color:#4e5969;font:12px/1.4 -apple-system,BlinkMacSystemFont,\"Microsoft YaHei\",sans-serif;box-sizing:border-box;z-index:2147482500;}",
+    "#dyc-xhs-loop{all:initial;position:absolute;transform:translateY(-50%);display:inline-flex;align-items:center;width:224px;height:30px;vertical-align:middle;border:1px solid #d9dce1;border-radius:4px;background:#fff;color:#4e5969;font:12px/1.4 -apple-system,BlinkMacSystemFont,\"Microsoft YaHei\",sans-serif;box-sizing:border-box;z-index:2147482500;}",
     "#dyc-xhs-loop *{box-sizing:border-box;font-family:inherit;}",
     "#dyc-xhs-loop :where(button,input){all:unset;box-sizing:border-box;font:inherit;}",
     "#dyc-xhs-loop [hidden]{display:none!important;}",
@@ -656,7 +658,7 @@
     "#dyc-xhs-loop.wait .dot{background:#e69b28;}",
     "#dyc-xhs-loop.wait .slot{color:#b7791f;}",
     "#dyc-xhs-loop.off .slot{color:#86909c;}",
-    "#dyc-xhs-loop-panel{position:fixed;z-index:2147482500;width:344px;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow-y:auto;padding:16px 16px 0;border:1px solid #e5e6eb;border-radius:6px;background:#fff;box-shadow:0 6px 20px rgba(31,35,41,.12);color:#4e5969;text-align:left;white-space:normal;opacity:0;visibility:hidden;transform:translateY(-4px);pointer-events:none;transition:opacity .12s,transform .12s,visibility .12s;}",
+    "#dyc-xhs-loop-panel{position:absolute;z-index:2147482500;width:344px;max-width:calc(100vw - 16px);max-height:calc(100vh - 16px);overflow-y:auto;padding:16px 16px 0;border:1px solid #e5e6eb;border-radius:6px;background:#fff;box-shadow:0 6px 20px rgba(31,35,41,.12);color:#4e5969;text-align:left;white-space:normal;opacity:0;visibility:hidden;transform:translateY(-4px);pointer-events:none;transition:opacity .12s,transform .12s,visibility .12s;}",
     "#dyc-xhs-loop-panel.open{opacity:1;visibility:visible;transform:none;pointer-events:auto;}",
     "#dyc-xhs-loop .ph{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;}",
     "#dyc-xhs-loop .ph b{font-size:14px;font-weight:600;color:#1f2329;}",
@@ -715,14 +717,20 @@
   }
 
   function placePanel() {
-    if (!panelEl || !mainEl || !panelOpen) return;
+    if (!panelEl || !panelOpen || !boxEl.isConnected) return;
     var r = boxEl.getBoundingClientRect();
+    if (!r.width || !r.height) return;
     var w = panelEl.offsetWidth || 344;
     var h = panelEl.offsetHeight || 390;
     var left = Math.max(8, Math.min(r.left, window.innerWidth - w - 8));
+    var scrollPane = boxEl.closest('.control-container');
+    var clip = scrollPane && scrollPane.getBoundingClientRect();
+    var upperEdge = clip && clip.height ? Math.max(8, clip.top + 8) : 8;
+    var lowerEdge = clip && clip.height ? Math.min(window.innerHeight - 8, clip.bottom - 8) : window.innerHeight - 8;
     var below = r.bottom + 8;
-    var top = below + h <= window.innerHeight - 8 ? below : Math.max(8, r.top - h - 8);
-    panelEl.style.left = left + 'px'; panelEl.style.top = top + 'px';
+    var top = below + h <= lowerEdge ? below : Math.max(upperEdge, r.top - h - 8);
+    panelEl.style.left = (left - r.left - boxEl.clientLeft) + 'px';
+    panelEl.style.top = (top - r.top - boxEl.clientTop) + 'px';
     panelEl.style.setProperty('--ox', Math.max(0, Math.min(w, r.left - left)) + 'px');
     panelEl.style.setProperty('--oy', top >= r.bottom ? '0px' : h + 'px');
   }
@@ -784,56 +792,77 @@
     minutes = value; saveSetting('dybXhsLoopMinutes', minutes); resetSchedule();
   }
 
-  // 跟随搜索框的视口坐标，不占商品工具栏的宽度。
-  function placeControl() {
-    positionFrame = null;
-    if (!boxEl) return;
-    var rect = searchAnchor && searchAnchor.isConnected && searchAnchor.getBoundingClientRect();
-    var container = rect && searchAnchor.closest('.control-container');
-    var clip = container && container.getBoundingClientRect();
-    var shown = rect && rect.width > 0 && rect.height > 0 && rect.top >= 40
-      && rect.top < window.innerHeight && rect.right > 0 && rect.left < window.innerWidth
-      && (!clip || !clip.height || (rect.top >= clip.top && rect.top < clip.bottom));
-    boxEl.style.visibility = shown ? 'visible' : 'hidden';
-    if (!shown) {
-      if (panelOpen) setPanelOpen(false);
-      return;
+  function findCategoryAnchor() {
+    for (var row = searchAnchor.parentElement, i = 0; row && row !== document.body && i < 5; row = row.parentElement, i++) {
+      var candidates = row.querySelectorAll('button,[role="button"],a,span,div');
+      for (var j = 0; j < candidates.length; j++) {
+        var el = candidates[j];
+        if (el.childElementCount && !el.matches('button,[role="button"],a') &&
+            !Array.from(el.childNodes).some(function (n) { return n.nodeType === 3 && clean(n.nodeValue) === '添加分类'; })) continue;
+        if (txt(el) === '添加分类' && visible(el)) return el;
+      }
     }
-    boxEl.style.left = rect.left + 'px';
-    boxEl.style.top = (rect.top - boxEl.offsetHeight - 10) + 'px';
-    placePanel();
+    return null;
   }
 
-  function schedulePosition() {
-    if (boxEl && positionFrame === null) positionFrame = window.requestAnimationFrame(placeControl);
+  // 横向沿用搜索框左边缘，竖向对齐原生分类行。
+  function alignControl() {
+    if (!slotEl || !slotEl.isConnected || !searchAnchor || !searchAnchor.isConnected) return;
+    var row = getComputedStyle(slotEl.parentElement);
+    var gap = /flex/.test(row.display) ? parseFloat(row.columnGap) || 0 : 0;
+    slotEl.style.marginInlineEnd = -gap + 'px';
+    var origin = slotEl.getBoundingClientRect();
+    var anchor = searchAnchor.getBoundingClientRect();
+    boxEl.style.left = (anchor.left - origin.left) + 'px';
+    var category = visible(categoryAnchor) ? categoryAnchor.getBoundingClientRect() : null;
+    var center = category ? category.top + category.height / 2 : anchor.top - boxEl.offsetHeight / 2 - 10;
+    boxEl.style.top = (center - origin.top) + 'px';
+    placePanel();
   }
 
   function mount() {
     if (!searchAnchor || !searchAnchor.isConnected || !visible(searchAnchor)) {
       searchAnchor = typeof window.dycFindXhsSearchBox === 'function' ? window.dycFindXhsSearchBox() : null;
     }
-    if (boxEl && boxEl.isConnected) {
-      schedulePosition();
-      return !!searchAnchor;
+    if (!searchAnchor || !searchAnchor.parentElement) {
+      if (slotEl && slotEl.isConnected) slotEl.remove();
+      return false;
     }
-    if (!searchAnchor) return false;
-    ensureStyle();
-    panelOpen = false;
-    var el = buildBox();
-    document.body.appendChild(el);
-    boxEl = el;
-    mainEl = el.querySelector('#' + MAIN_ID);
-    panelEl = el.querySelector('#' + PANEL_ID);
-    statusEl = el.querySelector('.st');
-    placeControl();
-    paint();
+    if (!boxEl) {
+      ensureStyle();
+      slotEl = document.createElement('span');
+      slotEl.setAttribute('data-dyc-skip', '');
+      slotEl.style.cssText = 'all:initial;position:relative;display:inline-block;vertical-align:middle;align-self:center;flex:none;width:0;height:0;';
+      boxEl = buildBox();
+      mainEl = boxEl.querySelector('#' + MAIN_ID);
+      panelEl = boxEl.querySelector('#' + PANEL_ID);
+      statusEl = boxEl.querySelector('.st');
+    }
+    if (boxEl.parentElement !== slotEl) slotEl.appendChild(boxEl);
+    var moved = slotEl.nextElementSibling !== searchAnchor;
+    if (moved) searchAnchor.parentElement.insertBefore(slotEl, searchAnchor);
+    if (moved || (categoryAnchor && !categoryAnchor.isConnected)) {
+      categoryAnchor = findCategoryAnchor();
+      alignControl();
+      if (typeof ResizeObserver === 'function') {
+        if (!sizeObserver) sizeObserver = new ResizeObserver(alignControl);
+        sizeObserver.disconnect();
+        sizeObserver.observe(searchAnchor);
+        sizeObserver.observe(searchAnchor.parentElement);
+        if (categoryAnchor) {
+          sizeObserver.observe(categoryAnchor);
+          sizeObserver.observe(categoryAnchor.parentElement);
+        }
+        sizeObserver.observe(panelEl);
+      }
+    }
     return true;
   }
 
   function unmount() {
-    if (positionFrame !== null) window.cancelAnimationFrame(positionFrame);
-    positionFrame = searchAnchor = null;
-    if (boxEl && boxEl.parentNode) boxEl.parentNode.removeChild(boxEl);
+    if (sizeObserver) sizeObserver.disconnect();
+    if (slotEl) slotEl.remove();
+    slotEl = searchAnchor = categoryAnchor = null;
     boxEl = mainEl = panelEl = statusEl = null;
     panelOpen = false;
     missCount = 0;
@@ -879,7 +908,6 @@
       });
     }
     if (statusEl) statusEl.textContent = status + (!offAir && lastFeedback ? ' ' + lastFeedback : '');
-    placePanel();
   }
 
   /* ==========================================================
@@ -1053,6 +1081,7 @@
         });
       }
     } else {
+      alignControl();
       missCount = 0;
       warned = false;
       paint();
@@ -1098,8 +1127,7 @@
       dycWatchFlags(function (f) { flags = f || {}; flagsReady = true; apply(); });
     }
     window.addEventListener('dyc:pagechange', apply);
-    window.addEventListener('resize', schedulePosition);
-    window.addEventListener('scroll', schedulePosition, { capture: true, passive: true });
+    window.addEventListener('resize', alignControl);
     document.addEventListener('click', function (e) {
       if (panelOpen && boxEl && !boxEl.contains(e.target)) setPanelOpen(false);
     }, true);
@@ -1109,6 +1137,7 @@
     window.addEventListener('pagehide', function () { sendBeat(false); });
     window.addEventListener('pageshow', function () { beatOn = false; apply(); });
     var feedbackObserver = new MutationObserver(function (records) {
+      if (boxEl && shouldRun() && (!boxEl.isConnected || (searchAnchor && !searchAnchor.isConnected))) mount();
       if (!pendingPop || !records.some(function (r) {
         var el = r.target.nodeType === 1 ? r.target : r.target.parentElement;
         return el && !inOwnUI(el);

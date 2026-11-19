@@ -5,7 +5,7 @@
  *           manifest.json（注入顺序）
  *
  * 覆盖：
- *   A. 落点 —— 搜索框上方左对齐；滚动跟随；被抹掉后补回
+ *   A. 落点 —— 左侧对齐搜索框，高度对齐分类行；工具栏内挂载；被抹掉后补回
  *   B. 在讲判定 —— 只认「结束讲解」；卡内与下方讲解区两种形态都能定位到那张卡
  *   C. 15 秒硬闸 —— 14.9 秒仍不可弹、满 15 秒才放行；冷却中一个点击都不发
  *   D. 弹卡动作 —— 只点目标商品的「弹卡」，不点「结束讲解」；播报三段式
@@ -92,6 +92,7 @@ function pageHtml(o) {
   return '<!doctype html><body><div class="control-container">'
     + (o.offAir ? '<header id="live-state"><span>未开播</span>' + (o.offAir === 'label' ? '' : '<button>立即开播</button>') + '</header>' : '')
     + '<div id="row">'
+    + '<button id="add-category">添加分类</button>'
     + (o.noAnchor ? '' : '<div id="dyc-xhs-locate"></div>')
     + '<div class="d-input-wrapper" id="search-box"><input id="q" placeholder="请输入商品名称、序号或ID"></div>'
     + '</div>'
@@ -150,6 +151,7 @@ function makeDom(o) {
   doc.querySelectorAll('#live-state,#live-state *').forEach(el => rect(el, 10, 10, 150, 30));
   const row = doc.getElementById('row');
   if (row) rect(row, 0, 18, 1400, 30);
+  rect(doc.getElementById('add-category'), 130, 45, 55, 32);
   const q = doc.getElementById('q');
   if (q) rect(q, 224, 100, 276, 30);
   if (o.textAnchor) {
@@ -208,29 +210,30 @@ const api = (win) => win.__DYC_XHS_LOOP__;
 async function testPlacement() {
   console.log('\nA. 落点');
 
-  await check('A1 页面用文案模拟占位时，仍挂在搜索框外壳上方并左对齐', async () => {
+  await check('A1 搜索框用文案模拟占位时，仍沿搜索框左缘并对齐分类行', async () => {
     const { win, doc } = await boot({ textAnchor: true, noAnchor: true });
     try {
       const box = doc.getElementById('dyc-xhs-loop');
       assert.ok(box,'文本占位搜索框未挂出循环控件');
-      const search = doc.getElementById('search-box').getBoundingClientRect();
-      assert.equal(parseFloat(box.style.left),search.left);
-      assert.ok(parseFloat(box.style.top) + box.offsetHeight < search.top);
-      assert.equal(box.style.visibility,'visible');
+      const search = doc.getElementById('search-box');
+      assert.equal(box.parentElement.nextElementSibling, search, '定位容器应在搜索框所在行');
+      assert.equal(win.getComputedStyle(box).position, 'absolute');
+      assert.equal(parseFloat(box.style.top), 61, '循环讲解中心线应对齐添加分类，和搜索框的间距可变');
     } finally { win.close(); }
   });
 
-  await check('A2 没有序号定位时也跟随搜索框滚动', async () => {
+  await check('A2 滚动不重新定位或隐藏循环讲解，也不关闭设置', async () => {
     const { win, doc } = await boot({ noAnchor: true });
     try {
       const box = doc.getElementById('dyc-xhs-loop');
       const search = doc.getElementById('search-box');
-      const oldTop = parseFloat(box.style.top);
-      rect(search, 180, 120, 300, 30);
+      box.querySelector('#dyc-xhs-loop-main').click();
+      const oldStyle = box.style.cssText;
+      rect(search, 180, 12, 300, 30);
       search.dispatchEvent(new win.Event('scroll'));
       await sleep(60);
-      assert.equal(parseFloat(box.style.left),180);
-      assert.equal(parseFloat(box.style.top),oldTop + 20);
+      assert.equal(box.style.cssText, oldStyle);
+      assert.equal(box.querySelector('#dyc-xhs-loop-main').getAttribute('aria-expanded'), 'true');
     } finally { win.close(); }
   });
 
@@ -255,7 +258,7 @@ async function testPlacement() {
     await sleep(1200);
     const again = doc.getElementById('dyc-xhs-loop');
     assert.ok(again, '抹掉后没有补回');
-    assert.equal(again.style.left, box.style.left, '补回的位置不对');
+    assert.equal(again, box, '应补回原控件及其状态');
     win.close();
   });
 }
@@ -671,8 +674,8 @@ async function testAdaptedLoop() {
       const min = box.querySelector('[data-mode="min"]');
       api(win)._setAuto(true);
       assert.equal(main.getAttribute('aria-expanded'),'false');
-      assert.equal(box.style.left,'200px');
-      assert.equal(box.style.position,'');
+      assert.equal(box.parentElement.nextElementSibling,doc.getElementById('search-box'));
+      assert.equal(win.getComputedStyle(box).position,'absolute');
       main.click();
       assert.equal(sec.getAttribute('aria-pressed'),'true');
       min.click();

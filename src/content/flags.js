@@ -304,18 +304,18 @@ var DYC_PAGE_PATTERNS = {
  * ========================================================== */
 
 var DYC_FLAG_GROUPS = [
-  { id: 'live', title: '中控台' },
-  { id: 'shop', title: '抖店' },
-  { id: 'wx', title: '微信小店' },   // 2026-10-31 新增:微信侧第一个业务功能落地
-  { id: 'other', title: '其他' },
-  { id: 'shared', title: '通用' },
+  { id: 'live', title: '中控台', theme: 'blue' },
+  { id: 'shop', title: '抖店', theme: 'amber' },
+  { id: 'wx', title: '微信小店', theme: 'green' },
+  { id: 'other', title: '其他', theme: 'violet' },
+  { id: 'shared', title: '通用', theme: 'slate' },
   // 小红书直播中控台（2026-11-17 第一批功能落地）。排在千帆之前：
   // 用户的中控台是当前主战场，展开小红书平台时它排第一。
-  { id: 'xhsLive', title: '小红书中控台' },
+  { id: 'xhsLive', title: '小红书中控台', theme: 'rose' },
   // 小红书千帆（ark 商品/店铺后台）。2026-11-17 晚落第一个业务功能
   // （商品名完整显示）⇒ 按当初约定「千帆将来真落功能时再随功能一并加回分组」
   // 把这张卡加回来；主页（xhsHome）仍无功能，保持删除状态。
-  { id: 'xhsShop', title: '小红书千帆' }
+  { id: 'xhsShop', title: '小红书千帆', theme: 'teal' }
 ];
 
 /* ==========================================================
@@ -1311,6 +1311,15 @@ var DYC_FLAGS_META = [
     label: '粘贴加车',
     desc: '读取剪贴板中的小红书商品 ID，直接加入小黄车并定位。',
     note: '商品需在售；待上架或商品池搜不到的商品不支持。',
+    default: true,
+    pages: ['xhsCtrl']
+  },
+  {
+    key: 'xhsAutoRefresh',
+    group: 'xhsLive',
+    label: '自动刷新',
+    desc: '确认未开播时，每 10 秒刷新商品列表。',
+    note: '开播或状态不明时暂停。强制档仍会刷新。',
     default: true,
     pages: ['xhsCtrl']
   }

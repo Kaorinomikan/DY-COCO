@@ -91,7 +91,7 @@ function pageHtml(serials, opts) {
     + '<div id="tabs">全部</div>'
     + '<div id="addcat">添加分类</div>'
     + '<div id="searchcol">'
-    + '<div id="searchbox"><span class="ico"></span>'
+    + '<div id="searchbox" class="d-input-wrapper"><span class="ico"></span>'
     + (o.noAnchor
       ? ''
       : o.ariaOnly
@@ -143,14 +143,14 @@ function makeDom(html, flags) {
   rect(doc.getElementById('row'), 0, 18, 1100, 36);
   rect(doc.getElementById('add'), 1000, 18, 90, 32);
 
-  /* 版面模型：我们自己的控件插在行里 ⇒ 与搜索框同一行（top 18）；
+  /* 版面模型：我们自己的控件插在行里 ⇒ 与搜索框部分重叠，但中心线偏高；
    * 插进 #searchcol 内部 ⇒ 被竖排挤到下一行（top 80）。
    * 这正是真机 00:10 的现象，用它来验证「量了再定」。 */
   win.Element.prototype.getBoundingClientRect = function () {
     if (this.id === 'dyc-xhs-locate') {
       const col = this.parentElement;
       const inRow = !!(col && col.id === 'row');
-      const top = inRow ? 18 : 80;
+      const top = (inRow ? 11 : 80) + (parseFloat(this.style.top) || 0);
       return { left: 516, top, right: 738, bottom: top + 32, width: 222, height: 32, x: 516, y: top };
     }
     return { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0, x: 0, y: 0 };
@@ -188,6 +188,9 @@ async function testPlacement() {
       '必须紧贴搜索框那一格右侧');
     assert.equal(box.nextElementSibling && box.nextElementSibling.id, 'spacer',
       '应在搜索框与右侧按钮之间，而不是被推到行尾');
+    const search = doc.getElementById('searchbox').getBoundingClientRect();
+    const locate = box.getBoundingClientRect();
+    assert.equal(locate.top + locate.height / 2, search.top + search.height / 2, '控件和原生搜索框的中心线应重合');
     win.close();
   });
 

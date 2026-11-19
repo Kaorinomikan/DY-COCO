@@ -2,24 +2,16 @@
  * 自动循环讲解 · 中控台
  * ============================================================
  * 【用户要什么(2026-10-25 定稿,方案评审稿 v9)】
- *   小黄车右上角一枚 20px 的浮动小胶囊,显示「自动循环讲解中 04:32」;
+ *   小黄车标题栏的循环讲解胶囊,显示「自动循环讲解中 04:32」;
  *   点开是调整面板:三段色带(秒杀·引流 / 承接·利润 / 高客单)+ 刻度
  *   + 带阻尼的滑条 + 常驻两行提示。
  *   分钟模式 1–15 分钟(步进 30 秒)，秒模式 5–60 秒(步进 1 秒)，互斥切换。
  *   秒模式仅直接定位当前讲解商品，取消后再续讲；不搜索、不滚屏、不失败重试。
  *   胶囊左侧只展开菜单，末端常驻开启/停止；设置与启停状态跨刷新/重启保留。
  *
- * 【胶囊挂哪儿(2026-10-25 用户改口径)】
- *   挂在商品列表 tab 文案(「待上架商品」这类)右侧 12px 的空白处 —— 用户截图指的那块。
- *   原先的「直播商品(N) 行右端」与平台的「设置 / 添加」挤在一起,不再使用。
- *   tab 文案随切页会变,所以按一组文本认;一个都找不到才退回标题行右端。
- *
- * 【控件为什么挂在 body 上】
- *   中控台是 React 页面,它每次重渲染都会清掉插进它容器里的外来节点。
- *   本功能每 N 分钟点一次「讲解」,必然触发那轮重渲染 ⇒ 控件若挂在平台容器里
- *   会周期性闪一下(AGENTS 第 50 条,小黄车自动刷新那次踩过)。
- *   ⇒ 宿主 fixed + Shadow DOM,坐标每拍按标题行实测矩形重贴,零布局占位
- *     —— 小黄车的行数 / 行距 / 滚动位置一个像素都不动。
+ * 【胶囊挂哪儿】
+ *   胶囊占商品标题栏中原生刷新按钮左边的一格，与同排控件一同参与网页布局。
+ *   滚动时浏览器同步绘制胶囊和标题栏；原动作栏被替换时将已有的 Shadow DOM 宿主补回。
  *
  * 【三件事必须分开(AGENTS 第 53 条)】
  *   ① 能不能点 = 节点在文档 + 有真实尺寸 + 没禁用。**不含视口条件**。
@@ -191,13 +183,7 @@
    *   6 次 ≈ 30s + 30s + 60s + 60s + 60s 的退避,真正在动作的时间 ≤ 1 分钟,
    *   而不是「一整晚都在滚」。 */
   var FAIL_MAX = 6;
-  /* 胶囊跟位节拍。
-   * ★ 2026-11-10(用户「自动循环开了之后超级卡」):250ms → 500ms。
-   *   旧注释写「只读一个矩形,开销可忽略」—— 在重页面上不成立:这一拍实际要读
-   *   锚点 / 自动刷新圆钮 / 行内「刷新列表」三处矩形(每次都可能先清一遍平台布局),
-   *   再写 style、再判一次遮挡。真机整页 textContent 实测 254 万字,一次强制布局
-   *   就不便宜,4 次/秒是纯浪费 —— 胶囊只在布局变化时需要重贴,滚动期间本来就
-   *   隐身(scrollHideUntil),250→500 肉眼分不出。 */
+  /* 检查挂载、遮挡及倒计时的节拍，滚动位置由浏览器布局管理。 */
   var POS_MS = 500;
   /* 2026-10-26(#114 / #115 / #113 修复)'新增的四个判据 */
   var LOST_STREAK_LIMIT = 20;   // 连续 20 拍(≈40 秒)都找不回来,才允许配合失败次数判终止
@@ -373,7 +359,7 @@
     statusTtlAt: 0
   };
 
-  var host = null;          // Shadow DOM 宿主(fixed)
+  var host = null;          // 标题行里的 Shadow DOM 宿主
   var shadow = null;
   var refs = {};            // 影子树里的节点引用
   var tickTimer = 0;
@@ -901,21 +887,16 @@
    *   · 讲解按钮:「讲解」二字单独成按钮,不在标题行、不在别的行
    * ========================================================== */
 
-  /* 2026-10-25 改落点(用户指定):胶囊挂在商品列表 tab 行的右侧空白
-   * ——截图里「待上架商品」右边那块。之前的「直播商品(N) 行右端」离设置/添加太挤,
-   * 而 tab 行右侧天然空着,视线也在同一行。tab 文案随用户切页会变,所以按**一组文本**
-   * 认,并保留旧口径(直播商品(N) 标题行)当兜底。 */
+  /* 用商品页签找到标题行，保留旧的商品标题识别作为兜底。 */
   var TAB_TEXTS = ['待上架商品', '直播商品', '已下架', '已售罄', '全部商品'];
   var anchorMissAt = 0;
-  var anchorMode = 'title';        // title = 标题行内固定偏移;tab = 退到 tab 文案右侧;header = 旧口径
+  var anchorMode = 'title';        // title = 标题行；tab = 页签附近；header = 旧标题
   var anchorRow = null;            // 标题行容器(tab 与刷新按钮所在的那一行)
-  var anchorTab = null;            // tab 文案节点(用来算「别压到它」)
   /* 按钮左边缘 = 标题行左边缘 + 这个偏移。
    * 用户 2026-10-25 要求「不要浮动,要固定位置」:贴着 tab 文案走的话,
    * tab 文案一换(直播商品 / 待上架商品 / 已下架)按钮就左右漂。
    * 改成绑定**行**的固定偏移后,文案怎么换它都不动。 */
   var TITLE_OFFSET = 344;         // = 面板宽度,方便记忆;需要微调只改这一个数
-  var anchorMissingAt = 0;         // 锚点短暂消失的起点(面板不因此关闭)
 
   // 一拍内复用同一节点的矩形；数组仅活到本次 place 返回。
   function rectOnce(el, readings) {
@@ -950,12 +931,10 @@
       if (row) {
         anchorMode = 'title';
         anchorRow = row;
-        anchorTab = el;
         cartHeader = row;
         return row;
       }
       anchorMode = 'tab';          // 找不到行就退回贴文案(至少不会消失)
-      anchorTab = el;
       cartHeader = el;
       return el;
     }
@@ -982,31 +961,13 @@
     return null;
   }
 
-  /** 这一排 tab 的最右边缘(切 tab 不变;找不到就退回当前 tab) */
-  function tabsRightEdge(row) {
-    var base = row || document;
-    var cands = $$('div, span, a, li, button', base).filter(function (el) {
-      var t = txt(el);
-      return t.length <= 10 && TAB_TEXTS.indexOf(t) >= 0;
-    });
-    var max = 0;
-    for (var i = 0; i < cands.length; i++) {
-      var r = cands[i].getBoundingClientRect();
-      if (r.width < 20 || r.width > 220) continue;
-      if (r.height < 12 || r.height > 50) continue;
-      if (r.right > max) max = r.right;
-    }
-    if (!max && anchorTab && anchorTab.isConnected) max = anchorTab.getBoundingClientRect().right;
-    return max || 0;
-  }
-
   /** 标题行里的原生「刷新列表」按钮(找到就把我们的按钮排在它左边) */
   function findRefreshInRow(row, readings) {
     if (!row) return null;
     var cands = $$('button, span, div, a', row);
     for (var i = 0; i < cands.length; i++) {
       var el = cands[i];
-      if (txt(el).indexOf('刷新列表') !== 0) continue;
+      if (txt(el) !== '刷新列表') continue;
       var r = rectOnce(el, readings);
       if (r.width < 30 || r.width > 160 || r.height < 12 || r.height > 50) continue;
       return el;
@@ -1455,7 +1416,7 @@
     var prev = c.scrollTop;
     var target = Math.max(0, Math.min(maxScroll, a.offset - 120));
     c.scrollTop = target;
-    window.__dycScriptScrollAt = Date.now();         // 程序化滚动打点(项目约定,auto-refresh 也读它)
+    window.__dycScriptScrollAt = Date.now();         // 程序化滚动打点
     await sleep(60);
     if (aborted(mark)) {
       c.scrollTop = prev;
@@ -1531,7 +1492,7 @@
       if (userBusy()) return 'busy';                 // 用户还在动 ⇒ 让路
       var target = Math.max(0, Math.min(maxScroll, pos));
       c.scrollTop = target;
-      window.__dycScriptScrollAt = Date.now();       // 程序化滚动打点(项目约定,auto-refresh 也读它)
+      window.__dycScriptScrollAt = Date.now();       // 程序化滚动打点
       await sleep(60);
       if (aborted(mark)) return 'abort';
       if (Math.abs(c.scrollTop - target) > 2) return 'bad';   // 容器不认这个 scrollTop
@@ -2228,7 +2189,7 @@
   }
 
   /* ==========================================================
-   * 五、胶囊 + 面板(Shadow DOM,固定 px,零占位)
+   * 五、胶囊 + 面板(Shadow DOM，标题栏内联布局)
    * ========================================================== */
 
   var CSS = [
@@ -2237,7 +2198,7 @@
     /* D 版固定按钮:宽 138px **写死**。灯 + 「循环讲解」(恒定四字) + 40px 时间槽。
        宽度不随状态变的三条:① width 写死;② 中间文字恒定;③ 时间槽定宽 + 等宽数字,
        没有倒计时时用 visibility:hidden 占位(不塌缩)。 */
-    '.cap{position:fixed;display:flex;align-items:center;width:224px;height:26px;',
+    '.cap{display:flex;align-items:center;width:224px;max-width:100%;height:26px;',
     '  padding:0;box-sizing:border-box;',
     '  border-radius:999px;background:#fff;border:1px solid #e5e6eb;color:#4e5969;',
     '  font-size:11px;line-height:1;white-space:nowrap;cursor:pointer;',
@@ -2264,18 +2225,16 @@
     '.cap.err .slot{color:#c62222}',
     '.cap.off{border-color:#e5e6eb;background:#fff;color:#86909c}',
     '.cap.off .slot{color:#a9aeb5;font-weight:500}',
-    /* 2026-10-26(#119 / #120):落点空间不够、或会压到别的浮层时,退化成「只留灯」的
-       26px 小圆点 —— 最坏情况也只盖住一小点,点一下仍能展开完整面板。 */
-    '.cap.mini{width:70px;height:22px;padding:0;gap:0}',
-    '.cap.mini .cap-main{width:25px;padding:0;justify-content:center}',
-    '.cap.mini .ico,.cap.mini .txt,.cap.mini .slot{display:none}',
-    /* 2026-11-05:mini(26px 小圆点)状态下连 ∞ 也放不下,一并收起。 */ 
-    '.cap.mini .inf-mark{display:none}',
+    /* 平台动作栏收窄时保留开关和设置入口。 */
+    '@container (max-width:223px){',
+    '  .cap-main{flex:1;min-width:25px;padding:0;justify-content:center}',
+    '  .cap .ico,.cap .txt,.cap .slot,.cap .inf-mark{display:none}',
+    '}',
 
     /* 面板:从按钮那儿「长出来」再「收回去」。
        用 opacity + visibility + 4px 位移(display 不能过渡),120ms、无弹跳。
        增长原点由 JS 按落点设(--ox/--oy),所以永远是从按钮那一角展开。 */
-    '.panel{position:fixed;width:344px;background:#fff;border:1px solid #e5e6eb;border-radius:10px;',
+    '.panel{position:absolute;z-index:2147482000;width:344px;background:#fff;border:1px solid #e5e6eb;border-radius:10px;',
     '  box-shadow:0 10px 28px rgba(31,35,41,.14);padding:14px 18px 0;overflow:hidden;',
     '  opacity:0;visibility:hidden;transform:translateY(-4px) scale(.985);',
     '  transform-origin:var(--ox,0) var(--oy,0);pointer-events:none;',
@@ -2384,10 +2343,11 @@
   ].join('\n');
 
   function buildUI() {
-    if (host && host.isConnected) return;
-    host = document.createElement('div');
+    if (host) return;
+    host = document.createElement('span');
     host.id = 'dyc-auto-loop-host';
-    host.style.cssText = 'all:initial;position:fixed;left:0;top:0;width:0;height:0;z-index:2147482000';
+    host.style.cssText = 'all:initial;display:none;position:relative;flex:0 1 224px;width:224px;min-width:70px;' +
+      'align-self:center;vertical-align:middle;margin-inline-end:8px;container-type:inline-size';
     shadow = host.attachShadow({ mode: 'open' });
 
     var st = document.createElement('style');
@@ -2489,10 +2449,7 @@
       setGroup('min');
     });
 
-    /* 与自动刷新对齐的两条全局监听(2026-10-25 定,本次重排面板时不能丢):
-     *   ① scroll 捕获:页面在滚就先藏胶囊,浮动层追不上滚动;
-     *   ② pointerdown / click 捕获:真人一按下就把面板收起来,不等 click 走完。 */
-    document.addEventListener('scroll', noteScroll, true);
+    /* 真人按下框外就收起面板，不等 click 走完。 */
     document.addEventListener('pointerdown', onDocClick, true);
     document.addEventListener('click', onDocClick, true);
 
@@ -2833,22 +2790,7 @@
     });
   }
 
-  /* ---------- 位置:每拍按标题行实测矩形重贴 ---------- */
-
-  /* 与自动刷新的两条显隐口径对齐(2026-10-25 用户要求「向自动刷新学习」):
-   *   ① 页面在滚 ⇒ 先藏:浮动层追不上滚动,边跟边拖会像被拖拽的贴纸;
-   *   ② 平台弹层打开 ⇒ 藏:z-index 很高,不藏就会浮在弹窗内容上。 */
-  var scrollHideUntil = 0;
-
-  function noteScroll() {
-    /* ★ 2026-10-27:找款/续讲期间我们自己会滚屏、会跳搜索 —— 那些 scroll 事件
-     *   不是用户在滚,不能拿它把胶囊藏起来(藏了再显就是「一直闪」)。
-     *   用户在动(pointerdown / wheel / 触摸)时照旧让路。 */
-    if (state.busy && !userBusy()) return;
-    if (drag) return;                        // 拖动滑条中:刷新诱发的滚动不该把胶囊藏掉
-    scrollHideUntil = Date.now() + 220;
-    if (refs.cap) refs.cap.hidden = true;
-  }
+  /* ---------- 标题栏挂载与遮挡 ---------- */
 
   var modalCheckedAt = 0, modalRects = null;
 
@@ -2931,261 +2873,77 @@
     return false;
   }
 
-  /* ==========================================================
-   * 落位吸附(2026-10-26)
-   * ----------------------------------------------------------
-   * 用户原话:「这两个自添加的按钮,会因为原生的刷新在刷新,然后会轻微左右抖动,
-   *   希望位置固定且不抖动」「两个按钮应该在同一个水平线上,不要因为其他按钮影响而抖动」。
-   * 根因不是算错,而是**每拍照抄测量值**:平台刷新期间按钮群会重排、图标会换加载态,
-   * getBoundingClientRect 每拍能差 1~3px;250ms 一拍抄下来,就是肉眼可见的左右抖。
-   * 规则:
-   *   |Δ| ≤ 2px  ⇒ 当噪声,**不写 style**(位置就此固定)
-   *   |Δ| ≥ 10px ⇒ 真移动(切页 / 换行 / 缩放),立刻跟
-   *   中间档     ⇒ 连续两拍指同一个目标才跟(滤掉刷新那一瞬的单拍值)
-   * 复位时机:从藏到显、窗口缩放 —— 别让旧坐标把新位置挡两拍。
-   * auto-refresh.js 里那盏灯用的是同一套规则(各自持有状态,互不依赖)。
-   * ========================================================== */
-  var SETTLE_SMALL = 2;      // ≤2px:当噪声,不动
-  var SETTLE_BIG = 10;       // ≥10px:真移动,立刻跟
-  var settleSt = {};         // { key: {cur, want, streak} }
+  var toolbarSlot = null;
 
-  /* 圆钮位预留(2026-10-27 用户:「其中一个按钮隐藏了,另外的按钮不需要自动回补位置,
-   *   这样子也算视觉跳动」)。
-   * 胶囊的横向基准是「自动刷新圆钮的左边缘」,圆钮一旦不在(关掉 / 被浮层压住藏起来 /
-   * 滚动时暂时隐身),旧写法就退到「刷新列表左边缘」—— 胶囊当场右移 34px 补空位,这就是
-   * 用户看到的又一次跳动。现在改成**按同一格预留**:没有圆钮也留出它那一格。
-   * 34 = 8(间距)+ 26(圆钮直径),与 auto-refresh.js 的 LAMP_GAP / LAMP_HIT 对齐;
-   * 真量到过就记进 lampSlotDX(更可信,也不怕以后改尺寸)。 */
-  var LAMP_SLOT_DX = 34;
-  var lampSlotDX = 0;
-
-  function resetSettle(key) {
-    if (key) delete settleSt[key];
-    else settleSt = {};
-  }
-
-  /** 返回要写入的新坐标;null = 保持原值(这就是「位置固定」的实现) */
-  function settle(key, want) {
-    want = Math.round(want);
-    var st = settleSt[key];
-    if (!st) st = settleSt[key] = { cur: null, want: null, streak: 0 };
-    if (st.cur === null || !isFinite(st.cur)) {
-      st.cur = want; st.want = want; st.streak = 0; return want;
+  function findToolbarSlot(anchor, readings) {
+    var bounds = rectOnce(anchor, readings);
+    var center = bounds.top + bounds.height / 2;
+    // 页签容器和右侧动作栏有时是兄弟节点，向上找同一行的刷新入口。
+    for (var row = anchor, depth = 0; row && row !== document.body && depth < 4; row = row.parentElement, depth++) {
+      var candidate = row.querySelector('.dyc-ar-lamp') || findRefreshInRow(row, readings);
+      if (!candidate) continue;
+      var rect = rectOnce(candidate, readings);
+      if (rect.height && Math.abs(rect.top + rect.height / 2 - center) <= 20) {
+        return candidate.closest('button, a, [role="button"]') || candidate;
+      }
     }
-    var d = Math.abs(want - st.cur);
-    if (d <= SETTLE_SMALL) { st.want = want; st.streak = 0; return null; }
-    if (d >= SETTLE_BIG) { st.cur = want; st.want = want; st.streak = 0; return want; }
-    if (st.want === want) st.streak++; else { st.want = want; st.streak = 1; }
-    if (st.streak >= 2) { st.cur = want; st.streak = 0; return want; }
     return null;
   }
 
-  /**
-   * 两个矩形是否在同一条水平带上 —— 只用于判断「能不能互相当位置基准」。
-   * 圆钮(刷新灯)与锚点不在同一行时(比如 tab 在上一行),就不该拿它定纵向,
-   * 否则胶囊会被拉到别的行上去。
-   */
-  function sameRowBand(r1, r2) {
-    if (!r1 || !r2) return false;
-    var c1 = r1.top + r1.height / 2, c2 = r2.top + r2.height / 2;
-    var tol = Math.max(12, Math.min(r1.height, r2.height) / 2);
-    return Math.abs(c1 - c2) <= tol;
-  }
-
-  /** 自动刷新那枚 26px 圆钮(挂 body 上,不在行内 ⇒ 只能按类名取) */
-  function findAutoRefreshBtn(readings) {
-    try {
-      var el = document.querySelector('.dyc-ar-lamp');
-      if (!el) return null;
-      var r = rectOnce(el, readings);
-      if (r.width < 16 || r.height < 16) return null;
-      return el;
-    } catch (e) { return null; }
-  }
-
-  /**
-   * 落点(2026-10-26 重写 · #119 / #120「浮窗有遮挡」)
-   * ----------------------------------------------------------
-   * 旧口径只有一个假设:行内有原生【刷新列表】,于是固定往它左边排、并预留 26px 给
-   * 自动刷新圆钮。这个假设一旦不成立(行里没有刷新按钮 / 圆钮没开 / 面板更窄),
-   * 落点就会跑出行外 —— 截图里它压在实时数据卡片的右缘上,就是这么来的。
-   *
-   * 新口径三条硬约束:
-   *   ① **纵向**只允许落在「让位基准」那一行的高度带内(见下面 basis),绝不爬到别的区块上;
-   *   ② **横向**只允许落在 [行左 +8, 行右 -8] 之内,按顺序试三个候选:
-   *      ①让位基准左侧(基准再退 8px)
-   *      ②tab 文案右侧 +12  ③行右端内侧;
-   *   ③ 行内放不下完整胶囊(width 156)→ 退化成 26px 小圆点(只留灯),
-   *      最坏情况也只盖住一小点,点一下仍能展开完整面板。
-   *
-   * 2026-10-26 追加(用户报「原生一刷新,两枚自加按钮就轻微左右抖」):
-   *   ④ **让位基准只认一个**,顺序 = 自动刷新圆钮 → 行内原生刷新列表 → 锚点行右端,
-   *      并且必须先过「同一行」这道闸(sameRowBand)。旧写法 min(三者) 会把测量噪声
-   *      串成一条链:圆钮抖 1px,胶囊跟着抖,刷新一瞬间整排都在动。
-   *   ⑤ 纵向跟着**基准的中心**走,不再用锚点行中心 —— 这样胶囊与圆钮恒在同一水平线上。
-   *   ⑥ 算出来的坐标先过 settle() 吸附:2px 以内不动、10px 以上立刻跟、中间档两拍确认。
-   */
   function placeBody() {
     if (!host) return;
-    /* ★ 2026-10-27 用户报「全局轮询的时候,这个按钮不要一直跳动」。
-     *   找款 / 续讲那几秒里,滚屏、跳搜索、跳回来**全是我们自己干的** ——
-     *   锚点因此大幅位移,place() 若照常跟随,胶囊就在屏幕上到处飞。
-     *   ⇒ 整个动作期间**位置冻结**:不算新坐标、不写 style、也不因滚动隐身。
-     *   (动作收尾时 doCycle 会 resetSettle + place 一次性贴回真实位置) */
-    /* ★ 2026-10-30 用户报「原生刷新列表会卡断滑动」:拖动滑条期间同样冻结位置。
-     *   刷新会把锚点重排/短暂抹掉,这时重贴一次面板,手指还按着、滑钮却跳走了。 */
-    if (state.busy || drag) {
-      /* 手势事件彻底丢了(切窗口 / 被平台吞掉 up)也不能永久冻结:超 20 秒自动收尾 */
-      if (drag && Date.now() - (drag.at || 0) > 20000 && bindDrag._end) { bindDrag._end(); return; }
-      if (!drag && refs.cap && refs.cap.hidden) { refs.cap.hidden = false; resetSettle(); }
+    if (drag) {
+      // 手势事件丢失时释放拖动，避免永久挡住挂载修复。
+      if (Date.now() - (drag.at || 0) > 20000 && bindDrag._end) bindDrag._end();
       return;
     }
-    /* 2026-10-27:弹层不再「存在即隐藏」,改成算完坐标后判「有没有真的盖住胶囊」
-     * (见下面 modalCovers 那一段)。滚动隐藏不变 —— 那是跟不跟手的问题。 */
-    if (Date.now() < scrollHideUntil) {
-      if (refs.cap) refs.cap.hidden = true;
-      return;
-    }
-    var readings = [];
-    var a = findAnchor(readings);
+
     var cap = refs.cap;
-    var panel = refs.panel;
-    if (!a) {
-      // ★ 锚点会被平台重渲染换掉(自动刷新列表、React 重排都会),那一瞬找不到属正常。
-      //   2026-10-27:以前**立刻藏**,右上角小卡片一弹就闪一下没了;
-      //   现在给 900ms 宽限 —— 只是重排就原地待着,真走了(切页 / 收起小黄车)才收。
-      //   面板仍按原口径:超过 5 秒仍找不到才关。
-      if (!anchorMissingAt) anchorMissingAt = Date.now();
-      if (Date.now() - anchorMissingAt > 900) cap.hidden = true;
-      if (panelOpen && Date.now() - anchorMissingAt > 5000) closePanel();
-      return;
-    }
-    anchorMissingAt = 0;
-    var r = rectOnce(a, readings);
-    var vh = window.innerHeight || document.documentElement.clientHeight;
-    // 锚点整块滚出视口 ⇒ 收起来(只影响显隐,不影响计时)
-    if (r.bottom < 0 || r.top > vh) {
-      cap.hidden = true;
-      closePanel();            // 视觉与 panelOpen 一起收,避免「点一下没反应、点两下才开」
-      return;
-    }
-    /* 从藏到显 ⇒ 清掉吸附记忆,下一行立刻贴到当前实测位(否则会先停在旧坐标两拍) */
-    if (cap.hidden) { cap.hidden = false; resetSettle(); }
-
-    var CW_FULL = 224, CW_MINI = 70;
-    var row = anchorRow || a;
-
-    // —— 让位基准:**只认一个**,优先我们自己的圆钮(它被 auto-refresh 冻结 + 吸附) ——
-    var basis = null;
-    var ab = findAutoRefreshBtn(readings);
-    if (ab) {
-      var abR = rectOnce(ab, readings);
-      if (sameRowBand(r, abR)) {
-        basis = { left: abR.left, cy: abR.top + abR.height / 2 };
-        /* 顺手把「圆钮相对刷新列表左边缘的偏移」量下来存着(只量一次):
-         * 圆钮不在时要按同一格预留,不能靠写死的 34 去猜。 */
-        if (!lampSlotDX) {
-          var rf0 = findRefreshInRow(row, readings);
-          if (rf0) {
-            var r0 = rectOnce(rf0, readings);
-            var dx0 = Math.round(r0.left - abR.left);
-            if (sameRowBand(r, r0) && dx0 > 8 && dx0 < 80) lampSlotDX = dx0;
+    if (!toolbarSlot || !toolbarSlot.isConnected || !host.isConnected ||
+        (toolbarSlot !== host.parentElement && toolbarSlot.parentElement !== host.parentElement)) {
+      var readings = [];
+      var a = findAnchor(readings);
+      if (a) {
+        var before = findToolbarSlot(a, readings);
+        var parent = before ? before.parentElement : a;
+        var interactive = parent && parent.closest('button, a, [role="button"], [role="tab"], [role="tablist"]');
+        if (interactive) {
+          parent = interactive.parentElement;
+          before = null;
+        }
+        if (parent && parent !== document.body) {
+          if (host.parentElement !== parent || (before && host.nextElementSibling !== before)) {
+            parent.insertBefore(host, before || null);
           }
+          toolbarSlot = before || parent;
+          host.style.display = 'inline-flex';
+          cap.hidden = false;
+          if (!observerTarget || !observerTarget.isConnected) ensureObserver();
         }
       }
     }
-    if (!basis) {
-      var rf = findRefreshInRow(row, readings);
-      if (rf) {
-        var rfR = rectOnce(rf, readings);
-        if (sameRowBand(r, rfR)) {
-          /* ★ 圆钮不在(关掉 / 被浮层压住 / 滚动时隐身)⇒ **照旧让出它那一格**,
-           *   不往右挪去补空位。用户 2026-10-27:「另外的按钮不需要自动回补位置,
-           *   这样子也算视觉跳动」。 */
-          basis = { left: rfR.left - (lampSlotDX || LAMP_SLOT_DX), cy: rfR.top + rfR.height / 2 };
-        }
-      }
-    }
-    if (!basis) basis = { left: r.right - 4, cy: r.top + r.height / 2 };
-    var blockLeft = Math.round(basis.left);
+    if (cap.hidden || !host.isConnected) return;
 
-    var minLeft = Math.round(r.left + 8);
-    var maxLeftFull = Math.round(r.right - 8 - CW_FULL);
-    var mini = false;
-    var left = null;
+    var bounds = cap.getBoundingClientRect();
+    var covered = bounds.width > 0 && bounds.height > 0 && modalCovers(bounds);
+    var visibility = covered ? 'hidden' : '';
+    if (cap.style.visibility !== visibility) cap.style.visibility = visibility;
+    if (covered && panelOpen) closePanel();
+    if (!panelOpen) return;
 
-    if (anchorMode === 'tab') {
-      /* 只认到 tab 文案这一档:锚点本身就是个窄节点(r.width 常 < 80),
-       * 按「行边界」夹会把完整胶囊硬挤成小圆点 —— 那不是用户要的。
-       * 这一档仍按老口径贴文案右侧 12px,只有视口真装不下才退 mini。 */
-      left = Math.round(r.right + 12);
-      mini = (left + CW_FULL > (window.innerWidth || document.documentElement.clientWidth) - 4);
-    } else {
-      var want = Math.round(blockLeft - 8 - CW_FULL);       // ① 让位基准左侧
-      if (want >= minLeft && want <= maxLeftFull) {
-        left = want;
-      } else {
-        var tabsRight = anchorMode === 'title' ? tabsRightEdge(row) : 0;
-        var cand2 = tabsRight ? Math.round(tabsRight + 12) : null;   // ② tab 条右侧
-        if (cand2 !== null && cand2 >= minLeft && cand2 + CW_FULL <= Math.round(r.right - 8)) {
-          left = cand2;
-        } else if (maxLeftFull >= minLeft) {
-          left = maxLeftFull;                                        // ③ 行右端内侧
-        } else {
-          mini = true;                                               // 行太窄 ⇒ 小圆点
-          left = Math.round(r.right - 8 - CW_MINI);
-        }
-      }
-    }
-    var cw = mini ? CW_MINI : CW_FULL;
-    /* 纵向:与**让位基准的中心**对齐 —— 胶囊与自动刷新圆钮因此恒在同一条水平线上。
-     * (2026-10-26 用户原话:「这两个按钮应该在同一个水平线上」) */
-    var top = Math.round(basis.cy - 11);
-
-    var vw = window.innerWidth || document.documentElement.clientWidth;
-    left = Math.min(Math.max(4, left), Math.max(4, vw - cw - 4));
-    top = Math.min(Math.max(0, top), Math.max(0, vh - 24));
-
-    if (cap.classList.contains('mini') !== mini) cap.classList.toggle('mini', mini);
-    /* 大弹层真的压住胶囊才让位(#98 的本意);右上角那种小卡片压不着,不藏。
-     * 判据用「这一拍算出来的位置」而不是旧位置 —— 否则弹层一开一关会有一拍错位。 */
-    if (modalCovers({ left: left, top: top, right: left + cw, bottom: top + 22 })) {
-      cap.hidden = true;
-      /* 面板也一起收:被大浮层压住时还浮着,视觉上就是「压在弹窗上面」(2026-10-27) */
-      if (panelOpen) closePanel();
-      return;
-    }
-    /* 落位吸附:≤2px 视为噪声不写、≥10px 立刻跟、中间档两拍确认(见 settle 头部注释) */
-    var sl = settle('capL', left), stp = settle('capT', top);
-    if (sl !== null) cap.style.left = sl + 'px';
-    if (stp !== null) cap.style.top = stp + 'px';
-    /* 面板要跟着**按钮实际所在的位置**走,不能跟着「这一拍算出来的位置」走 ——
-     * 吸附生效时两者差 1~2px,不校正的话面板会跟按钮错开一条缝。 */
-    left = parseFloat(cap.style.left);
-    top = parseFloat(cap.style.top);
-    if (!isFinite(left)) left = 0;
-    if (!isFinite(top)) top = 0;
-    if (!observerTarget || !observerTarget.isConnected) ensureObserver();
-
-    /* 2026-11-10 性能:面板关着的时候每一拍都在 remove 一个不存在的 class —— 判等后跳过。
-     * 面板只在真打开时才往下走,所以下面那次 offsetHeight(强制布局)不是常态开销。 */
-    if (!panelOpen) {
-      if (panel.classList.contains('open')) panel.classList.remove('open');
-      return;
-    }
+    // 弹层坐标相对胶囊计算，浏览器滚动时两者会一起移动。
+    var panel = refs.panel;
     if (!panel.classList.contains('open')) panel.classList.add('open');
-    /* 面板贴着按钮展开:默认按钮正下方 6px、左边缘对齐;
-     * 右边放不下就右对齐;下面放不下就翻到按钮上方。 */
+    var vw = window.innerWidth || document.documentElement.clientWidth;
+    var vh = window.innerHeight || document.documentElement.clientHeight;
     var pw = 344, ph = panel.offsetHeight || 200;
-    var pl = left;
-    var alignRight = false;
-    if (pl + pw > vw - 8) { pl = left + cw - pw; alignRight = true; }
-    pl = Math.min(Math.max(8, pl), Math.max(8, vw - pw - 8));
-    var pt = top + 22 + 6;
-    var above = false;
-    if (pt + ph > vh - 8) { pt = Math.max(8, top - ph - 6); above = true; }
-    panel.style.left = Math.round(pl) + 'px';
-    panel.style.top = Math.round(pt) + 'px';
+    var alignRight = bounds.left + pw > vw - 8;
+    var left = alignRight ? bounds.right - pw : bounds.left;
+    left = Math.min(Math.max(8, left), Math.max(8, vw - pw - 8));
+    var above = bounds.bottom + 6 + ph > vh - 8 && bounds.top >= ph + 6;
+    var top = above ? -ph - 6 : bounds.height + 6;
+    panel.style.left = Math.round(left - bounds.left) + 'px';
+    panel.style.top = Math.round(top) + 'px';
     panel.style.setProperty('--ox', alignRight ? '100%' : '0');
     panel.style.setProperty('--oy', above ? '100%' : '0');
   }
@@ -4209,7 +3967,7 @@
         } catch (e) { /* 忽略 */ }
       }
       paint();
-      resetSettle(); place();
+      place();
       // 停止后立刻手动重开时，旧任务只释放锁，由新状态开始识别，绝不沿旧链点击。
       if (aborted(mark) && state.on) checkNow();
     }
@@ -4949,7 +4707,6 @@
       }
       state.busy = false;
       paint();                                   // 时间槽恢复倒计时
-      resetSettle();                             // 位置冻结解除 ⇒ 下一拍按实测重贴
       place();
       if (aborted(mark) && state.on) checkNow();
     }
@@ -5682,12 +5439,10 @@
     start._cancelWatch = onUserCancelClick;
 
     start._visibility = function () {
-      if (!document.hidden) { resetSettle(); place(); checkNow(); }
+      if (!document.hidden) { place(); checkNow(); }
     };
     document.addEventListener('visibilitychange', start._visibility);
-    /* 缩放 / 切回页面后布局一定变了 ⇒ 先清吸附记忆,别让旧坐标挡两拍;
-     * 圆钮偏移也要重量(行内间距可能随布局变)。 */
-    start._resize = function () { resetSettle(); lampSlotDX = 0; place(); };
+    start._resize = place;
     window.addEventListener('resize', start._resize);
 
     checkNow();
@@ -5711,7 +5466,6 @@
       document.removeEventListener(ev, noteUserGesture, { capture: true });
     });
     document.removeEventListener('click', start._cancelWatch || onUserCancelClick, true);
-    document.removeEventListener('scroll', noteScroll, true);
     document.removeEventListener('pointerdown', onDocClick, true);
     document.removeEventListener('click', onDocClick, true);
     document.removeEventListener('visibilitychange', start._visibility);
@@ -5719,7 +5473,7 @@
     window.removeEventListener('pointerup', bindDrag._end, true);
     if (slider.raf) { cancelAnimationFrame(slider.raf); slider.raf = 0; }
     if (host && host.parentNode) host.parentNode.removeChild(host);
-    host = null; shadow = null; refs = {};
+    host = null; shadow = null; refs = {}; toolbarSlot = null;
     panelOpen = false;
     state.phase = 'off';
     state.product = '';
@@ -5884,8 +5638,6 @@
     pure: {
       pctOf: pctOf, snapMinute: snapMinute, fmtMinute: fmtMinute,
       adviceOf: adviceOf, zoneOf: zoneOf, fmtLeft: fmtLeft,
-      /* 2026-10-26 抖动抑制:吸附三档 + 同行判定,都是纯判断,自测直接调 */
-      settle: settle, resetSettle: resetSettle, sameRowBand: sameRowBand,
       /* 2026-10-27 名字清洗(状态词不再污染身份键)+ 身份键 */
       cleanName: cleanName, keyOf: keyOf, shortName: shortName,
       /* 2026-10-27 商品 ID 采集(唯一锚点;货号不算) */
@@ -5949,8 +5701,7 @@
           var el = findSearchInput();
           return el ? { ph: (el.getAttribute('placeholder') || '').slice(0, 20), val: String(el.value || '').slice(0, 40) } : null;
         })(),
-        mini: !!(refs.cap && refs.cap.classList.contains('mini')),
-        lampSlotDX: lampSlotDX,      // 圆钮格实测偏移(0 = 还没量到,按常量 34 预留)
+        mini: !!(host && host.offsetWidth > 0 && host.offsetWidth < 224),
         recent: diagRing.slice(-12),
         rowNames: rows().slice(0, 6).map(function (r) { return keyOf(rowName(r)); }),
         /* 2026-10-27:ID 体检 —— 键有没有落到 id: 上、第一行都挖到了哪些候选属性。

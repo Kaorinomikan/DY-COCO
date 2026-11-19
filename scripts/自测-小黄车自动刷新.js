@@ -90,6 +90,16 @@ class FakeEl {
   click() { this._events.push({ type: 'click', _native: true }); return true; }
   querySelector() { return null; }
   querySelectorAll() { return []; }
+  closest() { return null; }
+  get nextElementSibling() {
+    const children = this.parentElement?.childNodes || [];
+    return children[children.indexOf(this) + 1];
+  }
+  insertBefore(child, before) {
+    child.remove();
+    child.parentElement = this;
+    this.childNodes.splice(this.childNodes.indexOf(before), 0, child);
+  }
   appendChild(child) {
     child.parentElement = this;
     this.childNodes.push(child);
@@ -232,11 +242,9 @@ const STATE_VARS = [
   'TYPING_IDLE_MS', 'JUDGE_EVERY', 'TICK_MS',
   'RETRY_INTERVAL_MS',
   'DOT_SIZE', 'DOT_BORDER', 'DOT_R', 'LAMP_HIT', 'LAMP_GAP', 'MARK_VER',
-  'POPUP_TTL', '_popupAt', '_popupHit', 'SCROLL_QUIET_MS',
-  /* 2026-10-27 浮层覆盖式判定:采集口径、面积阈值、缺按钮宽限(placeLamp 依赖) */
-  'OVERLAY_SEL', 'OVERLAY_MIN_AREA', 'OVERLAY_WORD_RE', 'LAMP_MISS_GRACE',
-  /* 2026-10-26 落位吸附:抖动抑制的常量与记忆(placeLamp 依赖) */
-  'SETTLE_SMALL', 'SETTLE_BIG', 'settleSt', 'settleEl'
+  'POPUP_TTL', '_popupAt', '_popupHit',
+  /* 2026-10-27 浮层覆盖式判定:采集口径、面积阈值(placeLamp 依赖) */
+  'OVERLAY_SEL', 'OVERLAY_MIN_AREA', 'OVERLAY_WORD_RE',
 ];
 
 const STATE_PRELUDE = `
@@ -264,8 +272,6 @@ const STATE_PRELUDE = `
   var failCount = 0;
   var lamp = null;
   var _lastTypeAt = 0;
-  var _scrollTgt = null;
-  var _scrollAt = 0;
   var tickCount = 0;
   var loopTimer = null;
   var lastClickAt = 0;
@@ -291,9 +297,8 @@ const STATE_PRELUDE = `
     liveSaid = false; _said = [];
     nextAt = 0; startedAt = 0; busyUntil = 0; failCount = 0;
     lamp = null; _lastTypeAt = 0; unknownSaid = false; retrySaid = false;
-    _popupAt = 0; _popupHit = false; _scrollTgt = null; _scrollAt = 0;
+    _popupAt = 0; _popupHit = false;
     lastClickAt = 0;
-    settleSt = {}; settleEl = null;      /* 2026-10-26 落位吸附记忆 */
     flags = { liveAutoRefresh: true };
   }
   /** 把档位/状态直接摆好（用例需要构造特定组合） */
@@ -328,11 +333,11 @@ const M = buildModule(
    'typingRecently', 'markType', 'popupOpen', 'popupOpenFast', 'refreshBusy', 'clickable',
    'classStr', 'overlayRects', 'coveredByOverlay', 'overlayListFast',
   'refreshUsable', 'canRefresh', 'scroller', 'saveScroll', 'restoreScroll',
-  'clickRefresh', 'now', 'inViewport', 'placeLamp', 'settle', 'resetSettle',
+  'clickRefresh', 'now', 'inViewport', 'placeLamp',
   'lampColor', 'lampTitle', 'needLamp',
    'autoEffective', 'offResumesAuto', 'onLampClick',
    'onLiveChange',
-   'markScrollTgt', 'inScrollChain', 'scrollingNow', 'scheduleNext', 'failOnce'],
+   'scheduleNext', 'failOnce'],
   STATE_VARS,
   {
     document: documentShim,
@@ -820,16 +825,16 @@ const VP_W = 1600;
 const VP_H = 900;
 
 resetState();
-ok('J1 正常在视口内 => 灯显示', M.inViewport(withRect(72, 24, 400, 100), VP_W, VP_H) === true);
-ok('J2 滚到上方之外 => 灯藏', M.inViewport(withRect(72, 24, 400, -40), VP_W, VP_H) === false);
-ok('J3 滚到下方之外 => 灯藏', M.inViewport(withRect(72, 24, 400, VP_H + 10), VP_W, VP_H) === false);
-ok('J4 滚到左侧之外 => 灯藏', M.inViewport(withRect(72, 24, -100, 100), VP_W, VP_H) === false);
-ok('J5 滚到右侧之外 => 灯藏', M.inViewport(withRect(72, 24, VP_W + 10, 100), VP_W, VP_H) === false);
-ok('J6 只露一半仍要显示(贴边时不闪)',
+ok('J1 正常在视口内 => 可作为灯的定位基准', M.inViewport(withRect(72, 24, 400, 100), VP_W, VP_H) === true);
+ok('J2 滚到上方之外 => 不跟位', M.inViewport(withRect(72, 24, 400, -40), VP_W, VP_H) === false);
+ok('J3 滚到下方之外 => 不跟位', M.inViewport(withRect(72, 24, 400, VP_H + 10), VP_W, VP_H) === false);
+ok('J4 滚到左侧之外 => 不跟位', M.inViewport(withRect(72, 24, -100, 100), VP_W, VP_H) === false);
+ok('J5 滚到右侧之外 => 不跟位', M.inViewport(withRect(72, 24, VP_W + 10, 100), VP_W, VP_H) === false);
+ok('J6 只露一半仍在视口内',
   M.inViewport(withRect(72, 24, 400, -10), VP_W, VP_H) === true);
-ok('J7 尺寸为 0 => 不显示(还没渲染出来)',
+ok('J7 尺寸为 0 => 不跟位(还没渲染出来)',
   M.inViewport(withRect(0, 0, 400, 100), VP_W, VP_H) === false);
-ok('J8 空矩形 => 不显示', M.inViewport(null, VP_W, VP_H) === false);
+ok('J8 空矩形 => 不跟位', M.inViewport(null, VP_W, VP_H) === false);
 
 /* ============================================================
  * K. 「滚出画面不算失败」—— 本轮修的核心缺陷
@@ -1008,7 +1013,7 @@ ok('N4 慢速重试期间灯仍是灰（不是消失）', M.lampColor() === 'gra
 }
 
 /* ============================================================
- * O. #98 弹层藏灯 —— 次级页面(弹层)打开 ⇒ 灯 display:none;关 ⇒ 恢复。
+ * O. #98 弹层藏灯 —— 次级页面(弹层)打开 ⇒ 灯 visibility:hidden;关 ⇒ 恢复。
  *    判据与「礼貌刷新」共用同一套 popupOpen()（500ms TTL 缓存版 popupOpenFast）。
  * ============================================================ */
 
@@ -1019,65 +1024,33 @@ const sleepSync = (ms) => {
 };
 
 resetState();
-const oLamp = new FakeEl('SPAN', { rect: withRect(24, 24) });
+const oLamp = new FakeEl('SPAN', { rect: withRect(26, 26, 366, 99) });
 M.__setLamp(oLamp);
 const oBtn = new FakeEl('BUTTON', { text: '刷新列表', rect: withRect(72, 24, 400, 100) });
+const oRow = new FakeEl('DIV');
+oRow.appendChild(oBtn);
 
 docRegistry.bySel['.auxo-modal-root'] = [ new FakeEl('DIV', { rect: withRect(600, 400) }) ];
 ok('O1 弹层开着 ⇒ placeLamp 返回 true（与「滚出视口」同义，tick 不误摘）',
   M.placeLamp(oBtn) === true);
-eq('O2 弹层开着 ⇒ 灯 display:none', oLamp.style.display, 'none');
+eq('O2 弹层开着 ⇒ 灯 visibility:hidden', oLamp.style.visibility, 'hidden');
 ok('O3 弹层开着 ⇒ 不写坐标（分支在读矩形之前，直接 return）',
   oLamp.style.left === undefined && oLamp.style.top === undefined);
 
 docRegistry.bySel['.auxo-modal-root'] = [];
 ok('O4 缓存窗口内不重查 ⇒ 灯仍藏着（实际检测 ≤2 次/秒的关键）',
-  M.placeLamp(oBtn) === true && oLamp.style.display === 'none');
+  M.placeLamp(oBtn) === true && oLamp.style.visibility === 'hidden');
 
 sleepSync(600);
 ok('O5 弹层关了（缓存过期重新实跑） ⇒ 灯恢复显示',
-  M.placeLamp(oBtn) === true && oLamp.style.display === '');
-/* 2026-10-25 改圆钮:右边缘 = 按钮左边缘 − 8,直径 26
-   按钮 left=400 ⇒ 圆钮 left = 400-8-26 = 366;纵向中心 112 ⇒ top = 112-13 = 99 */
-ok('O6 恢复后坐标 = 按钮左边缘 − 8 − 26（left 366,top 99）',
-  Math.abs(parseFloat(oLamp.style.left) - 366) <= 1.5 &&
-  Math.abs(parseFloat(oLamp.style.top) - 99) <= 1.5);
+  M.placeLamp(oBtn) === true && oLamp.style.visibility === '');
+ok('O6 恢复后仍是原生刷新按钮的前一个兄弟节点',
+  oLamp.parentElement === oRow && oLamp.nextElementSibling === oBtn);
 
 docRegistry.bySel['.auxo-modal-root'] = [ new FakeEl('DIV', { rect: withRect(600, 400) }) ];
 sleepSync(600);
 ok('O7 弹层再开（关⇄开的往返） ⇒ 灯再次藏起',
-  M.placeLamp(oBtn) === true && oLamp.style.display === 'none');
-
-/* ============================================================
- * P. 滚动时灯暂时隐身（用户拍板「方案一」，2026-10-20）——
- *    页面滚动链滚动中 ⇒ 灯藏；停稳 350ms 后贴回；
- *    链外滚动区（评论列表）不触发，灯照常显示。
- * ============================================================ */
-
-resetState();
-M.__setLamp(oLamp);
-const pList = new FakeEl('DIV', { rect: withRect(1000, 700), sh: 3000, ch: 700, ov: 'scroll' });
-docRegistry.bySel['div, section, main'] = [pList];   // scroller() 兜底扫描只看得到它
-
-M.markScrollTgt({ target: documentShim });
-ok('P1 整页滚动进行中 ⇒ 灯藏',
-  M.scrollingNow() === true &&
-  M.placeLamp(oBtn) === true && oLamp.style.display === 'none');
-
-sleepSync(400);
-ok('P2 滚动停稳（350ms 静默） ⇒ 灯恢复显示',
-  M.scrollingNow() === false &&
-  M.placeLamp(oBtn) === true && oLamp.style.display === '');
-
-oLamp.style.display = '';
-M.markScrollTgt({ target: new FakeEl('DIV', { rect: withRect(300, 400), sh: 2000, ch: 400, ov: 'scroll' }) });
-ok('P3 链外滚动区（评论列表，scroller() 认不出它）滚动 ⇒ 不藏',
-  M.scrollingNow() === false && oLamp.style.display === '');
-
-M.markScrollTgt({ target: pList });
-ok('P4 商品列表容器（= 页面滚动链）滚动 ⇒ 藏',
-  M.scrollingNow() === true &&
-  M.placeLamp(oBtn) === true && oLamp.style.display === 'none');
+  M.placeLamp(oBtn) === true && oLamp.style.visibility === 'hidden');
 
 /* ---- 2026-10-20 深夜:用户重载后「添加商品」弹层仍不藏 ⇒ 实证该弹层不挂
  * auxo 精确类名。popupOpen 补两档通用兜底(role="dialog" + body 直子层浮层词),
@@ -1088,7 +1061,7 @@ M.__setLamp(oLamp);
 // O8:role="dialog" 的可见元素(平台弹层标配,不依赖任何类名) ⇒ 藏灯
 docRegistry.bySel['[role="dialog"]'] = [ new FakeEl('DIV', { rect: withRect(557, 880) }) ];
 ok('O8 弹层只带 role=dialog(无 auxo 类名) ⇒ 藏灯(#98 实测漏判形态)',
-  M.popupOpen() === true && M.placeLamp(oBtn) === true && oLamp.style.display === 'none');
+  M.popupOpen() === true && M.placeLamp(oBtn) === true && oLamp.style.visibility === 'hidden');
 
 resetState();
 M.__setLamp(oLamp);
@@ -1096,26 +1069,26 @@ M.__setLamp(oLamp);
 const oDrawer = new FakeEl('DIV', { rect: withRect(557, 880), cls: 'index_drawer__2xkQz' });
 documentShim.body.appendChild(oDrawer);
 ok('O9 body 直子层类名含浮层词(CSS Modules 形态) ⇒ 藏灯',
-  M.popupOpen() === true && oLamp.style.display === 'none');
+  M.popupOpen() === true && oLamp.style.visibility === 'hidden');
 
 resetState();
 M.__setLamp(oLamp);
-oLamp.style.display = 'none';   // 模拟上一拍弹层开着藏过灯
+oLamp.style.visibility = 'hidden';   // 模拟上一拍弹层开着藏过灯
 // O10:类名含 modality(无词边界) ⇒ 不藏;且 placeLamp 把灯恢复出来
 const oTrap = new FakeEl('DIV', { rect: withRect(300, 200), cls: 'modality-box' });
 documentShim.body.appendChild(oTrap);
 ok('O10 类名含浮层词但无词边界(modality) ⇒ 不藏,灯恢复显示',
   M.popupOpen() === false &&
-  M.placeLamp(oBtn) === true && oLamp.style.display === '');
+  M.placeLamp(oBtn) === true && oLamp.style.visibility === '');
 
 resetState();
 M.__setLamp(oLamp);
-oLamp.style.display = 'none';
+oLamp.style.visibility = 'hidden';
 // O11:role=dialog 存在但不可见(离场动画/预挂载) ⇒ 不藏,灯恢复
 docRegistry.bySel['[role="dialog"]'] = [ new FakeEl('DIV', { rect: withRect(0, 0) }) ];
 ok('O11 role=dialog 不可见 ⇒ 不藏,灯恢复显示',
   M.popupOpen() === false &&
-  M.placeLamp(oBtn) === true && oLamp.style.display === '');
+  M.placeLamp(oBtn) === true && oLamp.style.visibility === '');
 
 /* ============================================================
  * I. 源码级红线（防止以后被改回去）
@@ -1128,12 +1101,6 @@ ok('O11 role=dialog 不可见 ⇒ 不藏,灯恢复显示',
     src.indexOf('dyc-ar-hidden') < 0 &&
     src.indexOf('opacity: 0 !important') < 0,
     '用户要求「不做整合按钮」，原生按钮必须原样不动');
-
-  ok('I2 灯挂 body + fixed',
-    /var host = document\.body/.test(src) &&
-    src.indexOf('anchor.appendChild') < 0 &&
-    src.indexOf('position: fixed') >= 0,
-    '挂在平台容器里会被 React 重渲染清掉 ⇒ 灯周期性闪一下');
 
   /* 26.10.21 用户定稿「实心缩小」：灯珠 12 → 9，外径仍 13(含 2px 描边)；
      命中区与间距不变。这里断言的是「数值 + 派生关系」，不是某一版的临时值。 */
@@ -1177,45 +1144,19 @@ ok('O11 role=dialog 不可见 ⇒ 不藏,灯恢复显示',
     src.indexOf('new MutationObserver') < 0,
     '每 10 秒刷一次会刷屏式触发观察器,改由主循环兜');
 
-  ok('I12 落点版本号已升到 3（形态换成圆钮）',
-    /var MARK_VER = '3'/.test(src),
+  ok('I12 渲染版本随行内布局更新',
+    /var MARK_VER = '4'/.test(src),
     '旧灯若不重建,不刷新页面的用户看不到新形态');
-
-  ok('I13 坐标写入走 settle() 吸附(不再每拍照抄,否则抖动)',
-    /settle\('lampL', left\)/.test(sliceFunction(src, 'placeLamp')) &&
-    /settle\('lampT', top\)/.test(sliceFunction(src, 'placeLamp')),
-    '值没实质变化就不写 style:既不抖,也不会触发平台 ResizeObserver');
-
-  /* 2026-10-26 用户报「原生刷新时两枚自加按钮轻微左右抖」—— 抖动抑制的口径 */
-  ok('I13b 吸附三档:≤2px 不动 / ≥10px 立刻跟 / 中间档两拍确认',
-    /var SETTLE_SMALL = 2/.test(src) && /var SETTLE_BIG = 10/.test(src) &&
-    /d <= SETTLE_SMALL/.test(src) && /d >= SETTLE_BIG/.test(src) &&
-    /st\.streak >= 2/.test(src));
-  ok('I13c 刷新进行中(自己刚点过 / 平台进加载态)⇒ 冻结坐标,不重测不重写',
-    /now\(\) < busyUntil/.test(sliceFunction(src, 'placeLamp')) &&
-    /refreshBusy\(btn\)/.test(sliceFunction(src, 'placeLamp')) &&
-    /busyNow\) return true/.test(sliceFunction(src, 'placeLamp')));
-  ok('I13d 换灯节点 / 从藏到显 / 缩放 ⇒ 吸附记忆作废(不会停在旧坐标)',
-    /if \(settleEl !== lamp\) \{ resetSettle\(\); settleEl = lamp; \}/.test(sliceFunction(src, 'placeLamp')) &&
-    /lamp\.style\.display = '';\s+resetSettle\(\);/.test(sliceFunction(src, 'placeLamp')) &&
-    /resetSettle\(\);          \/\/ 布局一定变了/.test(src));
 
   /* 2026-10-27 用户:「自动刷新和讲解循环两个按钮不要因为右上角的小框框弹出就隐藏」 */
   ok('I18 浮层判据改成「有没有真的盖住灯 + 浮层够不够大」,不再是「有浮层就藏」',
     /function coveredByOverlay/.test(src) &&
-    /coveredByOverlay\(\{/.test(sliceFunction(src, 'placeLamp')) &&
+    /coveredByOverlay\(\s*rect\s*\)/.test(sliceFunction(src, 'placeLamp')) &&
     !/if \(popupOpenFast\(\)\) \{/.test(sliceFunction(src, 'placeLamp')) &&
     /OVERLAY_MIN_AREA = 0\.12/.test(src));
-  ok('I19 找不到刷新按钮时给宽限,不为一次重渲染摘灯',
-    /LAMP_MISS_GRACE = 900/.test(src) && /now\(\) - lampMissAt > LAMP_MISS_GRACE/.test(src));
-
   ok('I14 间隔常量是 10 秒、抖动 ±0.5 秒',
     /var INTERVAL_MS = 10000/.test(src) && /var JITTER_MS = 500/.test(src));
 
-  ok('I15 圆钮右边缘不探进原生按钮（不抢它的点击）',
-    /r\.left - LAMP_GAP - LAMP_HIT/.test(sliceFunction(src, 'placeLamp')) &&
-    /centerY - LAMP_HIT \/ 2/.test(sliceFunction(src, 'placeLamp')),
-    '圆钮右边缘必须停在按钮左侧若干像素处');
   ok('I16 中间是静态刷新图标(不旋转,用户否过旋转圈圈)', /dyc-ar-ico/.test(src) && src.indexOf('animation: dyc-ar-spin') < 0);
   ok('I17 角标灯贴右上角(right/top 负值)', /right: -2px; top: -2px/.test(src));
 }
@@ -1228,13 +1169,13 @@ ok('O11 role=dialog 不可见 ⇒ 不藏,灯恢复显示',
 
 resetState();
 M.__setLamp(oLamp);
-oLamp.style.display = '';
+oLamp.style.visibility = '';
 oLamp.style.left = '';
 oLamp.style.top = '';
 docRegistry.bySel['.auxo-popover'] = [ new FakeEl('DIV', { rect: withRect(140, 140, 1520, 60) }) ];
 ok('Q1 右上角小卡片(140×140,占视口 1.3%)弹出 ⇒ 灯照常显示、照常落位',
-  M.placeLamp(oBtn) === true && oLamp.style.display !== 'none' &&
-  Math.abs(parseFloat(oLamp.style.left) - 366) <= 1.5);
+  M.placeLamp(oBtn) === true && oLamp.style.visibility !== 'hidden' &&
+  oLamp.nextElementSibling === oBtn);
 
 /* 极端情形:小卡片**正好压在灯上** —— 面积不够大也不算「挡道」,灯照样在。
  * ⚠️ 2026-11-01 起这条只代表**本地兜底口径**(overlay-guard.js 缺席时才会走到):
@@ -1243,20 +1184,20 @@ ok('Q1 右上角小卡片(140×140,占视口 1.3%)弹出 ⇒ 灯照常显示、�
  *    这里保留旧断言,是为了守住「共享模块没加载也不能把灯永久藏掉」这条退路。 */
 resetState();
 M.__setLamp(oLamp);
-oLamp.style.display = '';
+oLamp.style.visibility = '';
 oLamp.style.left = '';
 oLamp.style.top = '';
 docRegistry.bySel['.auxo-popover'] = [ new FakeEl('DIV', { rect: withRect(140, 140, 380, 80) }) ];
 ok('Q2 小卡片即使压在灯上也不藏(兜底口径:够大 + 相交 两条都成立才让位)',
-  M.placeLamp(oBtn) === true && oLamp.style.display !== 'none');
+  M.placeLamp(oBtn) === true && oLamp.style.visibility !== 'hidden');
 
 /* #98 不回归:同样相交,但换成真弹层尺寸(600×400 ≈ 17% 视口)⇒ 必须让位 */
 resetState();
 M.__setLamp(oLamp);
-oLamp.style.display = '';
+oLamp.style.visibility = '';
 docRegistry.bySel['.auxo-popover'] = [ new FakeEl('DIV', { rect: withRect(600, 400, 0, 0) }) ];
 ok('Q3 大浮层盖住灯 ⇒ 仍然藏(#98 不回归)',
-  M.placeLamp(oBtn) === true && oLamp.style.display === 'none');
+  M.placeLamp(oBtn) === true && oLamp.style.visibility === 'hidden');
 
 /* ============================================================
  * R. 开播播报按「场次」去重（用户 2026-11-10 反馈「时不时提示已开播」）

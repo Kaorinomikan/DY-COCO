@@ -119,35 +119,6 @@ for (let i = 0; i <= 280; i++) {
 }
 ok('任意松手点都落在 30 秒格子上且不出界(281 个采样)', gridOK);
 
-/* ---------------- A. 落位吸附(2026-10-26 用户报「原生刷新时轻微左右抖」) ---------------- */
-
-ok('同一条水平带才算同行(圆钮不在锚点那一行时不拿它当基准)', (function () {
-  const rowA = { top: 100, height: 24 };
-  const near = { top: 101, height: 26 };
-  const far = { top: 240, height: 24 };
-  return P.sameRowBand(rowA, near) === true && P.sameRowBand(rowA, far) === false;
-})());
-
-ok('首次落位直接采纳实测值', (function () {
-  P.resetSettle();
-  return P.settle('t', 366) === 366;
-})());
-
-ok('1~2px 噪声不写 style —— 这就是「位置固定」', (function () {
-  return P.settle('t', 367) === null && P.settle('t', 368) === null && P.settle('t', 365) === null;
-})());
-
-ok('≥10px 是真移动,立刻跟(切页 / 缩放不吃延迟)', P.settle('t', 380) === 380);
-
-ok('中间档(3~9px)连续两拍同目标才跟',
-  P.settle('t', 375) === null && P.settle('t', 375) === 375);
-
-ok('中间档目标来回跳 ⇒ 一直不跟(刷新那一瞬的单拍值被滤掉)', (function () {
-  P.resetSettle();
-  P.settle('t', 100);
-  return P.settle('t', 105) === null && P.settle('t', 106) === null && P.settle('t', 105) === null;
-})());
-
 /* ---------------- A. 名字清洗(2026-10-27 现场诊断的根因) ----------------
  * 诊断里记录的商品是「讲解中【高奢女装】…A0476ID货号未设提词设置卖点」——
  * 状态词与行内噪音混进名字 ⇒ 身份键随状态变化 ⇒ 取消后认不回那一行。 */
@@ -314,13 +285,11 @@ ok('收尾把用户原来的搜索词写回去', /setInputValue\(srch\.input, sr
  * 用户原话:「全局轮询的时候,这个按钮不要一直跳动,同时在找这个商品的时候,
  *   对应的时间占位符可以改一下文案」。 */
 
-ok('找款/续讲/拖滑条期间 place() 位置冻结(busy 与 drag 都判在 findAnchor 之前)', (function () {
-  /* 2026-11-10:place 外面套了计时壳,函数体改名 placeBody。断言改成按新名定位,
-   * 语义不变:busy/drag 的冻结判断必须排在读锚点(fetch 布局)之前。 */
+ok('拖动滑条期间暂停修复挂载，避免滑条手势中断', (function () {
   const i = src.indexOf('function placeBody() {');
   if (i < 0) return false;
   const seg = src.slice(i, i + 1400);
-  const a = seg.indexOf('if (state.busy || drag)');
+  const a = seg.indexOf('if (drag)');
   const b = seg.indexOf('findAnchor(');
   return a > 0 && b > a;
 })());
@@ -332,17 +301,10 @@ ok('拖动滑条的 move 挂在 document 上,指针离开轨道也不会断', (f
   return /document\.addEventListener\('pointermove', onMove, true\)/.test(body) &&
     !/(^|[^\w$.])t\.addEventListener\('pointermove'/.test(body);
 })());
-ok('拖动中滚动不藏胶囊、外部点击不关面板', (function () {
-  const a = src.indexOf('function noteScroll()');
-  const b = src.indexOf('function onDocClick(');
-  return /if \(drag\) return;/.test(src.slice(a, a + 600)) &&
-    /if \(drag\) return;/.test(src.slice(b, b + 600));
+ok('拖动中外部点击不关面板', (function () {
+  const index = src.indexOf('function onDocClick(');
+  return /if \(drag\) return;/.test(src.slice(index, index + 600));
 })());
-ok('自己滚屏触发的 scroll 事件不再把胶囊藏起来', (function () {
-  const i = src.indexOf('function noteScroll()');
-  const seg = src.slice(i, i + 500);
-  return /if \(state\.busy && !userBusy\(\)\) return;/.test(seg);
-})(), 'noteScroll 里应有 busy 闸门');
 ok('找商品期间时间槽显示「定位中」', /slotTxt = state\.busyLabel \|\| '定位中'/.test(src) &&
   /state\.busyLabel = '搜索中'/.test(src));
 ok('busy 文案排在 phase 分支之前(否则永远轮不到)', (function () {
@@ -811,20 +773,12 @@ ok('读时长走 chrome.storage 且带 localStorage 迁移', /dycStorageCallP\('
 ok('外部点击只认真人手势(isTrusted)', /e\.isTrusted === false/.test(src));
 ok('程序化 click 的 detail=0 也挡掉', /e\.detail === 0/.test(src));
 ok('自己发的点击有 800ms 打点兜底', /lastSelfClickAt < 800/.test(src));
-ok('锚点短暂消失不关面板(只藏胶囊 + 5 秒宽限)', /anchorMissingAt > 5000/.test(src));
 ok('面板关闭只由「真人点空白」与「开关关掉」触发', (src.match(/closePanel\(\)/g) || []).length >= 2);
 ok('真人按下即收(pointerdown 捕获,不用等 click)', /addEventListener\('pointerdown', onDocClick, true\)/.test(src));
 ok('点自身影子树不误收(composedPath 判据)', /composedPath\(\)\.indexOf\(host\)/.test(src));
 
-/* 2026-10-25 追加:D 版固定按钮(宽 138)+ 悬停浮层
- * 2026-11-05:宽度不再是 200 —— 胶囊为容纳常驻 ∞ 按钮加宽到 224。
- * 这里改成守**真正的契约**:CSS 里的固定宽必须与 place() 用的 CW_FULL 相等,
- * 一旦有人只改一边,落点就会按错的宽度算(压到平台刷新按钮上)。 */
-ok('胶囊宽度写死，且与定位常量 CW_FULL 相等(不随文案变)', (function () {
-  const m = /\.cap\{[^']*width:(\d+)px;height:(\d+)px/.exec(src);
-  const c = /var CW_FULL = (\d+), CW_MINI = (\d+);/.exec(src);
-  return !!m && !!c && m[1] === c[1];
-})(), 'CSS 宽与 CW_FULL 必须一致');
+ok('胶囊默认 224px，动作栏可缩到 70px', /\.cap\{[^}]*width:224px/.test(src) &&
+  /flex:0 1 224px;width:224px;min-width:70px/.test(src));
 ok('中间文字恒定四字「循环讲解」', /<span class="txt">循环讲解<\/span>/.test(src));
 ok('时间槽定宽 + 等宽数字', /\.slot\{width:\d+px;text-align:right;font-variant-numeric:tabular-nums/.test(src));
 ok('不计时时槽位直接显示状态词(未开启 / 待讲解 / 重试中)', /'未开启'/.test(src) && /'待讲解'/.test(src) && /'重试中'/.test(src));
@@ -885,9 +839,7 @@ ok('滚回来找行后必须还原滚动位置', /prevScroll/.test(src) && /move
 ok('程序化滚动打点 __dycScriptScrollAt(项目约定)', /window\.__dycScriptScrollAt = Date\.now\(\)/.test(src));
 ok('行看不见但已到点 ⇒ 立刻尝试找回来续讲(不傻等宽限,但退避期内不重复开火)',
   /now >= state\.nextAt && !state\.busy &&\s*\n?\s*now >= \(state\.retryAt \|\| 0\)\) \{\s*\n\s*doCycle\(false\)/.test(src));
-ok('落点候选②:tab 条右侧 +12(不漂、不压 tab)', /tabsRightEdge\(row\)/.test(src) && /tabsRight \+ 12/.test(src));
-ok('落点仍夹住刷新列表与行右端', /findRefreshInRow/.test(src) && /r\.right - 8 - CW_FULL/.test(src));
-ok('面板贴按钮展开（左对齐；右侧放不下改右对齐）', /var pl = left;/.test(src) && /alignRight/.test(src));
+ok('面板贴按钮展开（左对齐；右侧放不下改右对齐）', /\balignRight\s*\?\s*bounds\.right\s*-\s*pw\s*:\s*bounds\.left/.test(src));
 ok('面板从按钮那一角长出/收回（transform-origin + 过渡）', /transform-origin:var\(--ox/.test(src) && /transition:opacity \.12s ease/.test(src));
 
 /* 2026-10-27 用户定(推翻 10-25 的「不进盒子」):
@@ -911,14 +863,6 @@ ok('停表文案带总轮次(事后能看出这场续了几轮)', /function stop
   /'已停止' \+ \(state\.round \? ' · 共 ' \+ state\.round \+ ' 轮' : ''\)/.test(src));
 ok('只有连续失败才进盒子(单次失败只变红)', /state\.fails >= FAIL_LIMIT/.test(src));
 
-/* 2026-10-25 向自动刷新看齐 */
-ok('纵向只跟「让位基准」的中心,且基准必须先过同一行判定(不爬到别的区块上) #119/#120',
-  /var top = Math\.round\(basis\.cy - 11\)/.test(src) && /sameRowBand\(r, abR\)/.test(src));
-ok('横向让位基准只认一个(圆钮 → 行内刷新列表 → 锚点行右端),不再 min 三者 #119/#120',
-  /function findAutoRefreshBtn/.test(src) && /basis = \{ left: abR\.left/.test(src) &&
-  /basis = \{ left: rfR\.left/.test(src) && !/blockLeft = Math\.min/.test(src) &&
-  /blockLeft - 8 - CW_FULL/.test(src));
-ok('滚动时隐藏按钮（不跟着拖影）', /scrollHideUntil/.test(src) && /addEventListener\('scroll', noteScroll, true\)/.test(src));
 ok('平台弹层打开时隐藏（不浮在弹窗上）', /function modalOpen\(\)/.test(src) && /modalCheckedAt/.test(src));
 
 /* 2026-10-25 用户报「失效 / 改时长不生效」后的修复 */
@@ -1038,41 +982,18 @@ ok('滚回来的行不是「讲解中」⇒ 停,绝不替用户重新开讲',
   /function isLecturing\(row\)/.test(src) &&
   /if \(!isLecturing\(row\)\) \{/.test(src));
 
-/* D3 落点遮挡 */
-/* 2026-10-26 抖动抑制(用户报「原生一刷新两枚按钮就左右抖 / 不在同一水平线」) */
-ok('落位吸附三档:≤2px 不动 / ≥10px 立刻跟 / 中间档两拍确认',
-  /var SETTLE_SMALL = 2/.test(src) && /var SETTLE_BIG = 10/.test(src) &&
-  /d <= SETTLE_SMALL/.test(src) && /d >= SETTLE_BIG/.test(src) && /str\.streak >= 2|st\.streak >= 2/.test(src));
-ok('胶囊坐标写入走 settle()(不再每拍照抄)',
-  /settle\('capL', left\)/.test(src) && /settle\('capT', top\)/.test(src));
-ok('胶囊从藏到显 / 缩放 ⇒ 清吸附记忆(不会停在旧坐标)',
-  /if \(cap\.hidden\) \{ cap\.hidden = false; resetSettle\(\); \}/.test(src) &&
-  /resetSettle\(\); place\(\)/.test(src));
-ok('两条横向判据用同一套吸附(胶囊与灯不互相拽)',
-  /function sameRowBand/.test(src) && /findAutoRefreshBtn/.test(src));
-
 /* 2026-10-27 用户:「自动刷新和讲解循环两个按钮不要因为右上角的小框框弹出就隐藏」 */
 /* ⚠️ 2026-11-01 起,下面这两条 12% 面积门槛只在**兜底路径**上生效 —— 主路径已交给
  *    src/content/overlay-guard.js(交集 ≥ 控件 35%,下拉面板也算挡道,见反馈 #126/#127)。 */
-ok('弹层不再「存在即隐藏」:滚动那一支只剩滚动判据',
-  !/scrollHideUntil \|\| modalOpen\(\)/.test(src) && /if \(Date\.now\(\) < scrollHideUntil\) \{/.test(src));
 ok('改成「大弹层真的盖住胶囊才让位」',
-  /function modalCovers\(rect\)/.test(src) && /if \(modalCovers\(\{ left: left, top: top, right: left \+ cw, bottom: top \+ 22 \}\)\) \{/.test(src));
+  /function modalCovers\(rect\)/.test(src) && /modalCovers\(\s*bounds\s*\)/.test(src));
 ok('小卡片不算挡道:面积门槛 = 视口 12%',
   /var BIG_OVERLAY_RATIO = 0\.12/.test(src) && /rc\.width \* rc\.height < minArea\) return;/.test(src));
 ok('「添加商品」这种抽屉也能被认成挡道(不再只认 modal-root)',
   /'\.auxo-drawer'/.test(src) && /function modalCovers/.test(src));
-ok('锚点短暂消失给 900ms 宽限(不为一次重渲染闪没)',
-  /anchorMissingAt > 900\) cap\.hidden = true/.test(src));
 
-/* 2026-10-27 用户:「其中一个按钮隐藏了,另外的按钮不需要自动回补位置」 */
-ok('圆钮不在时胶囊按同一格预留,不往右补空位',
-  /var LAMP_SLOT_DX = 34/.test(src) &&
-  /rfR\.left - \(lampSlotDX \|\| LAMP_SLOT_DX\)/.test(src));
-ok('圆钮偏移真量到过就用实测值(不写死),缩放时重量',
-  /lampSlotDX = dx0/.test(src) && /lampSlotDX = 0; place\(\)/.test(src));
-ok('落点横向不越出行边界(夹进 [行左+8, 行右-8])', /var minLeft = Math\.round\(r\.left \+ 8\)/.test(src) && /maxLeftFull = Math\.round\(r\.right - 8 - CW_FULL\)/.test(src));
-ok('行太窄时退化成灯加启停位，仍可直接停止', /CW_MINI = 70/.test(src) && /\.cap\.mini\{width:70px/.test(src) && /mini = true;/.test(src));
+ok('行太窄时保留设置入口与启停位', /@container\s*\(max-width:\s*223px\)/.test(src) &&
+  /\.cap-main\{flex:1;min-width:25px/.test(src));
 
 /* D6 图标语义 + 诊断导出 */
 ok('胶囊图标已换成麦克风(#116),不再用循环箭头', /rx="2"/.test(src) && src.indexOf('M2.6 6.2A5.6') < 0);

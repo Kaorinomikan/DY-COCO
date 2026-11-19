@@ -1210,6 +1210,7 @@ function renderFlags() {
   DYC_FLAG_GROUPS.forEach((g) => {
     const box = document.createElement('div');
     box.className = 'group group-' + g.id;
+    if (g.theme) box.dataset.theme = g.theme;
     // 2026-10-31 平台切换要按分组 id 显隐，把归属写在 DOM 上，
     // 切平台时就不必再摸一遍 DYC_FLAG_GROUPS 去反查。
     box.dataset.gid = g.id;

@@ -174,19 +174,52 @@
     }
 
     /* ===== 三大类分组框 =====
-       1px 细线 + 圆角,三色区分;无渐变、无投影。
-       中控台 = 蓝、抖店 = 橙、微信小店 = 绿、其他 = 灰。 */
+       柔色卡片通过分组主题统一底色、边框、标题和开启态开关。 */
     .group {
       margin-top: 12px;
       padding: 2px 10px 4px;
-      border: 1px solid;
-      border-color: #c9cdd4;
+      border: 1px solid #c9cdd4;
       border-radius: 10px;
     }
-    .group-live { border-color: #165dff; }
-    .group-shop { border-color: #ff7d00; }
-    .group-wx { border-color: #07c160; }
-    .group-other, .group-shared { border-color: #c9cdd4; }
+    .group[data-theme="blue"] {
+      --group-ink: #2458a6;
+      --group-line: #c8d8f0;
+      --group-fill: #f5f8ff;
+    }
+    .group[data-theme="amber"] {
+      --group-ink: #9b4a10;
+      --group-line: #eed6b8;
+      --group-fill: #fff8ef;
+    }
+    .group[data-theme="green"] {
+      --group-ink: #146c43;
+      --group-line: #c4dfcb;
+      --group-fill: #f3faf4;
+    }
+    .group[data-theme="violet"] {
+      --group-ink: #6546a6;
+      --group-line: #dbd0ee;
+      --group-fill: #f9f5ff;
+    }
+    .group[data-theme="slate"] {
+      --group-ink: #49566c;
+      --group-line: #d4dce6;
+      --group-fill: #f5f7fa;
+    }
+    .group[data-theme="rose"] {
+      --group-ink: #a6274e;
+      --group-line: #edcbd6;
+      --group-fill: #fff7fa;
+    }
+    .group[data-theme="teal"] {
+      --group-ink: #146b61;
+      --group-line: #beded7;
+      --group-fill: #f3faf8;
+    }
+    .group[data-theme] {
+      border-color: var(--group-line);
+      background: var(--group-fill);
+    }
     /* 2026-10-31 平台切换：不属于当前平台的分组整框隐掉。
        显式写 display:none —— 只靠 hidden 属性的话，将来谁给 .group
        加一条 display 规则，这一整组就会在错误的平台上冒出来。 */
@@ -207,10 +240,10 @@
       background: currentColor;
       flex-shrink: 0;
     }
-    .group-live .group-head { color: #165dff; }
-    .group-shop .group-head { color: #ff7d00; }
-    .group-wx .group-head { color: #07c160; }
-    .group-other .group-head, .group-shared .group-head { color: #86909c; }
+    .group[data-theme] .group-head {
+      color: var(--group-ink);
+      font-weight: 600;
+    }
 
     .item {
       padding: 10px 0;
@@ -384,7 +417,7 @@
       transition: transform 0.2s;
     }
     .switch input:checked + .slider {
-      background: #ff7d00;
+      background: var(--group-ink, #ff7d00);
     }
     .switch input:checked + .slider::before {
       transform: translateX(16px);

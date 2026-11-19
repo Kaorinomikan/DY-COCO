@@ -54,44 +54,13 @@
  *   为什么要「连续 3 次」:判定每 2 秒一次,页面正在重渲染时单次判不出是常态,
  *   一次不中就停会让用户莫名其妙(用户 2026-10-20 反馈「即使没开播也会停」)。
  *
- * 【灯挂哪里 —— body + fixed(这一条是上一版验证过的生死线)】
- *   平台是 React。我们每 10 秒点一次刷新会让那一排工具按钮**整个重渲染**,
- *   挂在平台容器里的外来子节点会被一起清掉 ⇒ 灯会周期性闪一下。
- *   挂 body + fixed 后平台怎么重渲染都碰不到我们;代价是 fixed 不跟页内滚动,
- *   所以**每拍重新量一次原生按钮的位置**把灯贴上去,按钮滚出画面就把灯藏起来。
+ * 【按钮位置与遮挡】
+ *   自动刷新插在原生刷新按钮左侧。滚动交给浏览器布局；动作栏被平台重建时补插同一节点。
+ *   只有原位被平台弹层盖住时才用 visibility 隐藏，并保留占位，避免旁边的按钮跳动。
  *
- * 【次级页面(弹层)打开 ⇒ 灯藏起来(#98 用户 2026-10-20 反馈)】
- *   原话:「自动刷新的小绿点,在我打开次级页面添加商品的时候会挡住」。
- *   灯 z-index 近上限,平台弹层压不过它 ⇒ 弹层打开时灯就浮在弹层内容上。
- *   修法(用户拍板「不显示」,不做半透明降级 / 不做可拖动):
- *     弹层开着 ⇒ 灯 display:none;弹层关了 ⇒ 下一拍(≤750ms)自己回来。
- *   判据与「礼貌刷新」**共用同一套 popupOpen()**(平台 auxo modal / drawer /
- *   popover / dropdown + 我们自己的弹窗与消息盒子)—— 弹层开着时刷新本来就
- *   停(canRefresh 里有这条),现在灯跟着一起藏,显隐与「刷不刷」永远一致;
- *   判据若有遗漏,行为也不会比今天更糟(刷新本来就没被它拦住)。
  *   【2026-10-20 深夜补】用户重载后「添加商品」弹层仍不藏 ⇒ 实证该弹层不挂
  *   auxo 精确类名,popupOpen 补两档通用兜底(role="dialog" + body 直子层
  *   浮层词),判据与 search.js #72 的 inOverlay / clear-stock.js 同源。
- *
- * 【滚动时灯暂时隐身(用户 2026-10-20 拍板「方案一」)】
- *   灯 fixed 挂 body,每拍重贴按钮位置;滚动时按钮每帧都在动,灯追不上,
- *   观感「绿点被拖拽」。处置:页面滚动链滚动中灯藏,停稳 350ms 后下一拍贴回。
- *   口径与两枚浮动圆钮同源(整页滚动 + 商品列表容器);链外滚动区(评论列表)
- *   不触发。监听零成本(只记 target+时间戳),链判定放进每拍的 placeLamp。
- *   为什么用缓存版 popupOpenFast():弹层检测 = 8 个选择器逐个查 + 逐个读矩形,
- *   主循环 250ms 一拍不能每拍实跑;加 500ms 缓存 ⇒ 实际检测 ≤ 2 次/秒,
- *   弹层开/关的感知延迟 ≤ 0.75 秒,用户无感。
- *
- * 【程序化滚动豁免(2026-10-21 用户反馈「全能搜索时灯一直闪」)】
- *   全能搜索的全量扫描 = 逐屏写 scrollTop(连续几秒),扫完还要滚回原位、
- *   定位匹配项再滚一次 —— 程序化滚动与手滚在 scroll 事件层面**无法区分**,
- *   全被「滚动中藏灯」当成用户在滚 ⇒ 灯在扫描步进的空隙里反复藏/显 = 一直闪。
- *   修法:扩展自己发起的滚动,在发起时刻写 window.__dycScriptScrollAt
- *   (smooth 滚动另写 __dycScriptScrollFor 加长窗口);markScrollTgt 看到
- *   豁免窗口内的 scroll 事件一律忽略。手动滚动(滚轮/拖动条)没有打点 ⇒
- *   防漂移照旧。打点覆盖:全能搜索(扫描/定位/恢复)、上滑到顶、下滑到底、
- *   序号定位、明细页签对位、本模块自己的滚动回放(restoreScroll)。
- *   ⚠️ 新写程序化滚动必须同步打点,漏了 = 灯又开始闪(见 search.js 565 注)。
  *
  * 【滚出画面 = 不算失败(用户 2026-10-20 反馈后定)】
  *   「点得着」的判据 = 节点还在文档 + 有真实尺寸 + 没禁用 / 不在加载中。
@@ -149,18 +118,18 @@
 
   /* ---------- 常量 ---------- */
 
-  var LAMP_CLASS = 'dyc-ar-lamp';     // 指示灯(挂 body + fixed)
+  var LAMP_CLASS = 'dyc-ar-lamp';     // 指示灯(插在原生刷新按钮旁)
   var STYLE_ID = 'dyc-ar-style';
   var MARK_ATTR = 'data-dyc-ar';      // 幂等 / 诊断标记(值为落点版本)
   /**
-   * ★ 落点版本号:任何参与渲染的常量变了都要 +1。
+   * ★ 渲染版本号:落位方式变化时递增。
    *   为什么:开发期改了灯的结构 / 尺寸 / 类名之后,不刷新页面的用户手里那盏旧灯
    *   会一直停在旧参数上 —— 修好的判据对它不起作用。
    *   v2 = 由「取代型浮层按钮」改为「左侧指示灯」。
    */
-  var MARK_VER = '3';
+  var MARK_VER = '4';
 
-  var TICK_MS = 250;                  // 主循环步长(跟手用;灯不动,不靠它走字)
+  var TICK_MS = 250;                  // 主循环步长(检查状态、补挂与遮挡)
   var JUDGE_EVERY = 8;                // 每 8 拍(≈2 秒)判一次直播状态
   var INTERVAL_MS = 10000;            // 刷新间隔(用户 2026-10-20 定:10 秒)
   var JITTER_MS = 500;                // 节奏抖动 ±0.5 秒
@@ -178,9 +147,6 @@
   var DOT_BORDER = 1.5;               // 角标灯白描边(与按钮白底分离)
   var HALO_SPREAD = 4;                // 角标灯光晕外扩
   var LAMP_GAP = 8;                   // 圆钮**右边缘**距原生按钮左边缘
-  /* 找不到原生刷新按钮时的宽限(2026-10-27):平台重渲染会让按钮节点消失一两拍,
-   * 以前立刻摘灯、下一拍重建 = 用户看到的「一闪没了又回来」。900ms ≈ 3~4 拍。 */
-  var LAMP_MISS_GRACE = 900;
   var ICON_SIZE = 14;                 // 中心图标尺寸
   var DOT_R = (DOT_SIZE + DOT_BORDER * 2) / 2;   // 角标灯外半径(自测与文档用)
 
@@ -231,7 +197,6 @@
   var failCount = 0;                  // 连续点不到的次数
   var busyUntil = 0;                  // 刷新后一小段时间内不叠加
   var lamp = null;                    // 我们的指示灯
-  var lampMissAt = 0;                 // 从哪一刻起找不到原生刷新按钮(用于宽限,防闪)
   var prevOn = null;                  // 开关回声用
 
   /* ---------- 小工具 ---------- */
@@ -323,7 +288,7 @@
    *   · **上一次没找到**(负结果)⇒ 负结果节流 RESCAN_MS,避免页面没渲染完时空扫。
    *
    * ⚠️ 不拿「节点身份」当定位判据(平台重渲染会换节点)—— 它只是**查找加速器**,
-   *    每轮仍要重新量矩形,所以换了节点坐标也不会错。
+   *    每轮仍验证尺寸，按钮临时隐藏时不把它当作刷新目标。
    */
   var RESCAN_MS = 1000;
   var _refreshBtn = null;
@@ -390,7 +355,7 @@
 
     var el;
     while ((el = walker.nextNode())) {
-      if (!looksLikeRefresh(el)) continue;
+      if (!looksLikeRefresh(el) || (lamp && el.contains(lamp))) continue;
       var t = norm(el.textContent);
       // 越短越贴近正文(=越内层);同分取先出现的
       var score = t.length * 10;
@@ -411,7 +376,7 @@
     var climb = 0;
     while (best && best.parentElement && climb < 6) {
       var p = best.parentElement;
-      if (norm(p.textContent) !== norm(best.textContent)) break;
+      if ((lamp && p.contains(lamp)) || norm(p.textContent) !== norm(best.textContent)) break;
       var pr;
       try { pr = p.getBoundingClientRect(); } catch (e) { break; }
       if (!pr || pr.width > 180 || pr.height > 48) break;   // 超上限的不认
@@ -497,7 +462,6 @@
     document.addEventListener('keydown', markType, true);
     document.addEventListener('input', markType, true);
     document.addEventListener('compositionstart', markType, true);   // 中文输入法
-    document.addEventListener('scroll', markScrollTgt, true);        // 捕获阶段才收得到容器的滚动
   } catch (e) { /* 极端环境下挂不上监听,退回「不判打字」也不致命 */ }
 
   /**
@@ -665,18 +629,7 @@
     return false;
   }
 
-  /**
-   * 平台按钮此刻是否还「值得跟」——**它得真的在视口里**。
-   *
-   * 灯用的是 position:fixed + 视口坐标,所以按钮一旦滚出可视区,
-   * 灯就会飘到页面上方/下方的别处去盖住别的东西。
-   * 这条判据只用于**灯的显隐** —— 与「能不能刷」无关(见 refreshUsable)。
-   *
-   * @param {{left:number,top:number,width:number,height:number}} r 平台按钮矩形
-   * @param {number} vw 视口宽
-   * @param {number} vh 视口高
-   * @return {boolean} true = 还看得见,灯该显示
-   */
+  /** 平台按钮是否与视口相交，用于落位和刷新前的遮挡检查。 */
   function inViewport(r, vw, vh) {
     if (!r || !(r.width > 0) || !(r.height > 0)) return false;
     // 允许贴边(按钮压在视口边缘时仍要显示),只要还有可见部分即可
@@ -756,58 +709,6 @@
   var _scrollerAt = 0;
   var SCROLLER_TTL = 10000;
 
-  /* ---- 滚动中的灯要藏(用户 2026-10-20 拍板「方案一:滚动时暂时隐身,停了再回来」) ----
-   * 灯是 fixed 挂 body,每拍(250ms)重贴一次按钮位置;滚动时按钮每帧都在动,
-   * 灯 1/4 秒才追一次 ⇒ 滚动期间脱手漂移,用户观感「绿点被拖拽」。
-   * 处置:滚动进行中把灯藏起来,整页停稳 SCROLL_QUIET_MS(350ms)后下一拍自动贴回。
-   * 口径与两枚浮动圆钮同源(用户 2026-10-14 定):只认「页面滚动链」= 整页滚动 +
-   * 商品列表容器;链外滚动区(左侧直播互动栏评论列表等)不触发,灯照常显示。
-   * 监听做成零成本:scroll(捕获阶段)回调只记「谁在滚 + 什么时候」,不读任何矩形;
-   * 「是不是滚动链」的判定放进每拍一次的 placeLamp 里(scroller 自带 10 秒缓存)。 */
-  var SCROLL_QUIET_MS = 350;
-  var _scrollTgt = null;
-  var _scrollAt = 0;
-
-  /**
-   * 程序化滚动豁免窗口(2026-10-21):打点后这么久的 scroll 事件不算用户在滚。
-   * 瞬时赋值的事件余波几乎零延迟到达,400ms 绰绰有余;逐屏扫描由每步重新
-   * 打点续期,窗口无需覆盖全程;smooth 动画(圆钮)由发起方写
-   * __dycScriptScrollFor 加长(Chrome 系 smooth 时长基本恒定,800ms 够)。
-   */
-  var SCRIPT_SCROLL_WIN_MS = 400;
-
-  /** scroll 事件(捕获)回调 —— 高频,只准写两个变量,不准读布局 */
-  function markScrollTgt(e) {
-    /* 程序化滚动豁免:扩展自己发起的滚动(全能搜索扫描/定位/恢复、两枚
-     * 圆钮、序号定位、明细页签对位)发起时都会打点;窗口内的 scroll 事件
-     * 不当作「用户在滚」,灯不因此隐藏 —— 这正是「全能搜索时灯一直闪」的根。
-     * 手动滚动没有打点 ⇒ 照旧记录,防漂移逻辑不变。 */
-    var ss = window.__dycScriptScrollAt || 0;
-    if (ss) {
-      var win = window.__dycScriptScrollFor || SCRIPT_SCROLL_WIN_MS;
-      if (now() - ss < win) return;
-    }
-    _scrollTgt = e.target;
-    _scrollAt = now();
-  }
-
-  /** 这个滚动来源属不属于「页面滚动链」(整页滚动 / 商品列表容器) */
-  function inScrollChain(t) {
-    if (!t) return false;
-    if (t === document || t === document.documentElement || t === document.body) {
-      return true;   // 整页滚动(scroll 事件 target = document)
-    }
-    if (t === window) return true;
-    return t === scroller();   // 商品列表容器;评论列表等链外容器 ⇒ false
-  }
-
-  /** 现在算不算「页面滚动进行中」(停稳 SCROLL_QUIET_MS 后为 false,灯下一拍回来) */
-  function scrollingNow() {
-    if (!_scrollTgt) return false;
-    if (now() - _scrollAt >= SCROLL_QUIET_MS) return false;
-    return inScrollChain(_scrollTgt);
-  }
-
   function scroller() {
     if (typeof getScrollContainer === 'function') {
       try {
@@ -863,7 +764,7 @@
     if (!s || !s.isConnected) return;
     if (top < 40) return;                 // 本来就在顶部,没什么可放回的
     if (s.scrollTop > 40) return;         // 位置还在 ⇒ 平台保持了,或用户自己滚的 ⇒ 不动
-    window.__dycScriptScrollAt = now();   // 自己的回滚也是程序化滚动,别触发藏灯
+    window.__dycScriptScrollAt = now();   // 记录程序化滚动
     try { s.scrollTop = top; } catch (e) { /* 尽力而为 */ }
   }
 
@@ -916,15 +817,13 @@
   /* ---------- 指示灯 ---------- */
 
   var CSS = [
-    /* 指示灯:挂 body + fixed —— 平台是 React,挂在它容器里会被重渲染清掉。
-       z-index 取接近上限的值,保证压在平台工具栏之上。 */
     '.' + LAMP_CLASS + ' {',
     '  all: initial;',
-    '  position: fixed;                    /* 挂 body + fixed:平台 React 重渲染碰不到 */',
-    '  z-index: 2147483000;',
+    '  position: relative; flex: none; align-self: center; vertical-align: middle;',
+    '  margin-inline-end: ' + LAMP_GAP + 'px;',
     '  box-sizing: border-box;',
     '  width: ' + LAMP_HIT + 'px; height: ' + LAMP_HIT + 'px;',
-    '  display: flex; align-items: center; justify-content: center;',
+    '  display: inline-flex; align-items: center; justify-content: center;',
     '  border-radius: 50%;',
     '  background: #fff; border: 1px solid #e5e6eb;', 
     '  box-shadow: 0 1px 2px rgba(31,35,41,.06);',
@@ -996,120 +895,21 @@
    * 复位:灯从藏到显、换了灯节点、窗口缩放。
    * ========================================================== */
   /* 吸附阈值与记忆:≤2px 当噪声不动、≥10px 立刻跟(详见 settle 头部) */
-  var SETTLE_SMALL = 2;
-  var SETTLE_BIG = 10;
-  var settleSt = {};
-  var settleEl = null;
-
-  function resetSettle() {
-    settleSt = {};
-  }
-
-  /** 返回要写入的新坐标;null = 保持原值(这就是「位置固定」的实现) */
-  function settle(key, want) {
-    want = Math.round(want);
-    var st = settleSt[key];
-    if (!st) st = settleSt[key] = { cur: null, want: null, streak: 0 };
-    if (st.cur === null || !isFinite(st.cur)) {
-      st.cur = want; st.want = want; st.streak = 0; return want;
-    }
-    var d = Math.abs(want - st.cur);
-    if (d <= SETTLE_SMALL) { st.want = want; st.streak = 0; return null; }
-    if (d >= SETTLE_BIG) { st.cur = want; st.want = want; st.streak = 0; return want; }
-    if (st.want === want) st.streak++; else { st.want = want; st.streak = 1; }
-    if (st.streak >= 2) { st.cur = want; st.streak = 0; return want; }
-    return null;
-  }
-
-  /**
-   * 把灯贴到原生按钮左侧。
-   *
-   * 位置全部由原生按钮的矩形派生:
-   *   灯珠**右边缘**距按钮左边缘 LAMP_GAP(8px)
-   *   ⇒ 灯珠中心 X = 按钮左边缘 − LAMP_GAP(8) − DOT_R(随 DOT_SIZE 联动)
-   *   ⇒ 命中区 left = 灯珠中心 − LAMP_HIT/2(12)
-   *   ⇒ 命中区右边缘 = 灯珠中心 + 12,恒在按钮左边缘左侧(**刻意不探进按钮**,不抢它自己的点击)
-   *   纵向与按钮垂直居中对齐。
-   *
-   * 坐标直接取**视口坐标**,配合 position:fixed —— 不换算成容器内绝对定位,
-   * 免得再处理 padding box / clientLeft / 滚动量这一类只属于绝对定位的坑。
-   *
-   * 按钮滚出视口时把灯藏起来:fixed 元素不跟页内滚动,不藏就会停在屏幕某处盖住别的内容。
-   */
-  function placeLamp(btn, readings) {
-    if (!lamp || !btn || !btn.isConnected) return false;
-
-    /* 换了灯节点(摘掉重建)⇒ 吸附记忆作废 —— 旧坐标对新节点没有意义 */
-    if (settleEl !== lamp) { resetSettle(); settleEl = lamp; }
-
-    /* #98:次级页面(弹层)打开 ⇒ 灯让位。
-     * ★ 2026-10-27 改口径(用户:「不要因为右上角的小框框弹出就隐藏」):
-     *   从「**有浮层**就藏」改成「**浮层真的盖住灯**且浮层够大才藏」——
-     *   判据下沉到下面算完 left/top 之后(要用灯的真实矩形去测相交),
-     *   这里不再提前 return。 */
-
-    /* 滚动进行中 ⇒ 灯先藏(用户拍板「方案一」,2026-10-20):滚动时按钮每帧都在动,
-     * 灯 1/4 秒才追一次会脱手漂移;整页停稳约 0.35 秒后下一拍自动贴回。
-     * 与弹层分支同一条显隐通道,两条件并列,互不抢写。 */
-    if (scrollingNow()) {
-      if (lamp.style.display !== 'none') lamp.style.display = 'none';
-      return true;
-    }
-
-    var host = document.body;
-    if (!host) return false;
-    if (lamp.parentElement !== host) {
-      try { host.appendChild(lamp); } catch (e) { return false; }
-    }
-
-    var r = readings ? refreshRect(btn, readings) : btn.getBoundingClientRect();
-    if (!inViewport(r, window.innerWidth, window.innerHeight)) {
-      if (lamp.style.display !== 'none') lamp.style.display = 'none';
-      return true;                       // 仍是「已挂好」,只是暂时不可见
-    }
-    var wasHidden = (lamp.style.display === 'none');
-
-    /* 2026-10-26(用户报抖):刷新进行中 ⇒ **冻结坐标**,不重测不重写。
-     * 两个信号任一成立就冻:
-     *   ① 我们自己刚点过原生刷新(now() < busyUntil,点完 1.2 秒内平台必在重排);
-     *   ② 平台按钮进加载态(内部图标在换 / 动画在跑,量出来的矩形每拍差 1~3px)。
-     * 只在「本来就在显示」时冻 —— 刚恢复显示的灯必须先把位置写上,不能停在旧坐标。 */
-    if (!wasHidden && lamp.style.left !== '') {
-      var busyNow = false;
-      if (now() < busyUntil) busyNow = true;
-      if (!busyNow) {
-        try { busyNow = refreshBusy(btn); } catch (e) { busyNow = false; }
+  /** 插在原生按钮旁，坐标由浏览器布局管理。平台重建时复用已绑定事件的节点。 */
+  function placeLamp(btn) {
+    if (!lamp) return false;
+    if (btn && btn.isConnected) {
+      var slot = btn.closest('button, a, [role="button"]') || btn;
+      var parent = slot.parentElement;
+      if (parent && (lamp.parentElement !== parent || lamp.nextElementSibling !== slot)) {
+        parent.insertBefore(lamp, slot);
       }
-      if (busyNow) return true;
     }
+    if (!lamp.isConnected) return false;
 
-    /* 圆钮**右边缘**距原生按钮左边缘 LAMP_GAP(8px),纵向与按钮居中对齐。
-     * 命中区就是圆钮本身(26×26),右边缘恒停在按钮左侧 ⇒ 不探进按钮,不抢它的点击。 */
-    var centerY = r.top + r.height / 2;
-    var left = r.left - LAMP_GAP - LAMP_HIT;
-    var top = centerY - LAMP_HIT / 2;
-
-    /* 浮层覆盖判定(2026-10-27):只有**真的盖住这枚圆钮**的大浮层才让灯让位。
-     * 返回 true = 已挂好、暂不可见(tick 不会因此摘灯)。 */
-    if (coveredByOverlay({
-      left: left, top: top,
-      right: left + LAMP_HIT, bottom: top + LAMP_HIT
-    })) {
-      if (lamp.style.display !== 'none') lamp.style.display = 'none';
-      return true;
-    }
-    if (lamp.style.display === 'none') {
-      lamp.style.display = '';
-      resetSettle();
-    }
-
-    // 容差交给 settle():≤2px 当噪声不写、≥10px 立刻跟、中间档两拍确认。
-    // (旧版这里是 1.5px 容差 —— 噪声稍大仍会来回写,用户看到的「轻微左右抖」就是这个)
-    var s = lamp.style;
-    var nx = settle('lampL', left);
-    var ny = settle('lampT', top);
-    if (nx !== null) s.left = nx + 'px';
-    if (ny !== null) s.top = ny + 'px';
+    var rect = lamp.getBoundingClientRect();
+    var visibility = inViewport(rect, window.innerWidth, window.innerHeight) && coveredByOverlay(rect) ? 'hidden' : '';
+    if (lamp.style.visibility !== visibility) lamp.style.visibility = visibility;
     return true;
   }
 
@@ -1195,8 +995,8 @@
   }
 
   function ensureLamp(btn, readings) {
-    btn = btn || findRefreshBtn(readings);
-    if (!btn) return false;   // 找不到 ⇒ 交给 tick 撤灯
+    if (btn === undefined) btn = findRefreshBtn(readings);
+    if (!btn) return placeLamp(null);
 
     ensureStyle();
 
@@ -1208,7 +1008,7 @@
       lamp = null;
     }
 
-    if (!lamp || !lamp.isConnected) {
+    if (!lamp) {
       lamp = document.createElement('span');
       lamp.className = LAMP_CLASS;
       lamp.setAttribute(MARK_ATTR, MARK_VER);
@@ -1236,7 +1036,7 @@
       });
     }
 
-    return placeLamp(btn, readings);
+    return placeLamp(btn);
   }
 
   function removeLamp() {
@@ -1442,22 +1242,10 @@
       if (prev !== liveState) onLiveChange();
     }
 
-    // ② 灯该不该在;在就跟着原生按钮走(平台重排 / 滚动 / 缩放都会动它)
+    // ② 已挂载的灯在原生按钮离开视口或重建时继续显示。
     if (needLamp()) {
-      // 只在本拍内复用矩形，下一拍仍实时验证节点及位置。
       var readings = [];
-      var b = findRefreshBtn(readings);
-      if (b) {
-        lampMissAt = 0;
-        if (!ensureLamp(b, readings)) hideLamp();
-      } else if (lamp) {
-        /* 2026-10-27(用户:「不要因为右上角的小框框弹出就隐藏」):
-         * 平台一重渲染,按钮节点会短暂消失一两拍;以前这里是**立刻摘灯**,
-         * 摘了下一拍又建 —— 用户看到的就是「抖一下没了 / 又回来了」。
-         * 现在给 900ms 宽限:节点真走了(切页/换 tab)照样摘,只是别为一次重排闪。 */
-        if (!lampMissAt) lampMissAt = now();
-        if (now() - lampMissAt > LAMP_MISS_GRACE) hideLamp();
-      }
+      ensureLamp(findRefreshBtn(readings), readings);
     } else if (lamp) {
       hideLamp();
     }
@@ -1546,16 +1334,4 @@
     });
   }
 
-  /* ---------- 窗口尺寸变化:重新量一次坐标 ---------- */
-  window.addEventListener('resize', function () {
-    if (!lamp) return;
-    resetSettle();          // 布局一定变了 ⇒ 别让旧坐标挡两拍
-    var b = findRefreshBtn();
-    if (b) placeLamp(b); else hideLamp();
-  }, { passive: true });
-
-  /* ---------- 页面变化时补挂 ----------
-   * 不做常驻 MutationObserver(每 10 秒刷一次本身就带重渲染,MutationObserver
-   * 会被刷屏式触发)。改用主循环里的 placeLamp 兜住 —— 250ms 一拍足够快,
-   * 且开销恒定。 */
 })();

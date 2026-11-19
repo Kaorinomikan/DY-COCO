@@ -385,7 +385,7 @@
        * 输入框 80×30 白底灰边 + 实心蓝按钮（#0075ff）+ 11px 灰读数，
        * 这里照搬，不另创设计；尺寸固定 px，不随页面缩放（AGENTS 第 15 条）。 */
       '#' + BOX_ID + ' {',
-      '  display: inline-flex; align-items: center; gap: 6px;',
+      '  position: relative; display: inline-flex; align-items: center; gap: 6px;',
       '  margin: 0 0 0 10px; vertical-align: middle;',
       '}',
       '#' + INPUT_ID + ' {',
@@ -656,6 +656,15 @@
     return minH > 0 && overlap >= minH * 0.5;
   }
 
+  function alignCenter(anchor, el) {
+    var search = anchor.closest('.d-input-wrapper') || anchor;
+    var a = search.getBoundingClientRect();
+    var b = el.getBoundingClientRect();
+    if (!a.height || !b.height) return;
+    var shift = (a.top + a.height / 2) - (b.top + b.height / 2);
+    if (Math.abs(shift) >= 0.5) el.style.top = ((parseFloat(el.style.top) || 0) + shift) + 'px';
+  }
+
   /**
    * 把控件放到搜索框右侧 —— **插进去就量，量不对就退出来上一层再试**。
    *
@@ -669,6 +678,7 @@
    * @returns {string} same-row / same-row+N / fallback（都不行但留着）/ none
    */
   function placeNear(anchor, el) {
+    el.style.top = '';
     var nodes = [];
     var node = searchBoxOf(anchor);
     for (var i = 0; i < 4 && node && node !== document.body; i++) {
@@ -687,7 +697,10 @@
       } catch (e) { continue; }
       inserted = true;
       /* 落点还必须在浮层外：抽屉开着时祖先链可能整条都在抽屉里 */
-      if (!inOverlay(el) && sameRow(anchor, el)) return k === 0 ? 'same-row' : ('same-row+' + k);
+      if (!inOverlay(el) && sameRow(anchor, el)) {
+        alignCenter(anchor, el);
+        return k === 0 ? 'same-row' : ('same-row+' + k);
+      }
       if (k < nodes.length - 1) {
         try { parent.removeChild(el); } catch (e2) { /* 忽略 */ }
         inserted = false;
@@ -880,6 +893,7 @@
       }
     } else {
       misBeats = 0;
+      if (anchor) alignCenter(anchor.el, host);
     }
 
     refreshCount();

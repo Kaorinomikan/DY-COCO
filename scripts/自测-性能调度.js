@@ -20,16 +20,30 @@ function fixture(file, exports) {
   const timers = new Map();
   const counts = { rect: 0, scan: 0, check: 0, rowScan: 0, wake: 0, write: 0 };
   const doc = {
-    body: { isConnected: true }, hidden: false, documentElement: { clientWidth: 1600, clientHeight: 900 },
-    addEventListener() {}, removeEventListener() {}, querySelector() { return null; },
+    body: { isConnected: true, children: [] }, hidden: false, documentElement: { clientWidth: 1600, clientHeight: 900 },
+    addEventListener() {},
+    removeEventListener() {}, querySelector() { return null; },
     querySelectorAll() { return []; }, getElementById() { return null; }
   };
   function el(text, rect) {
+    const children = [];
     const style = new Proxy({ left: '', top: '', display: '' }, { set(obj, key, val) { counts.write++; obj[key] = val; return true; } });
     const classes = new Set();
     return {
       nodeType: 1, textContent: text || '', isConnected: true, parentElement: doc.body,
-      style, hidden: false, id: '', getAttribute() { return null; }, querySelectorAll() { return []; },
+      children, closest() { return null; }, querySelector() { return null; },
+      get nextElementSibling() {
+        const siblings = this.parentElement && this.parentElement.children;
+        return siblings && siblings[siblings.indexOf(this) + 1];
+      },
+      insertBefore(child, before) {
+        const old = child.parentElement && child.parentElement.children;
+        if (old && old.includes(child)) old.splice(old.indexOf(child), 1);
+        children.splice(before ? children.indexOf(before) : children.length, 0, child);
+        child.parentElement = this;
+        child.isConnected = this.isConnected;
+      },
+      style, hidden: false, id: '', getAttribute() { return null; }, setAttribute() {}, querySelectorAll() { return []; },
       getBoundingClientRect() { counts.rect++; return rect || { left: 800, top: 100, right: 880, bottom: 124, width: 80, height: 24 }; },
       classList: { add(...xs) { xs.forEach(x => classes.add(x)); }, remove(...xs) { xs.forEach(x => classes.delete(x)); }, contains(x) { return classes.has(x); }, toggle(x, yes) { if (yes) classes.add(x); else classes.delete(x); } }
     };
@@ -70,6 +84,7 @@ function fixture(file, exports) {
 
 const loop = fixture('src/live/auto-loop-lecture.js', `
   ensureObserver, checkNow, place, onUserCancelClick, fireClick, snapshot, setCheckMin,
+  openPanel,
   configure: function (f) {
     state.on = true; state.phase = 'wait';
     findCartPanel = function () { return f.doc.body; };
@@ -78,13 +93,13 @@ const loop = fixture('src/live/auto-loop-lecture.js', `
     findRowByName = function () { return null; };
     paint = function () {};
   },
-  positioning: function (header, lamp, cap, panel) {
-    host = {}; refs = { cap: cap, panel: panel }; cartHeader = header; anchorRow = header;
-    anchorMode = 'title'; lampSlotDX = 34; scrollHideUntil = 0;
-    observerTarget = document.body; modalCovers = function () { return false; };
-    document.querySelector = function () { return lamp; };
+  anchor: function (header) { cartHeader = header; anchorMode = 'title'; },
+  covered: function (yes) { modalCovers = function () { return yes; }; },
+  mount: function () {
+    buildSecButtons = buildTicks = buildTrackMarks = paintGroups = refreshTrack = bindDrag = function () {};
+    buildUI();
+    return { host: host, cap: refs.cap, panel: refs.panel };
   },
-  busy: function (yes) { state.busy = yes; },
   running: function () { state.on = true; state.phase = 'run'; state.group = 'min'; state.key = 'id:12345678'; state.product = '测试商品'; state.nextAt = Date.now() + 60000; },
   hide: function () { state.on = false; },
   due: function () {
@@ -142,15 +157,55 @@ loop.api.configure(loop);
 
 const header = loop.el('标题', { left: 0, top: 100, right: 1000, bottom: 130, width: 1000, height: 30 });
 const lamp = loop.el('', { left: 800, top: 100, right: 826, bottom: 126, width: 26, height: 26 });
-const cap = loop.el(''), panel = loop.el('');
-loop.api.positioning(header, lamp, cap, panel);
+header.insertBefore(lamp, null);
+header.querySelector = () => lamp;
+function uiElement() {
+  return Object.assign(loop.el(''), {
+    attachShadow: uiElement, appendChild() {}, addEventListener() {}, querySelector: uiElement
+  });
+}
+loop.doc.body.appendChild = function () {};
+loop.doc.createElement = uiElement;
+loop.api.anchor(header);
+const mounted = loop.api.mount();
+loop.api.covered(false);
+mounted.panel.style.setProperty = function () {};
+loop.api.place();
+if (!baseline) {
+  assert.deepEqual(header.children, [mounted.host, lamp], '循环讲解在同排占自己的位置');
+  assert.equal(mounted.cap.hidden, false);
+  assert.equal(mounted.cap.style.left, '', '循环讲解不依赖视口横坐标');
+}
 loop.counts.rect = 0;
+const stableWrites = loop.counts.write;
 for (let i = 0; i < 40; i++) { loop.api.place(); loop.advance(250); }
 const loopRects = loop.counts.rect;
-if (!baseline) assert.equal(loopRects, 80, '胶囊每拍只量锚点与圆钮各一次');
-loop.api.busy(true); loop.counts.rect = 0; const writes = loop.counts.write;
-loop.api.place(); assert.equal(loop.counts.rect, 0, '定位中不读矩形'); assert.equal(loop.counts.write, writes, '定位中不写坐标');
-loop.api.busy(false);
+if (!baseline) {
+  assert.equal(loopRects, 40, '稳定时每拍只量胶囊一次用于遮挡检测');
+  assert.equal(loop.counts.write, stableWrites, '稳定时无需写坐标');
+  loop.api.openPanel();
+  assert(mounted.panel.classList.contains('open'), '设置面板仍能展开');
+  assert.equal(mounted.panel.style.left, '0px', '面板以胶囊为坐标原点');
+
+  const replacement = loop.el('新标题', header.getBoundingClientRect());
+  const newLamp = loop.el('');
+  replacement.insertBefore(newLamp, null);
+  replacement.querySelector = () => newLamp;
+  header.isConnected = false;
+  lamp.isConnected = false;
+  mounted.host.isConnected = false;
+  loop.api.anchor(replacement);
+  loop.api.place();
+  assert.deepEqual(replacement.children, [mounted.host, newLamp], '平台重建后复用原胶囊与面板');
+  assert(mounted.panel.classList.contains('open'), '平台重建期间保留设置面板状态');
+  loop.api.covered(true);
+  loop.api.place();
+  assert.equal(mounted.cap.style.visibility, 'hidden', '遮挡时留出胶囊所在空间');
+  assert(!mounted.panel.classList.contains('open'), '遮挡时关闭设置面板');
+  loop.api.covered(false);
+  loop.api.place();
+  assert.equal(mounted.cap.style.visibility, '', '弹层关闭后恢复显示');
+}
 loop.api.running(); const beforeCancel = loop.api.abortMark();
 loop.api.onUserCancelClick({ isTrusted: true, target: lecture });
 assert(loop.api.abortMark() > beforeCancel, '真人取消当场中断异步链');
@@ -195,10 +250,9 @@ const refresh = fixture('src/live/auto-refresh.js', `
     flags = { liveAutoRefresh: true }; lamp = light; _refreshBtn = btn;
     _refreshMissAt = 0; mode = 'off'; liveState = 'prelive'; startedAt = 0; nextAt = Date.now() + 100000;
     judgeLive = function () {}; ensureStyle = function () {}; paintLamp = function () {};
-    scrollingNow = function () { return false; }; coveredByOverlay = function () { return false; };
-    refreshBusy = function () { return false; }; resetSettle = function () {};
-    settle = function () { return null; }; settleEl = light;
-    scanRefreshBtn = function () { f.counts.scan++; return f.replacement || btn; };
+    coveredByOverlay = function () { return false; };
+    refreshBusy = function () { return false; };
+    scanRefreshBtn = function () { f.counts.scan++; return f.replacement === undefined ? btn : f.replacement; };
   },
   deadline: function () { nextAt = Date.now() - 1; mode = 'auto'; },
   live: function () { liveState = 'live'; autoStopped = true; },
@@ -218,20 +272,48 @@ const refresh = fixture('src/live/auto-refresh.js', `
   },
   state: function () { return { mode: mode, liveState: liveState, nextAt: nextAt }; },
   polite: function (f) { typingRecently = function () { return f.typing; }; popupOpen = function () { return f.popup; }; },
-  refreshes: function (fn) { doRefresh = fn; }
+  refreshes: function (fn) { doRefresh = fn; },
+  covered: function (yes) { coveredByOverlay = function () { return yes; }; }
 `);
 const btn = refresh.el('刷新列表');
-const light = refresh.el(''); light.parentElement = refresh.doc.body; light.style.left = '766px';
-light.getAttribute = () => '3';
+const row = refresh.el('标题动作栏');
+row.insertBefore(btn, null);
+const light = refresh.el('');
+light.getAttribute = () => baseline ? '3' : '4';
+if (!baseline) {
+  refresh.api.configure(refresh, btn, light);
+  refresh.api.tick();
+  assert.deepEqual(row.children, [light, btn], '自动刷新在原生按钮左侧拥有独立节点');
+  assert.equal(light.style.left, '', '自动刷新不依赖视口横坐标');
+  btn.isConnected = false;
+  refresh.replacement = null;
+  refresh.api.tick();
+  assert.deepEqual(row.children, [light, btn], '原生按钮短暂缺失不移动仍在原行的圆钮');
+  refresh.api.covered(true);
+  refresh.api.tick();
+  assert.equal(light.style.visibility, 'hidden', '遮挡时保留圆钮的布局占位');
+  refresh.api.covered(false);
+  refresh.api.tick();
+  assert.equal(light.style.visibility, '', '弹层关闭后恢复显示');
+  btn.isConnected = true;
+  delete refresh.replacement;
+  refresh.counts.scan = 0;
+}
 const realJudge = refresh.api.judgeLive;
 refresh.api.configure(refresh, btn, light);
 refresh.counts.rect = 0;
 for (let i = 0; i < 40; i++) { refresh.api.tick(); refresh.advance(250); }
 const refreshRects = refresh.counts.rect;
-if (!baseline) assert.equal(refreshRects, 40, '刷新每拍只量原生按钮一次');
+if (!baseline) assert.equal(refreshRects, 80, '每拍各量一次原生按钮和圆钮，无重复查询');
 const freshBtn = refresh.el('刷新列表'); refresh.replacement = freshBtn; btn.isConnected = false;
 assert.strictEqual(refresh.api.findRefreshBtn(), freshBtn, '断开旧按钮立即重扫新按钮');
 assert.equal(refresh.counts.scan, 1, '节点替换只重扫一次');
+if (!baseline) {
+  const newRow = refresh.el('新动作栏');
+  newRow.insertBefore(freshBtn, null);
+  refresh.api.tick();
+  assert.deepEqual(newRow.children, [light, freshBtn], '原动作栏替换后把原圆钮插到新行');
+}
 const polite = { typing: false, popup: false };
 refresh.api.polite(polite); refresh.api.deadline();
 let refreshes = 0;
@@ -260,4 +342,4 @@ refresh.advance(601); refresh.api.onLampClick(); assert.equal(refresh.api.state(
   assert(Array.isArray(pf.ring) && pf.ring.length <= 10, 'check 最近耗时环形最多 10 条');
 }
 
-console.log(JSON.stringify({ mode: baseline ? '整改前 HEAD' : '整改后工作树', fixture: '40 拍，每拍 250ms；无关文本 40 次，每次 500ms；仅内存调用数', unrelated: unrelatedCounts, mergedScans, extensionScans, loopRects, refreshRects, behavior: '定位冻结、真人取消、后台续讲到期、节点替换、开播停刷、输入/浮层/后台让路通过' }, null, 2));
+console.log(JSON.stringify({ mode: baseline ? '整改前 HEAD' : '整改后工作树', fixture: '40 拍，每拍 250ms；无关文本 40 次，每次 500ms；仅内存调用数', unrelated: unrelatedCounts, mergedScans, extensionScans, loopRects, refreshRects, behavior: '标题栏挂载与重建、真人取消、后台续讲到期、节点替换、开播停刷、输入/浮层/后台让路通过' }, null, 2));

@@ -132,6 +132,7 @@ SELF_BOOTING = {
     'src/content/shop-paste.js',
     # 小红书粘贴加车自行读取/订阅开关并挂载按钮，不依赖 main/toolbar。
     'src/live/xhs-cart-paste.js',
+    'src/live/xhs-auto-refresh.js',
 }
 
 FLAGS = 'src/content/flags.js'

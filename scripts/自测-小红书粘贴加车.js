@@ -10,7 +10,7 @@ const buttonId = 'dyc-xhs-cart-paste';
 
 async function fixture(text, test, api) {
   api = api || {};
-  const dom = new JSDOM('<button id="native-add">添加商品</button><div class="goods-card-list"></div>', {
+  const dom = new JSDOM('<div id="app"><div id="goods-toolbar"><button id="native-add">添加商品</button></div><div class="goods-card-list"></div></div>', {
     url: 'https://pgy.xiaohongshu.com/commerce/redlive/live_center_control',
     runScripts: 'outside-only', pretendToBeVisual: true
   });
@@ -285,11 +285,22 @@ async function check(name, fn) {
     await new Promise((r) => setTimeout(r, 900));
   }, { searchDelay: 400, settle: 1200 }));
 
-  await check('按钮居中在官方按钮上方，并随开关及路由移除', () => fixture(id, async (s) => {
+  await check('按钮嵌入工具栏并保持在添加商品上方，重建后补回', () => fixture(id, async (s) => {
     const button = s.d.getElementById(buttonId);
-    assert.equal(button.parentElement, s.d.body);
-    assert.equal(button.style.left, '894px');
-    assert.equal(button.style.top, '254px');
+    const slot = button.parentElement;
+    const toolbar = s.d.getElementById('goods-toolbar');
+    assert.equal(slot.parentElement, toolbar);
+    assert.equal(slot.nextElementSibling, s.d.getElementById('native-add'));
+    assert.equal(button.style.position, 'absolute');
+    assert.equal(slot.style.position, 'relative');
+    const style = button.style.cssText;
+    s.w.dispatchEvent(new s.w.Event('scroll'));
+    await new Promise((r) => s.w.requestAnimationFrame(r));
+    assert.equal(button.style.cssText, style);
+    toolbar.innerHTML = '<button id="native-add">添加商品</button>';
+    await new Promise((r) => setTimeout(r, 400));
+    assert.equal(s.d.getElementById(buttonId), button);
+    assert.equal(slot.nextElementSibling, s.d.getElementById('native-add'));
     s.flags(false);
     assert.equal(s.d.getElementById(buttonId), null);
     s.flags(true);
@@ -297,5 +308,8 @@ async function check(name, fn) {
     s.w.history.pushState({}, '', '/other');
     s.w.dispatchEvent(new s.w.Event('dyc:pagechange'));
     assert.equal(s.d.getElementById(buttonId), null);
+    s.w.history.pushState({}, '', '/commerce/redlive/live_center_control');
+    s.w.dispatchEvent(new s.w.Event('dyc:pagechange'));
+    assert.ok(s.d.getElementById(buttonId));
   }));
 })().catch((e) => { console.error(e); process.exitCode = 1; });

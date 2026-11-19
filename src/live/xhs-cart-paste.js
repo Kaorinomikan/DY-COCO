@@ -13,8 +13,8 @@
   var DEFAULT_SOURCE = '4';   // 取样实测值
   var DEFAULT_SCENE = '6';    // 取样实测值
   var enabled = false, busy = false, generation = 0;
-  var button = null, addAnchor = null, observer = null, mountTimer = null, feedbackTimer = null;
-  var positionFrame = null;
+  var button = null, slot = null, addAnchor = null, observer = null, sizeObserver = null;
+  var mountTimer = null, feedbackTimer = null;
 
   function clean(value) {
     return String(value || '').replace(/[\u200B-\u200F\u202A-\u202E\u2060-\u2064\uFEFF]/g, '').trim();
@@ -40,9 +40,9 @@
     // 车内真实 ID 为 24 位十六进制；不从商品名称或链接中截取片段。
     return /^[a-f0-9]{24}$/i.test(s) ? s.toLowerCase() : '';
   }
-  function nativeButton(root, label) {
+  function nativeButton(root, label, accept) {
     return Array.from(root.querySelectorAll('button, [role="button"]')).find(function (el) {
-      return visible(el) && !el.hasAttribute('data-dyc-skip') && txt(el) === label;
+      return visible(el) && !el.hasAttribute('data-dyc-skip') && txt(el) === label && (!accept || accept(el));
     });
   }
   function report(value, count, ok, full) {
@@ -358,54 +358,61 @@
       feedback(ok);
     }
   }
-  function positionButton() {
-    positionFrame = null;
-    if (!button) return;
-    var rect = visible(addAnchor) ? addAnchor.getBoundingClientRect() : null;
-    var shown = rect && rect.top >= 36 && rect.bottom <= window.innerHeight && rect.right > 0 && rect.left < window.innerWidth;
-    button.style.visibility = shown ? 'visible' : 'hidden';
-    if (!shown) return;
-    button.style.left = (rect.left + rect.width / 2) + 'px';
-    button.style.top = (rect.top - 6) + 'px';
-  }
-  function schedulePosition() {
-    if (positionFrame === null) positionFrame = window.requestAnimationFrame(positionButton);
-  }
   function unmount() {
-    if (!button) return;
-    window.removeEventListener('scroll', schedulePosition, true);
-    window.removeEventListener('resize', schedulePosition);
-    if (positionFrame !== null) window.cancelAnimationFrame(positionFrame);
-    positionFrame = null;
-    button.remove();
+    if (sizeObserver) sizeObserver.disconnect();
+    if (slot) slot.remove();
     button = null;
+    slot = null;
     addAnchor = null;
+  }
+  function alignButton() {
+    if (!slot || !slot.isConnected || !visible(addAnchor)) return;
+    var row = getComputedStyle(slot.parentElement);
+    var gap = /flex/.test(row.display) ? parseFloat(row.columnGap) || 0 : 0;
+    slot.style.marginInlineEnd = -gap + 'px';
+    var local = slot.getBoundingClientRect();
+    var anchor = addAnchor.getBoundingClientRect();
+    button.style.left = (anchor.left - local.left + anchor.width / 2) + 'px';
+    button.style.top = (anchor.top - local.top - 6) + 'px';
   }
   function mount() {
     if (mountTimer !== null) clearTimeout(mountTimer);
     mountTimer = null;
     if (!active()) { unmount(); return; }
-    if (!visible(addAnchor)) addAnchor = nativeButton(document, '添加商品');
-    if (!addAnchor) { unmount(); return; }
-    if (button && button.isConnected) { schedulePosition(); return; }
-    button = document.createElement('button');
-    button.id = ID; button.type = 'button'; button.textContent = busy ? '正在处理' : '粘贴加车';
-    button.disabled = busy; button.setAttribute('data-dyc-skip', '');
-    button.setAttribute('aria-label', '粘贴加车'); button.setAttribute('aria-live', 'polite');
-    button.title = '读取单个商品 ID，已上架时定位';
-    // 跟随官方按钮的视口坐标，避免挪动平台节点或扩大工具栏。
-    button.style.cssText = 'all:initial;position:fixed;transform:translate(-50%,-100%);visibility:hidden;display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:84px;height:30px;border:1px solid #0075ff;border-radius:4px;background:#fff;color:#0075ff;font:12px/1 "Microsoft YaHei",sans-serif;cursor:pointer;';
-    button.addEventListener('click', run);
-    document.body.appendChild(button);
-    window.addEventListener('scroll', schedulePosition, { capture: true, passive: true });
-    window.addEventListener('resize', schedulePosition);
-    positionButton();
+    if (!visible(addAnchor)) {
+      addAnchor = nativeButton(document.getElementById('app') || document, '添加商品', function (el) {
+        return !el.closest('#d-portal, .d-drawer, .d-modal, .d-dialog, [role="dialog"]');
+      });
+    }
+    if (!addAnchor) return;
+    if (!button) {
+      slot = document.createElement('span');
+      slot.setAttribute('data-dyc-skip', '');
+      slot.style.cssText = 'all:initial;position:relative;display:inline-block;vertical-align:middle;align-self:center;flex:none;width:0;height:0;';
+      button = document.createElement('button');
+      button.id = ID; button.type = 'button'; button.textContent = busy ? '正在处理' : '粘贴加车';
+      button.disabled = busy; button.setAttribute('data-dyc-skip', '');
+      button.setAttribute('aria-label', '粘贴加车'); button.setAttribute('aria-live', 'polite');
+      button.title = '读取单个商品 ID，已上架时定位';
+      button.style.cssText = 'all:initial;position:absolute;transform:translate(-50%,-100%);display:inline-flex;align-items:center;justify-content:center;box-sizing:border-box;width:84px;height:30px;border:1px solid #0075ff;border-radius:4px;background:#fff;color:#0075ff;font:12px/1 "Microsoft YaHei",sans-serif;cursor:pointer;';
+      button.addEventListener('click', function (event) { event.stopPropagation(); run(); });
+      slot.appendChild(button);
+    }
+    if (slot.nextElementSibling === addAnchor) return;
+    // 定位原点在工具栏里，滚动时由浏览器带着它走。只在挂载或尺寸变化时算相对位置。
+    addAnchor.parentElement.insertBefore(slot, addAnchor);
+    alignButton();
+    if (typeof ResizeObserver === 'function') {
+      if (!sizeObserver) sizeObserver = new ResizeObserver(alignButton);
+      sizeObserver.disconnect();
+      sizeObserver.observe(addAnchor);
+      sizeObserver.observe(addAnchor.parentElement);
+    }
   }
   function schedule() {
     if (!mountTimer) mountTimer = setTimeout(mount, 300);
   }
-  function apply(flags) {
-    enabled = flags.xhsCartPaste !== false;
+  function syncMount() {
     if (!active()) generation++;
     if (observer) observer.disconnect();
     if (active()) {
@@ -414,8 +421,12 @@
     }
     mount();
   }
+  function apply(flags) {
+    enabled = flags.xhsCartPaste !== false;
+    syncMount();
+  }
   if (typeof dycReadFlags !== 'function' || typeof dycWatchFlags !== 'function') return;
   dycReadFlags().then(apply, function () { report('功能设置', '读取失败', false); });
   dycWatchFlags(apply);
-  window.addEventListener('dyc:pagechange', function () { if (!active()) generation++; mount(); });
+  window.addEventListener('dyc:pagechange', syncMount);
 })();
