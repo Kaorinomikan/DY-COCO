@@ -551,41 +551,47 @@
    * 所以整条文件名只允许 `_` 做分隔符 —— 以后加新的段也照此办，别再插空格。
    *
    * ★ 2026-10-19 用户明确取消账号名前缀：「取消帐号名前缀作为回放的自动生成的名字了」。
-   *   **默认不再自动识别账号名、不再拼前缀**（不传 user 就是纯日期名）。
+   *   下载流程只传平台前缀，继续沿用开播时间。
    *   userName() / 探针仍保留在文件里（诊断与将来可能的其它用途），
    *   但**任何自动命名路径都不要再去调它** —— 页面顶栏的昵称结构太不稳定，
    *   三个版本抓错过三次（「互动指标查看观众分析」「播前准备」「我的观众」），
    *   与其猜名字，不如让文件名保持可预测。
    *
    * @param {object} [when] 本场时间；不给就用当前时间
-   * @param {string} [user] 账号名；**不传 = 不加前缀**（传了才拼，且空格会转成 `_`）
+   * @param {'抖音'|'小红书'} [platform] 当前平台
    */
-  function fileNameFor(when, user) {
+  function fileNameFor(when, platform) {
     var w = when || (function () {
       var n = new Date();
       return { y: n.getFullYear(), m: n.getMonth() + 1, d: n.getDate(),
                hh: n.getHours(), mm: n.getMinutes() };
     })();
-    // 空格转下划线：昵称可能自带空格（「SECRET CIRCLE 高奢女装」），
-    // 而文件名一旦有空格就要额外转义，用户明确不要。仅用户显式传名时才会走到这里。
-    var u = user === undefined ? '' : cleanName(user).replace(/\s+/g, '_');
     var base = '直播回放_' + w.y + '.' + pad2(w.m) + '.' + pad2(w.d)
       + '_' + w.hh + '点' + pad2(w.mm) + '分';
-    return (u ? u + '_' : '') + base;
+    return (platform ? platform + '_' : '') + base;
   }
 
   /**
    * 本场时间：页面优先，读不到退今天。
    * @returns {{when:object, fromPage:boolean}}
    */
-  function sessionTime() {
-    var w = parseSessionTime(pageText());
+  function sessionTime(text) {
+    var w = parseSessionTime(text === undefined ? pageText() : text);
     if (w) return { when: w, fromPage: true };
     var n = new Date();
     return {
       when: { y: n.getFullYear(), m: n.getMonth() + 1, d: n.getDate(),
               hh: n.getHours(), mm: n.getMinutes() },
       fromPage: false
+    };
+  }
+
+  // 运营版顶栏：2026/11/18 14:36:43 开播时长 03:47:20
+  function xhsSession(text) {
+    var match = text.match(/(\d{4}\/\d{1,2}\/\d{1,2}\s+\d{1,2}:\d{2}:\d{2})\s*开播时长\s*[：:]?\s*(\d+):([0-5]\d):([0-5]\d)/);
+    return {
+      time: sessionTime(match ? '开播时间 ' + match[1] : ''),
+      duration: match ? +match[2] * 3600 + +match[3] * 60 + +match[4] : 0
     };
   }
 
@@ -616,6 +622,7 @@
 
   window.__DYC_REPLAY_META__ = {
     pageText: pageText,
+    xhsSession: xhsSession,
     parseSessionTime: parseSessionTime,
     parseSessionDuration: parseSessionDuration,
     userName: userName,

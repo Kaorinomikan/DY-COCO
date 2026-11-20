@@ -159,6 +159,19 @@
     '.pc-speed,.pc-eta{text-align:left;font-variant-numeric:tabular-nums;',
     '  font-feature-settings:"tnum";white-space:nowrap}',
     '.pc-eta{text-align:right}',
+    '.pc-limit{color:#9a5200;font-size:11px;margin:6px 0 0;white-space:normal}',
+    '.pc-retry{border-top:1px solid #e1e9f5;margin-top:8px;padding-top:7px;color:#192943}',
+    '.pc-retry[hidden],.pc-limit[hidden]{display:none}',
+    '.pc-retry label{display:flex;align-items:center;justify-content:space-between;gap:8px;cursor:pointer}',
+    '.pc-retry input{appearance:none;position:relative;width:30px;height:17px;margin:0;',
+    '  border:1px solid #65748c;border-radius:10px;background:#d5deec;cursor:pointer}',
+    '.pc-retry input::after{content:"";position:absolute;left:2px;top:2px;',
+    '  width:11px;height:11px;border-radius:50%;background:#fff}',
+    '.pc-retry input:checked{background:#087149;border-color:#087149}',
+    '.pc-retry input:checked::after{transform:translateX(13px)}',
+    '.pc-retry input:focus-visible{outline:2px solid #165dff;outline-offset:2px}',
+    '.pc-retry input:disabled{opacity:.55;cursor:default}',
+    '.pc-retry-note{color:#53647e;font-size:11px;margin:3px 0 0}',
     '.pc-ft{display:flex;gap:8px;margin-top:10px}',
     '.pc-hint{font:400 11px/1.5 inherit;color:#d6e5ff;margin-top:7px;overflow-wrap:anywhere}',
     '.pc-ft button{height:27px;padding:0 12px;border-radius:6px;border:1px solid rgba(255,255,255,.42);',
@@ -338,7 +351,8 @@
    *    父容器尺寸为 0 或 overflow:hidden，按钮会直接看不见 —— 这正是
    *    用户 2026-10-18 反馈「直播服务平台没有下载按钮」的根因之一。
    */
-  function mount() {
+  function mount(anchorSelector) {
+    ui.playerAnchor = anchorSelector || '';
     if (ui.host && document.contains(ui.host)) { positionHost(); return true; }
     // document_start 时 body 还没解析出来 —— 没有 body 就先不挂，
     // 由调用方的补挂定时器稍后再试。直接 appendChild 会抛 NotFoundError。
@@ -475,8 +489,8 @@
    * 算按钮坐标（纯函数，便于离线自测）。
    *
    * 【放在「播放器外面」的角上】—— 2026-10-18 用户拍定：
-   *   · 下载回放（回放页）→ **左上角**
-   *   · 跳转直播服务平台（大屏页）→ **右上角**
+   *   · 下载回放 → 播放器右侧
+   *   · 跳转直播服务平台 → 播放器右上角
    *   两者的共同点：不能压在画面上。所以按「外侧」优先，逐级退让。
    *
    * @param {{top:number,right:number,bottom:number,left:number}} vr 播放器矩形
@@ -557,11 +571,13 @@
       h: (ui.btn && ui.btn.offsetHeight) || 26
     };
     var vp = { w: window.innerWidth, h: window.innerHeight };
-    var v = findMainVideo();
+    var v = ui.playerAnchor ? document.querySelector(ui.playerAnchor) : findMainVideo();
     var pos = null;
 
     ui.host.style.display = '';
     if (v) pos = computeOuterPos(v.getBoundingClientRect(), vp, size, LINK_PAD, 'right');
+    // 小红书播放器右侧紧邻数据图表，向上让出趋势页签。
+    if (ui.playerAnchor && pos && pos.where === 'right') pos.top = Math.max(8, pos.top - size.h - LINK_PAD);
     // 找不到画面 / 画面滚出视口：退到视口兜底位，按钮必须一直能点
     if (!pos) pos = fallbackPos(size, 'right');
 
@@ -795,10 +811,12 @@
       el.style.left = '0px';
       el.style.right = 'auto';
     } else {
-      // 两边都放不下（窄窗）：贴左边并收窄，绝不溢出屏幕
-      el.style.left = '0px';
+      // 窄窗两边都放不下时，以视口边缘为基准收窄，避免跟随按钮左缘溢出。
+      var fit = Math.max(0, Math.min(w, vw - POP_GAP * 2));
+      var xFit = Math.max(POP_GAP, Math.min(r.left, vw - POP_GAP - fit));
+      el.style.left = (xFit - r.left) + 'px';
       el.style.right = 'auto';
-      el.style.maxWidth = Math.max(200, vw - POP_GAP * 2) + 'px';
+      el.style.maxWidth = fit + 'px';
     }
 
     // 纵向：先按「下方」试，放不下且上方够就翻上去
@@ -973,8 +991,8 @@
    * 下方放不下就翻上去，任何落点都不会出屏。
    */
   function ensureProgCard() {
-    if (ui.prog && document.contains(ui.prog)) return ui.prog;
     if (!ui.host || !ui.root) return null;
+    if (ui.prog && ui.root.contains(ui.prog)) return ui.prog;
     var pc = document.createElement('div');
     pc.className = 'pc';
     pc.hidden = true;
@@ -1069,6 +1087,10 @@
       +   '<div class="pc-tr"><div class="pc-fl"></div></div>'
       +   '<div class="pc-meta"><span class="l"></span><span class="r">'
       +     '<span class="pc-speed"></span><span class="pc-eta"></span></span></div>'
+      +   '<p class="pc-limit"' + (opts && opts.xhs ? '' : ' hidden') + '>小红书回放下载容易遇到限速。</p>'
+      +   '<div class="pc-retry"><label><span>自动重试</span><input type="checkbox" role="switch"'
+      +     (opts && opts.autoRetry ? ' checked' : '') + '></label>'
+      +     '<p class="pc-retry-note">断点续传，等待 60 秒起逐次加倍，最长 5 分钟。</p></div>'
       + '</div>'
       + '<div class="pc-ft">'
       +   '<button type="button" data-act="fold">收起</button>'
@@ -1094,6 +1116,9 @@
     pc.querySelector('[data-act="pause"]').onclick = function (ev) {
       ev.preventDefault(); ev.stopPropagation();
       if (ui.onPause) ui.onPause();
+    };
+    pc.querySelector('.pc-retry input').onchange = function (ev) {
+      if (ui.onAutoRetry) ui.onAutoRetry(ev.currentTarget.checked);
     };
     // 取消要二次确认（用户 2026-10-18 定）：误触一次就把已下的几百 MB 丢掉太疼。
     // 第一次点 ⇒ 变红 + 改文案为「再点一次取消」，ABORT_ARM_MS 内再点才真取消；
@@ -1178,14 +1203,19 @@
       }
       var pause = ui.prog.querySelector('[data-act="pause"]');
       if (pause && meta.recoverable != null) {
-        pause.hidden = !meta.recoverable;
+        pause.hidden = !meta.recoverable || meta.mode === 'cooldown';
         pause.disabled = meta.saving === true;
         pause.textContent = !meta.mode ? '暂停' : meta.mode === 'retry' ? '重试继续' : '继续';
       }
       var hint = ui.prog.querySelector('.pc-hint');
+      var auto = ui.prog.querySelector('.pc-retry input');
+      if (auto && meta.autoRetry != null) {
+        auto.checked = meta.autoRetry;
+        auto.disabled = meta.saving === true || !meta.recoverable;
+      }
       if (hint && meta.recoverable != null) {
         hint.hidden = !meta.recoverable;
-        hint.textContent = (meta.mode === 'retry' && meta.reason ? meta.reason + '；' : '')
+        hint.textContent = ((meta.mode === 'retry' || meta.mode === 'cooldown') && meta.reason ? meta.reason + '；' : '')
           + '仅在本页保留进度，刷新或关页将中断。';
       }
     } else if (meta != null) {
@@ -1197,7 +1227,8 @@
     if (ui.btn && ui.btn.classList && ui.btn.classList.contains('busy')) {
       var txt = ui.btn.querySelector('span');
       if (txt) txt.textContent = (meta && meta.mode ? meta.mode === 'paused' ? '已暂停 ' :
-        meta.mode === 'offline' ? '等待联网 ' : '等待重试 ' : '下载中 ') + pctNum + '%';
+        meta.mode === 'offline' ? '等待联网 ' : meta.mode === 'cooldown' ?
+          (meta.autoRetryPending ? '自动重试 ' : '冷却中 ') : '等待重试 ' : '下载中 ') + pctNum + '%';
     }
   }
 
@@ -1233,6 +1264,10 @@
     if (eta) eta.textContent = '';
     var hint = ui.prog.querySelector('.pc-hint');
     if (hint) hint.hidden = true;
+    var retry = ui.prog.querySelector('.pc-retry');
+    var limit = ui.prog.querySelector('.pc-limit');
+    if (retry) retry.hidden = true;
+    if (limit) limit.hidden = true;
 
     if (ft) {
       ft.innerHTML = '<button type="button" class="pri" data-act="close">关闭</button>';
@@ -1383,6 +1418,7 @@
     fmtDur: fmtDur,
     esc: esc,
     setAbortHandler: function (fn) { ui.onAbort = fn; },
-    setPauseHandler: function (fn) { ui.onPause = fn; }
+    setPauseHandler: function (fn) { ui.onPause = fn; },
+    setAutoRetryHandler: function (fn) { ui.onAutoRetry = fn; }
   };
 })();

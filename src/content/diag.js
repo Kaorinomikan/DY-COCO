@@ -227,11 +227,19 @@
 
   var lastHref = safe(function () { return location.href; }, '');
   if (!extPage) {
+    var lastPath = location.pathname;
     setInterval(function () {
       var h = safe(function () { return location.href; }, '');
       if (h && h !== lastHref) {
         lastHref = h;
         note('页面跳转', pageKind());
+        if (location.pathname !== lastPath) {
+          lastPath = location.pathname;
+          var pat = window.DYC_PAGE_PATTERNS;
+          if (pat && pat.xhsAll && pat.xhsAll.test(h)) {
+            window.dispatchEvent(new Event('dyc:pagechange'));
+          }
+        }
       }
     }, 1200);
   }
@@ -929,6 +937,7 @@
     xhsCtrl: '小红书中控台',
     xhsArkList: '小红书千帆商品列表',
     xhsArkReturn: '小红书千帆退货策略页',
+    xhsReplayPage: '小红书直播大屏运营版',
     xhsPgy: '蒲公英其他页',
     xhsArk: '小红书千帆其他页',
     xhsAll: '小红书其他页',

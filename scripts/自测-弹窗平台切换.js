@@ -158,6 +158,11 @@ check('白名单是逐行的：不给「其他」组的抖音专属功能带进�
     assert.equal(wxKeys.indexOf(key), -1, key + ' 不该出现在微信段');
   });
 });
+check('回放下载开关在抖音和小红书上都可用', () => {
+  assert.ok(visibleKeys('dy').includes('replayDownload'));
+  assert.ok(visibleKeys('xhs').includes('replayDownload'));
+  assert.ok(!visibleKeys('xhs').includes('servicePlatformJump'));
+});
 console.log('\n【二·六】回放续传：从菜单隐藏 + 恒定开启（2026-11-17 用户定）');
 /* 用户原话:「这个菜单按钮从菜单隐藏，功能不要删」，随后补一句
    「隐藏就是强制打开。不然怎么用。」

@@ -145,7 +145,8 @@
     return go('include').catch(function (err) {
       // AbortError 不是凭据问题，原样抛出，别浪费一次重试
       if (err && err.name === 'AbortError') throw err;
-      return go('omit').catch(function () {
+      return go('omit').catch(function (err) {
+        if (err && err.name === 'AbortError') throw err;
         // 两次都失败：给一句能指导用户的话，而不是裸 TypeError: Failed to fetch
         throw new Error('取不到媒体数据（' + url.slice(0, 80) + '…）：可能是跨域被拦或地址已过期。'
           + '请刷新页面后重试；若一直失败，请把这条提示发给我。');
@@ -161,6 +162,17 @@
     return fetchBuf(url, opts || { timeoutMs: 6000 }).then(function (buf) {
       return new TextDecoder('utf-8').decode(buf);
     });
+  }
+
+  function responseError(response) {
+    var error = new Error('HTTP ' + response.status);
+    error.status = response.status;
+    var retryAfter = response.headers && response.headers.get('retry-after');
+    if (retryAfter) {
+      var delay = /^\d+$/.test(retryAfter) ? Number(retryAfter) * 1000 : Date.parse(retryAfter) - Date.now();
+      if (isFinite(delay) && delay > 0) error.retryAfterMs = delay;
+    }
+    return error;
   }
 
   /**
@@ -201,9 +213,7 @@
       if (!r.ok && r.status !== 206) {
         // 把状态码挂到错误上：上层靠它区分「限流（429/503/509）」与「鉴权/地址过期（403）」,
         // 前者该降并发、后者该直接报错，只看 message 字符串太脆。
-        var e = new Error('HTTP ' + r.status);
-        e.status = r.status;
-        throw e;
+        throw responseError(r);
       }
       if (opts.onResponse) opts.onResponse(r);
       if (opts.method === 'HEAD') return new Uint8Array(0);
@@ -304,7 +314,7 @@
     if (offset) init.headers = { Range: 'bytes=' + offset + '-', 'If-Range': source.validator };
     return request(url, init).then(function (r) {
       reader = r.body && typeof r.body.getReader === 'function' ? r.body.getReader() : null;
-      if (!r.ok) { var err = new Error('HTTP ' + r.status); err.status = r.status; throw err; }
+      if (!r.ok) throw responseError(r);
       var length = parseInt(r.headers.get('content-length') || '0', 10) || 0;
       var etag = r.headers.get('etag');
       var validator = etag && !/^W\//i.test(etag) ? etag : r.headers.get('last-modified');

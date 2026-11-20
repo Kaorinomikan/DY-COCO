@@ -76,5 +76,19 @@ function command(type) {
     .map((m) => JSON.parse(JSON.stringify(m.data.business)));
   assert.deepEqual(pgyBusiness, [{ type: 'live', goodsCount: 1, goodsType: 4, success: true, code: null }]);
   assert.doesNotMatch(JSON.stringify(clipboard), /private-|0123456789abcdef01234567/);
-  console.log('小红书接口取样：手动开窗、业务参数、字段映射和脱敏通过');
+  location.pathname = '/commerce/redlive/live_screen/operation';
+  await window.fetch(url, { method: 'POST', body });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(clipboard.slice(before).filter((m) => m.type === 'record').length, 1,
+    '从中控台切到直播大屏后，已开启的取样窗口也不能继续记录');
+  const screenStart = clipboard.length;
+  command('arm');
+  await window.fetch(base + '/live/center/goods/add', { method: 'POST', body });
+  await new Promise((r) => setImmediate(r));
+  const screenRecords = clipboard.slice(screenStart).filter((m) => m.type === 'record');
+  assert.equal(screenRecords.length, 1, '直播大屏应能单独开启接口取样');
+  assert.equal(screenRecords[0].data.business, undefined, '中控台专用业务参数不进入大屏报告');
+  assert.deepEqual(JSON.parse(screenRecords[0].data.reqBody), { productId: 'string', token: 'string' });
+  assert.doesNotMatch(JSON.stringify(screenRecords), /private-/);
+  console.log('小红书接口取样：手动开窗、业务参数、脱敏与跨页面覆盖通过');
 })().catch((e) => { console.error(e); process.exitCode = 1; });

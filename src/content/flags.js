@@ -45,7 +45,7 @@
  *   （格式：版本+r序号，序号 = 本版本的第几轮内容脚本改动）。
  *   自测 scripts/自测-素材页商品名与货号.js 会断言它存在且格式正确。
  * ========================================================== */
-var DYC_BUILD_TAG = '26.11.18.1+r9';
+var DYC_BUILD_TAG = '26.11.21.1+r1';
 try { window.__DYC_BUILD__ = DYC_BUILD_TAG; } catch (e) { /* 非 window 环境忽略 */ }
 
 /* ==========================================================
@@ -253,7 +253,7 @@ var DYC_PAGE_PATTERNS = {
    * 我给你页面结构」⇒ 结构到手前不写业务选择器。
    *
  * 六个键的层级与抖店那套对称：
- *   xhsCtrl    ↔ liveCtrl  直播中控台（pgy /commerce/redlive/ + ark /live_center_control）
+ *   xhsCtrl    ↔ liveCtrl  直播中控台（pgy /commerce/redlive/live_center_control + ark /live_center_control）
  *   xhsArkList ↔ list      千帆商品列表（ark /app-item/list/shelf 等）
  *   xhsArkReturn ↔ 无      千帆多地址退货策略（ark /app-order/logistics/multiaddress/）
    *   xhsPgy     ↔ shopAll   蒲公英整域（直播中控台所在的商业化后台）
@@ -261,7 +261,7 @@ var DYC_PAGE_PATTERNS = {
    *   xhsAll     ↔ wxAll     整域兜底（平台识别与将来主页功能）
    *
  * 两个子域是**两套后台**（用户 2026-11-17 分别给了两条地址，都要）：
- *   pgy.xiaohongshu.com —— 达人/买手侧后台（直播中控台 /commerce/redlive/）
+ *   pgy.xiaohongshu.com —— 达人/买手侧后台
  *   ark.xiaohongshu.com —— 千帆商家后台（店播一体号中控台 /live_center_control）
    *
    * ⚠️ 顺序 = pageKind() 的判定顺序（先匹配先返回）：
@@ -278,9 +278,9 @@ var DYC_PAGE_PATTERNS = {
    *   ark /live_center_control                   店播一体号侧
    * 依据：ark 结构报告里 div.control-container 1409×826 / overflowY:scroll，
    * 与 xhs-scroll.js 记录的 pgy 滚动链一致 ⇒ 卡片与滚动结构共用。
-   * ark 段尾部写 (?:\/|[?#]|$) 而非裸前缀：ark 是整域注入，别的路径不许误吃。 */
+   * 路径段有边界，运营大屏等同级页面不启用中控台功能。 */
   xhsCtrl:
-    /^https:\/\/(?:pgy\.xiaohongshu\.com\/commerce\/redlive\/|ark\.xiaohongshu\.com\/live_center_control(?:\/|[?#]|$))/,
+    /^https:\/\/(?:pgy\.xiaohongshu\.com\/commerce\/redlive|ark\.xiaohongshu\.com)\/live_center_control(?:\/|[?#]|$)/,
   xhsArkList:
     /^https:\/\/ark\.xiaohongshu\.com\/app-item\/list\//,
   /* 千帆多地址退货策略（2026-11-17 夜）。用户给的地址：
@@ -290,6 +290,8 @@ var DYC_PAGE_PATTERNS = {
    * 不复用 xhsArkList 的作用域 —— 否则两个页面的开关会互相牵连。 */
   xhsArkReturn:
     /^https:\/\/ark\.xiaohongshu\.com\/app-order\/logistics\/multiaddress\//,
+  xhsReplayPage:
+    /^https:\/\/pgy\.xiaohongshu\.com\/commerce\/redlive\/live_screen\/operation\/?(?:[?#]|$)/,
   xhsPgy:
     /^https:\/\/pgy\.xiaohongshu\.com\//,
   xhsArk:
@@ -307,15 +309,15 @@ var DYC_FLAG_GROUPS = [
   { id: 'live', title: '中控台', theme: 'blue' },
   { id: 'shop', title: '抖店', theme: 'amber' },
   { id: 'wx', title: '微信小店', theme: 'green' },
-  { id: 'other', title: '其他', theme: 'violet' },
-  { id: 'shared', title: '通用', theme: 'slate' },
   // 小红书直播中控台（2026-11-17 第一批功能落地）。排在千帆之前：
   // 用户的中控台是当前主战场，展开小红书平台时它排第一。
   { id: 'xhsLive', title: '小红书中控台', theme: 'rose' },
   // 小红书千帆（ark 商品/店铺后台）。2026-11-17 晚落第一个业务功能
   // （商品名完整显示）⇒ 按当初约定「千帆将来真落功能时再随功能一并加回分组」
   // 把这张卡加回来；主页（xhsHome）仍无功能，保持删除状态。
-  { id: 'xhsShop', title: '小红书千帆', theme: 'teal' }
+  { id: 'xhsShop', title: '小红书千帆', theme: 'teal' },
+  { id: 'other', title: '其他', theme: 'violet' },
+  { id: 'shared', title: '通用', theme: 'slate' }
 ];
 
 /* ==========================================================
@@ -749,12 +751,11 @@ var DYC_FLAGS_META = [
     /* 直播回放下载（2026-10-18 用户定，方案 v2 定稿）。
      *
      * 作用页只有一处：直播服务平台 · 直播复盘  anchor.douyin.com/anchor/review
-     * （原先还想在大屏页也做下载，用户 2026-10-18 改口径：**大屏不做下载**，
-     *   大屏只放一枚「跳转直播服务平台」，下载统一回服务平台做。见下一个开关。）
+     * 抖音大屏保留跳转入口。小红书运营版大屏在「流量」页直接下载已结束场次。
      *
      * 做什么：视频右上角一枚「下载回放」，点开先出确认卡（场次/时长/体积/
      *   清晰度/文件名），确认后把**整场**合成**一个 MP4**，文件名按开播时间
-     *   命名成「直播回放_2026.10.18_20点13分」（各段用 _ 连，不留空格）。
+     *   命名成「抖音_直播回放_2026.10.18_20点13分」或「小红书_直播回放_…」。
      *
      * 为什么默认**开**：这一页是用户主动进入的专用复盘页，
      *   功能也不会自动跑（必须点按钮才动），不存在「误触发」的可能。
@@ -768,10 +769,11 @@ var DYC_FLAGS_META = [
     key: 'replayDownload',
     group: 'other',
     label: '直播回放下载',
-    desc: '在直播复盘页下载整场 MP4 回放。',
-    note: '仅限有权观看的场次，不去水印。',
+    desc: '下载抖音直播复盘或小红书运营版大屏的回放。',
+    note: '小红书请在已结束场次的流量页下载。',
     default: true,
-    pages: ['replayPage']
+    pages: ['replayPage', 'xhsReplayPage'],
+    platforms: ['dy', 'xhs']
   },
   {
     key: 'servicePlatformJump',
@@ -1117,7 +1119,7 @@ var DYC_FLAGS_META = [
     desc: '回放下载支持暂停、继续和断网恢复。',
     note: '需保持页面打开；直链续传取决于服务器支持。',
     default: true,
-    pages: ['replayPage']
+    pages: ['replayPage', 'xhsReplayPage']
   },
   /* ── 抖店 · 多地址退货页(2026-11-17 新增,计划 #139)───────────────────
    * 用户原话(待办 #139):「『多退货地址』页支持完整商品名 + 货号复制」。
@@ -1158,9 +1160,7 @@ var DYC_FLAGS_META = [
    *   但两边卡片结构与滚动链完全不同，共用一个键会让「抖音关掉、小红书也关」
    *   这种事说都说不清。
    *
-   * 作用页 pages 全部填 xhsCtrl（pgy /commerce/redlive/）：
-   *   千帆（ark）不注入这两个脚本，填了也不会生效，留着只会让
-   *   弹窗的「已应用到 N 个页面」多算两页。
+   * 作用页 pages 全部填 xhsCtrl，适用于蒲公英和千帆的中控台。
    *
    * 折叠组 host = xhsScroll，与抖店 scroll 分开：同名 host 会让两个平台的
    *   折叠态互相串（展开抖音那组，小红书这组跟着展开）。
@@ -1981,7 +1981,7 @@ function dycWatchOmniMode(cb) {
  * ========================================================== */
 
 /** 调试开关的本地镜像(storage 是异步的,同步判定需要一个镜像值) */
-var DYC_DEBUG_ON = false;
+var DYC_DEBUG_ON = !!DYC_DEBUG_ON; // 回放页再次加载开关定义时保留调试状态。
 
 try {
   // 防重复注入守卫（2026-11-01 体检 P1）：本文件其余部分全是幂等的

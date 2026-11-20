@@ -1,7 +1,7 @@
 /**
  * 直播回放下载 · 主流程
  * ============================================================
- * 【只有一页：直播服务平台 · 直播复盘 anchor.douyin.com/anchor/review】
+ * 抖音直播复盘与小红书运营版直播大屏共用的回放下载流程。
  *   原先还打算在电商罗盘直播大屏专业版也做下载，用户 2026-10-18 改了口径：
  *   **大屏不做下载**，只在播放器下方放一枚「跳转直播服务平台」。
  *   那一枚按钮由 replay-link.js 负责，不加载本文件（省掉 400KB 转封装库）。
@@ -9,7 +9,7 @@
  * 【用户定的三条硬要求（2026-10-18）】
  *   ① 视频右上角一枚「下载回放」按钮；
  *   ② **整场一个文件**，不要一段一段；
- *   ③ 文件名 = 直播回放 + 当天时间，格式 `直播回放_2026.10.18_20点13分`（不留空格，用 _ 连）；
+ *   ③ 文件名含平台和开播时间，例如 `抖音_直播回放_2026.10.18_20点13分`；
  *   ④ 点击后**先出确认卡**（场次 / 时长 / 体积 / 清晰度 / 文件名），确认再下。
  *
  * 【「整场」到底靠什么保证 —— 这是本文件的核心，改动前务必读懂】
@@ -66,6 +66,9 @@
   var BUFFER_BYTES = 32 * 1024 * 1024; // 收包缓存预算；当前顺序片必须能继续，避免互等
   var BUFFER_RESERVE = 2 * 1024 * 1024; // 首片大小未知时的请求预留量
   var PREP_MS = 6000;           // 所有候选共享的准备时限
+  var RETRY_BASE_MS = 60000;    // 自动重试的首次等待（用户 2026-11-21 反馈 30 秒太密）
+  var RETRY_MAX_MS = 300000;    // 连续失败的等待上限，避免无限翻倍
+  var CONC_PROBE_MS = 20000;    // 小红书重试恢复后的单路探活时长，期内不升档
   var SEG_RETRY = 3;            // 单片最多重试次数
   var SEG_IDLE_MS = 12000;      // 单片连续无数据才超时，持续收包的大分片不会被打断
   var CONC_SAMPLE_MS = 4000;    // 用真实吞吐量评估升档效果
@@ -95,6 +98,7 @@
   var flags = {};
   var state = {
     running: false,
+    reading: false,
     control: null,
     aborted: false,
     session: null,            // 已解析好的下载计划（点过一次就复用，避免重复拉清单）
@@ -122,6 +126,8 @@
     var h = location.hostname;
     // href 优先；个别环境（离线自测桩 / 受限上下文）拿不到 href 就退回 pathname
     var href = location.href || location.pathname || '';
+    var patterns = window.DYC_PAGE_PATTERNS;
+    if (patterns && patterns.xhsReplayPage && patterns.xhsReplayPage.test(href)) return 'xhs';
     if (h === 'anchor.douyin.com') {
       if (/\/anchor\/review/i.test(href)) return 'anchor';
       return '';
@@ -133,8 +139,25 @@
     return '';
   }
 
+  var XHS_PLAYER = '.video-area';
+
+  function xhsSessionHeader() {
+    var area = document.querySelector(XHS_PLAYER);
+    var info = document.querySelector('.live-databoard-menu .live-info');
+    if (!area || !area.getClientRects().length || !info) return '';
+    var text = info.textContent.trim();
+    return /^已结束/.test(text) ? text : '';
+  }
+
+  function xhsRoomId() {
+    var id = new URL(location.href).searchParams.get('roomId');
+    return /^\d+$/.test(id || '') ? id : '';
+  }
+
   function enabled() {
-    return !!pageKind() && flags.replayDownload !== false;
+    if (flags.replayDownload === false) return false;
+    var kind = pageKind();
+    return kind === 'xhs' ? !!(xhsRoomId() && xhsSessionHeader()) : !!kind;
   }
 
   /* ==========================================================
@@ -142,23 +165,10 @@
    *
    * 这三件事全部委托 replay-meta.js —— 它们都是「从页面文本抠字」，
    * 错一个字就全错（文件名错、整场基准错），所以单独一个文件配逐条自测。
-   * 这里只保留两个薄封装：把 META 的接口对齐本文件原有的调用名。
+   * 下载流程从当前页面类型补上文件名的平台前缀。
    * ========================================================== */
 
   function readSessionDuration() { return META.sessionDuration(); }
-
-  /**
-   * 默认文件名：`直播回放_2026.10.18_20点13分`（可带扩展名，见 ext）
-   *
-   * ★ 2026-10-19 用户取消账号名前缀：「取消帐号名前缀作为回放的自动生成的名字了」。
-   *   这里是唯一的命名入口 —— **第二个参数固定传 ''，不要再接 userName()**。
-   *   页面顶栏的昵称结构不稳，抓错过三次（「互动指标查看观众分析」/「播前准备」/
-   *   「我的观众」），与其猜，不如让文件名保持可预测。确认卡里可以自己改名。
-   *   整条名字不含空格，各段用 `_` 连（用户 2026-10-18 要求）。
-   */
-  function baseFileName() {
-    return META.fileNameFor(META.sessionTime().when, '');
-  }
 
   function pad2(n) { return META.pad2(n); }
 
@@ -208,7 +218,7 @@
 
   /**
    * 评估一条候选：拉清单、算总时长、抓档位信息。
-   * 失败一律返回 null（不抛），由上层过滤 —— 候选里混着统计接口是常态。
+   * 空清单返回 null，请求异常保留给上层诊断。
    */
   function evaluate(cand, signal) {
     if (cand.kind === 'mp4') {
@@ -247,7 +257,7 @@
         videoCodec: v ? (v.video ? 'video' : 'audio') : '',
         bytes: 0
       };
-    }).catch(function () { return null; });
+    }).catch(function (err) { return { readError: err }; });
   }
 
   /** 取 picked 对应的档位（找不到就取最高档） */
@@ -298,7 +308,11 @@
   function pickBest(cands) {
     if (!cands.length) return Promise.resolve({ best: null, ranked: [], unsupported: '' });
     var ctl = typeof AbortController === 'function' ? new AbortController() : null;
-    var deadline = ctl ? setTimeout(function () { ctl.abort(); }, PREP_MS) : 0;
+    var timedOut = false;
+    var deadline = ctl ? setTimeout(function () {
+      timedOut = true;
+      ctl.abort();
+    }, PREP_MS) : 0;
     return Promise.all(cands.map(function (c) {
       return evaluate(c, ctl ? ctl.signal : undefined).then(function (r) {
         if (r) r.firstSeen = c.t;
@@ -317,7 +331,9 @@
 
       if (!ok.length) {
         var only = direct.length ? direct[0] : null;
-        return { best: only, ranked: only ? [only] : [], unsupported: reason };
+        var failed = rs.find(function (r) { return r && r.readError; });
+        return { best: only, ranked: only ? [only] : [], unsupported: reason,
+                 readError: failed && failed.readError, timedOut: timedOut };
       }
 
       /* 排序口径（2026-10-18 改）：**先保画面，再保清晰度，最后才看时长**。
@@ -513,8 +529,9 @@
     }
     var picks = [];
     var n = segs.length;
-    var step = Math.max(1, Math.floor(n / 6));
-    for (var i = 0; i < n && picks.length < 6; i += step) picks.push(segs[i]);
+    var sampleCount = plan.xhs ? 1 : 6;
+    var step = Math.max(1, Math.floor(n / sampleCount));
+    for (var i = 0; i < n && picks.length < sampleCount; i += step) picks.push(segs[i]);
     if (!picks.length) return Promise.resolve(0);
 
     return Promise.all(picks.map(function (s) {
@@ -541,8 +558,16 @@
    * 组装下载计划：候选评估 + 覆盖率校验 + 体积估算。
    * @returns {Promise<{plan, coverage, expected, bytes, blocked, warn}>}
    */
-  function buildSession() {
+  function buildSession(xhs) {
     var cands = NET.media();
+    if (xhs) {
+      // 播放器请求的清单以当前场次的 roomId 和下划线开头。
+      cands = cands.filter(function (c) {
+        if (c.kind !== 'hls') return false;
+        var filename = new URL(c.url).pathname.split('/').pop();
+        return filename.indexOf(xhs.roomId + '_') === 0 && /\.m3u8$/i.test(filename);
+      });
+    }
     dlog('嗅到媒体候选 ' + cands.length + ' 条');
     if (!cands.length) {
       // noMedia 是给上层看的标记：这类失败可以靠「替用户播一下」自愈，
@@ -558,10 +583,13 @@
       if (!picked.ranked || !picked.ranked.length) {
         // 有「加密方式不支持」这种具体原因时优先给具体原因 —— 笼统的
         // 「读不出来」会让人反复重试一个永远不成功的操作。
+        var readFailure = xhs && !picked.unsupported && xhsPlaylistFailure(picked);
+        if (readFailure) dlog('清单读取失败 · ' + readFailure);
         return {
           plan: null,
-          reason: picked.unsupported || '清单读不出来，刷新页面再试',
-          detail: picked.unsupported
+          retryable: !!readFailure,
+          reason: picked.unsupported || (readFailure && clip(readFailure, 22)) || '清单读不出来，刷新页面再试',
+          detail: picked.unsupported || readFailure
             || '检测到媒体地址，但清单读不出来（可能已过期或格式不受支持）。请刷新页面后再试。'
         };
       }
@@ -570,7 +598,7 @@
       return choosePlayable(picked.ranked).then(function (ch) {
         // 把「比了哪些、选了哪条」写进诊断报告 —— 出问题时这是唯一能复盘的依据
         picked.ranked.slice(0, 5).forEach(function (p) {
-          dlog('候选 ' + shortUrl(p.url)
+          dlog('候选 ' + (xhs ? '小红书清单' : shortUrl(p.url))
             + ' · ' + (p.audioOnly ? '疑似纯音频' : '视频')
             + ' · ' + (p.total ? Math.round(p.total) + 's' : '时长未知')
             + (p.height ? ' · ' + p.height + 'P' : '')
@@ -582,12 +610,13 @@
           return { plan: null, reason: ch.reason, detail: ch.detail || '' };
         }
         var plan = ch.plan;
-        dlog('选定流 ' + shortUrl(plan.url) + ' · ' + (plan.quality || '默认')
+        if (xhs) plan.xhs = true;
+        dlog('选定流 ' + (xhs ? '小红书清单' : shortUrl(plan.url)) + ' · ' + (plan.quality || '默认')
           + (plan.passthrough ? ' · TS 原样直通 → ' + (plan.ext || '.ts') : '')
           + (plan.tracks ? ' · 轨道 ' + trackText(plan.tracks) : ' · 轨道未探到（不拦）'));
 
         // sessionDuration 内部已含「读不到就退播放器 duration」的兜底
-        var expected = readSessionDuration() || 0;
+        var expected = xhs ? xhs.duration : readSessionDuration() || 0;
         var coverage = 1;
         var warn = '';
         var blocked = false;
@@ -626,6 +655,18 @@
         });
       });
     });
+  }
+
+  function xhsPlaylistFailure(picked) {
+    var err = picked.readError;
+    if (picked.timedOut || (err && err.name === 'TimeoutError')) return '读取回放清单超时，请稍后重试。';
+    if (!err) return '';
+    if (err.status === 429) return '回放清单请求过多（HTTP 429），请稍后重试。';
+    if (err.status === 401 || err.status === 403 || err.status === 404) {
+      return '服务器拒绝或找不到回放清单（HTTP ' + err.status + '），请刷新页面再试。';
+    }
+    if (Number.isInteger(err.status)) return '回放清单请求失败（HTTP ' + err.status + '），请稍后重试。';
+    return '无法连接回放服务器，请检查网络后重试。';
   }
 
   /* ==========================================================
@@ -704,8 +745,9 @@
 
     return networkTask(ctl, function (signal) {
       if (signal) opts.signal = signal;
-      return NET.fetchBuf(seg.url, opts);
-    }, flow && flow.reset, flow && flow.onRateLimited).then(function (buf) {
+      function fetchNow() { return NET.fetchBuf(seg.url, opts); }
+      return flow && flow.requestSlot ? flow.requestSlot(signal, fetchNow) : fetchNow();
+    }, flow && flow.reset, flow && flow.onRateLimited, flow && flow.label).then(function (buf) {
       if (!plan.key || plan.key.method !== 'AES-128') return buf;
       return getKey(plan.key.url, ctl).then(function (k) {
         var iv = plan.key.iv ? hexToBytes(plan.key.iv) : ivFromSeq(seg.seq);
@@ -722,8 +764,59 @@
   function createRecovery(ctl, changed) {
     var pending = [];
     var requests = new AbortController();
+    var retryTimer = 0;
+    var serverUntil = 0;
+    var canAutoRetry = false;
+    var fails = 0;               // 连续「重试后仍未取到任何分片」的次数，有片成功即归零
+
+    function isOffline() { return window.navigator && window.navigator.onLine === false; }
+
+    /**
+     * 自动重试的等待时长：60 秒起步，每连续失败一轮翻倍，封顶 5 分钟。
+     *
+     * 用户 2026-11-21 反馈：小红书被掐断后固定 30 秒重试，连着好几分钟
+     * 一次都没续上。平台侧是「短时封禁」，越敲越久；旧版 90 秒冷却反而更容易
+     * 恢复。所以既不能太密，也不能一上来就等 5 分钟 —— 用翻倍把两头都照顾到。
+     */
+    function autoDelay() {
+      var n = fails > 0 ? fails - 1 : 0;
+      return Math.min(RETRY_MAX_MS, RETRY_BASE_MS * Math.pow(2, Math.min(n, 4)));
+    }
+
+    function clearRetryTimer() {
+      clearTimeout(retryTimer);
+      retryTimer = 0;
+      recovery.retryAt = 0;
+    }
+
+    function scheduleRetry() {
+      clearRetryTimer();
+      var auto = recovery.enabled() && recovery.autoRetry && canAutoRetry;
+      recovery.autoRetryPending = auto;
+      var now = Date.now();
+      var retryAt = Math.max(serverUntil, auto ? now + autoDelay() : 0);
+      recovery.mode = retryAt > now ? 'cooldown' : isOffline() ? 'offline' : 'retry';
+      if (recovery.mode === 'cooldown') {
+        recovery.retryAt = retryAt;
+        retryTimer = setTimeout(afterRetryWait, Math.min(retryAt - now, 2147483647));
+      }
+      changed();
+    }
+
+    function afterRetryWait() {
+      var remaining = recovery.retryAt - Date.now();
+      if (remaining > 0) {
+        retryTimer = setTimeout(afterRetryWait, Math.min(remaining, 2147483647));
+        return;
+      }
+      clearRetryTimer();
+      if (recovery.enabled() && recovery.autoRetry && canAutoRetry && !isOffline()) recovery.resume();
+      else scheduleRetry();
+    }
+
     var recovery = {
-      mode: '', reason: '',
+      mode: '', reason: '', retryAt: 0, autoRetry: false, xhs: ctl.xhs,
+      attempts: 0,               // 第几次自动重试（只用于卡片显示，不设上限）
       refresh: changed,
       enabled: function () { return flags.replayResume !== false; },
       signal: function () { return requests.signal; },
@@ -732,27 +825,55 @@
         if (!recovery.mode) return Promise.resolve();
         return new Promise(function (resolve, reject) { pending.push({ resolve: resolve, reject: reject }); });
       },
-      pause: function (mode, err) {
-        if (ctl.aborted || ctl.failed || !recovery.enabled()) return;
-        // 手动暂停不被浏览器网络事件或其他并发请求的错误覆盖。
-        if (recovery.mode === 'paused' || (recovery.mode && mode !== 'paused' &&
-            !(mode === 'offline' && recovery.mode === 'retry'))) return;
-        recovery.mode = mode;
-        recovery.reason = err && err.message || '';
+      setAutoRetry: function (on) {
+        if (recovery.autoRetry === on) return;
+        recovery.autoRetry = on;
+        if (recovery.mode && recovery.mode !== 'paused') scheduleRetry();
+        else changed();
+      },
+      pause: function () {
+        if (ctl.aborted || ctl.failed || !recovery.enabled() || recovery.mode) return;
+        recovery.mode = 'paused';
         requests.abort();
         changed();
       },
-      resume: function () {
-        if (ctl.aborted || ctl.failed) return;
-        if (recovery.enabled() && window.navigator && window.navigator.onLine === false) {
-          recovery.mode = 'offline'; changed(); return;
+      fail: function (reason, retryable, delay) {
+        if (ctl.aborted || ctl.failed || !recovery.enabled() || recovery.mode) return;
+        recovery.reason = reason;
+        canAutoRetry = retryable;
+        if (retryable) { fails++; recovery.attempts = fails; }
+        serverUntil = Date.now() + (delay || 0);
+        scheduleRetry();
+        requests.abort();
+      },
+      /** 有分片真正取回来 = 封禁已解除，后续再断从头计时，不继承长等待 */
+      noteOk: function () { if (fails) { fails = 0; recovery.attempts = 0; } },
+      /** @param {boolean} [manual] 用户点「重试继续 / 继续」时传入，重置递增等待 */
+      resume: function (manual) {
+        if (ctl.aborted || ctl.failed || (retryTimer && recovery.enabled())) return;
+        var wasFailure = !!recovery.mode && recovery.mode !== 'paused';
+        clearRetryTimer();
+        if (manual) { fails = 0; recovery.attempts = 0; }
+        if (recovery.enabled() && isOffline()) {
+          recovery.reason = '当前网络已断开';
+          canAutoRetry = true;
+          scheduleRetry();
+          return;
         }
+        serverUntil = 0;
+        canAutoRetry = false;
         if (requests.signal.aborted) requests = new AbortController();
         recovery.mode = ''; recovery.reason = '';
+        // 因故障恢复（而非用户暂停后继续）时，先把并发压回单路探活：
+        // 封禁刚解除就一次补满，等于把刚恢复的窗口再撞回去。
+        if (wasFailure && typeof ctl.onResume === 'function') {
+          try { ctl.onResume(); } catch (e) { /* 探活失败不该拦住恢复 */ }
+        }
         pending.splice(0).forEach(function (p) { p.resolve(); });
         changed();
       },
       dispose: function () {
+        clearRetryTimer();
         requests.abort();
         pending.splice(0).forEach(function (p) { p.reject(new Error('已取消')); });
         if (window.removeEventListener) {
@@ -762,8 +883,17 @@
         if (ctl.abortCtl) ctl.abortCtl.signal.removeEventListener('abort', cancel);
       }
     };
-    function offline() { recovery.pause('offline'); }
-    function online() { if (recovery.mode === 'offline') recovery.resume(); }
+    function offline() {
+      if (recovery.mode === 'retry') {
+        recovery.mode = 'offline';
+        changed();
+      } else {
+        recovery.fail('当前网络已断开', true);
+      }
+    }
+    function online() {
+      if (recovery.mode === 'offline') scheduleRetry();
+    }
     function cancel() { recovery.dispose(); }
     if (window.addEventListener) {
       window.addEventListener('offline', offline);
@@ -773,31 +903,37 @@
     return recovery;
   }
 
-  function networkTask(ctl, job, reset, limited) {
+  function networkTask(ctl, job, reset, limited, label) {
     var recovery = ctl && ctl.recovery;
     if (!recovery) return job(ctl && ctl.abortCtl && ctl.abortCtl.signal);
-    var attempt = 0;
     function go() {
       return recovery.wait().then(function () {
         if (ctl.aborted || ctl.failed) throw new Error('已取消');
         if (recovery.enabled() && window.navigator && window.navigator.onLine === false) {
-          recovery.pause('offline'); return go();
+          recovery.fail('当前网络已断开', true); return go();
         }
         return job(recovery.signal()).catch(function (err) {
           if (reset) reset();
-          if (ctl.aborted || ctl.failed || err.resumeUnsafe) throw err;
-          if (recovery.mode) { attempt = 0; return go(); }
+          if (ctl.aborted || ctl.failed || (err && err.resumeUnsafe)) throw err;
+          if (recovery.mode) return go();
           if (!recovery.enabled()) throw err;
           if (window.navigator && window.navigator.onLine === false) {
-            recovery.pause('offline'); attempt = 0; return go();
+            recovery.fail('当前网络已断开', true); return go();
           }
           var st = err && err.status;
-          if (limited && (st === 429 || st === 503 || st === 509)) limited();
-          if (attempt >= SEG_RETRY || st === 401 || st === 403 || st === 404) {
-            recovery.pause('retry', err); attempt = 0; return go();
-          }
-          attempt++;
-          return sleep(250 * attempt * attempt, ctl.abortCtl && ctl.abortCtl.signal).then(go);
+          var serviceBusy = st === 429 || st === 503 || st === 509;
+          var temporary = !st || st === 408 || st === 429 || (st >= 500 && st <= 599);
+          if (limited && (serviceBusy || (ctl.xhs && temporary))) limited();
+          var delay = Math.max(st === 429 ? RETRY_BASE_MS : 0, (err && err.retryAfterMs) || 0);
+          var reason = st ? '分片请求失败（HTTP ' + st + '）' : '网络连接中断或超时';
+          // 取证用（2026-11-21）：真机只留「网络中断或超时」一句，分不清是
+          // 断连、超时还是 4xx/5xx。写进调试面板即会进诊断报告的「操作轨迹」。
+          // 消息里的地址用全角括号包裹，先摘掉，避免把带签名的 URL 抄进报告。
+          dlog((label ? '分片 ' + label + ' ' : '') + '请求失败 · ' + ((err && err.name) || 'Error')
+            + (st ? ' · HTTP ' + st : '')
+            + (err && err.message ? ' · ' + clip(String(err.message).replace(/（[^）]*）/g, ''), 40) : ''));
+          recovery.fail(reason, temporary, delay);
+          return go();
         });
       });
     }
@@ -820,6 +956,7 @@
    */
   function runDownload(plan, fileName, _estBytes) {
     var ctl = { aborted: false, abortCtl: (typeof AbortController === 'function') ? new AbortController() : null, stalled: false };
+    ctl.xhs = plan.xhs === true;
     state.aborted = false;
     state.running = true;
 
@@ -832,7 +969,7 @@
       if (ctl.abortCtl) { try { ctl.abortCtl.abort(); } catch (e) {} }
     });
     UI.setBtn('busy', '下载中');
-    UI.showProgress(fileName + ext);
+    UI.showProgress(fileName + ext, { xhs: ctl.xhs });
 
     // ---- 防误点守护 + 「正在下载」标记 ----
     // dlName 在按钮壳被平台拆掉重建时（attach）用来静默恢复进度卡；
@@ -863,14 +1000,18 @@
       ctl.recovery = createRecovery(ctl, function () {
         stallLast = Date.now();
         samples = [{ t: stallLast, b: networkBytes }]; lastSpeed = 0;
-        dlog('下载恢复状态：' + (ctl.recovery.mode || '继续下载'));
+        dlog('下载恢复状态：' + (ctl.recovery.mode || '继续下载')
+          + (ctl.recovery.mode === 'cooldown' ? ' · ' + ctl.recovery.reason : ''));
         renderProgress(true);
       });
       state.control = ctl.recovery;
       if (UI.setPauseHandler) UI.setPauseHandler(function () {
         if (!ctl.recovery.enabled() || ctl.phase === '保存文件') return;
-        if (ctl.recovery.mode) ctl.recovery.resume();
-        else ctl.recovery.pause('paused');
+        if (ctl.recovery.mode) ctl.recovery.resume(true);
+        else ctl.recovery.pause();
+      });
+      if (UI.setAutoRetryHandler) UI.setAutoRetryHandler(function (on) {
+        if (ctl.phase !== '保存文件' && ctl.recovery.enabled()) ctl.recovery.setAutoRetry(on);
       });
     }
     ctl.onData = function (size) {
@@ -893,7 +1034,7 @@
         if (ctl.recovery && ctl.recovery.mode) return;
         if (Date.now() - stallLast < STALL_MS) return;
         if (ctl.recovery && ctl.recovery.enabled() && /^下载/.test(ctl.phase)) {
-          ctl.recovery.pause('retry', new Error('网络长时间无进展，请重试继续')); return;
+          ctl.recovery.fail('网络长时间无进展', true); return;
         }
         ctl.stalled = true;
         ctl.aborted = true;
@@ -907,6 +1048,7 @@
       if (ctl.recovery) ctl.recovery.dispose();
       state.control = null;
       if (UI.setPauseHandler) UI.setPauseHandler(null);
+      if (UI.setAutoRetryHandler) UI.setAutoRetryHandler(null);
       if (stallTimer) { clearInterval(stallTimer); stallTimer = 0; }
       if (progressTimer) { clearInterval(progressTimer); progressTimer = 0; }
       if (GUARD) GUARD.end();
@@ -964,14 +1106,23 @@
 
       var mode = ctl.recovery && ctl.recovery.mode;
       if (mode) {
-        badge = mode === 'paused' ? '已暂停' : mode === 'offline' ? '等待网络恢复' : '等待重试';
+        // 无限重试时不设上限，但要把「第几次」露出来，否则连着几次失败看起来像卡死。
+        var waitLabel = ctl.recovery.autoRetryPending && ctl.recovery.attempts > 0
+          ? '等待自动重试 · 第 ' + ctl.recovery.attempts + ' 次' : '等待自动重试';
+        badge = mode === 'paused' ? '已暂停' : mode === 'offline' ? '等待网络恢复' :
+          mode === 'cooldown' ? (ctl.recovery.autoRetryPending ? waitLabel : '冷却中') : '等待重试';
         speedText = '0 B/s';
-        etaText = mode === 'offline' ? '联网后自动继续，请保持页面打开' :
-          mode === 'paused' ? '进度已保留，请保持页面打开' : '进度已保留，点击重试继续';
+        etaText = mode === 'offline' ? '联网后可点击重试' :
+          mode === 'paused' ? '进度已保留，请保持页面打开' :
+          mode === 'cooldown' ? (ctl.recovery.autoRetryPending ? '下次重试 ' : '冷却剩余 ')
+            + fmtEta(Math.max(0, (ctl.recovery.retryAt - Date.now()) / 1000)) :
+          '进度已保留，点击重试继续';
       }
 
       UI.setProgress(ratio, { left: left, speed: speedText, eta: etaText, badge: badge,
         mode: mode || '', recoverable: !!(ctl.recovery && ctl.recovery.enabled()),
+        autoRetry: !!(ctl.recovery && ctl.recovery.autoRetry),
+        autoRetryPending: !!(mode === 'cooldown' && ctl.recovery.autoRetryPending),
         saving: ctl.phase === '保存文件',
         reason: ctl.recovery && ctl.recovery.reason });
 
@@ -1213,11 +1364,61 @@
     var baselineRate = 0;
     var trialFrom = 0;
     var pauseUntil = 0;
+    var activeRequests = 0;
+    var requestQueue = [];
+    var requestWakePending = false;
+
+    // 恢复时，已经排进调度器的旧分片也要遵守新并发数，并优先给最早的未写分片。
+    function wakeRequests() {
+      if (requestWakePending) return;
+      requestWakePending = true;
+      Promise.resolve().then(function () {
+        requestWakePending = false;
+        requestQueue.sort(function (a, b) { return a.index - b.index; });
+        while (activeRequests < conc && requestQueue.length) requestQueue.shift().start();
+      });
+    }
+
+    function requestSlot(index, signal, run) {
+      return new Promise(function (resolve, reject) {
+        if (signal && signal.aborted) { reject(new Error('请求已暂停')); return; }
+        function abort() {
+          var pos = requestQueue.indexOf(item);
+          if (pos >= 0) requestQueue.splice(pos, 1);
+          reject(new Error('请求已暂停'));
+        }
+        var item = { index: index, start: function () {
+          if (signal) signal.removeEventListener('abort', abort);
+          activeRequests++;
+          Promise.resolve().then(run).then(resolve, reject).finally(function () {
+            activeRequests--;
+            wakeRequests();
+          });
+        } };
+        requestQueue.push(item);
+        if (signal) signal.addEventListener('abort', abort, { once: true });
+        wakeRequests();
+      });
+    }
+
+    // 故障恢复后的软启动（只对小红书）：先单路探活，探活期内不升档。
+    // 依据 2026-11-21 真机：4 路重试连续几分钟都是「续上几片又被掐断」，
+    // 每次恢复立刻补满并发，等于自己把限速窗口续上。
+    ctl.onResume = function () {
+      if (!ctl.xhs) return;
+      conc = 1;
+      okStreak = 0;
+      trialFrom = 0;
+      pauseUntil = Date.now() + CONC_PROBE_MS;
+      dlog('限速重试恢复：先单路探活，20 秒后再按吞吐升档');
+    };
 
     function onRateLimited() {
       hitAt = Date.now();
       okStreak = 0;
-      if (conc > CONC_MIN) conc--;
+      // 小红书允许降到 1 路（探活档）；抖音仍守住 2 路的下限。
+      // 注意不能让「降档」把探活档抬回 2：撞限流时加并发是最差的选择。
+      conc = ctl.xhs ? Math.max(1, Math.floor(conc / 2)) : Math.max(CONC_MIN, conc - 1);
       trialFrom = 0;
       baselineRate = 0;
       sampleBytes = 0;
@@ -1248,6 +1449,7 @@
       if (conc >= CONC_MAX || now < pauseUntil) return;
       trialFrom = conc;
       conc++;
+      if (ctl.xhs) wakeRequests();
       dlog('并发 ' + trialFrom + '→' + conc + '：当前吞吐量 ' + UI.fmtBytes(rate) + '/s，试探升档');
     }
 
@@ -1271,7 +1473,9 @@
           },
           beforeRead: function (signal) { return waitForSpace(i, signal); },
           reset: function () { releaseSegment(i); },
-          onRateLimited: onRateLimited
+          onRateLimited: onRateLimited,
+          label: (i + 1) + '/' + n,
+          requestSlot: ctl.xhs ? function (signal, run) { return requestSlot(i, signal, run); } : null
         }).catch(function (err) {
           releaseSegment(i);
           if (ctl.aborted || ctl.failed) throw err;
@@ -1311,6 +1515,7 @@
         fetchedBytes += segmentBytes[i];
         fetchedCount++;
         updateTransfer();
+        if (ctl.recovery && ctl.recovery.noteOk) ctl.recovery.noteOk();
         onSegmentOk(buf.byteLength);
         schedule();          // 一片到手腾出一个在飞名额（升档后也能立刻多补）
         return { ok: true, v: buf };
@@ -1397,8 +1602,8 @@
    *
    * @returns {Promise<boolean>} 是否真的唤醒过（没有 video / 已在播 → false）
    */
-  function wakePlayer() {
-    var v = UI.mainVideo();          // 复用界面层的「最大画面」判定，别再写一遍
+  function wakePlayer(xhs) {
+    var v = xhs ? document.querySelector(XHS_PLAYER + ' video') : UI.mainVideo();
     if (!v || !v.paused) return Promise.resolve(false);
 
     var wasMuted = v.muted;
@@ -1437,30 +1642,51 @@
       return;
     }
 
+    if (!enabled() || state.reading) return;
+    var xhs = null;
+    if (pageKind() === 'xhs') {
+      xhs = META.xhsSession(xhsSessionHeader());
+      xhs.roomId = xhsRoomId();
+      if (!xhs.duration) {
+        say('还没读到开播时长，请稍后重试', 'warning');
+        return;
+      }
+    }
+
+    function isCurrentSession() {
+      return !xhs || (pageKind() === 'xhs' && xhs.roomId === xhsRoomId() && enabled());
+    }
+
+    function read() {
+      return isCurrentSession() ? buildSession(xhs) : null;
+    }
+
+    state.reading = true;
     UI.setBtn('busy', '正在读取');
     UI.hideCard();
     dlog('点击下载按钮 · 页面=' + pageKind() + ' · ' + location.hostname + location.pathname);
 
-    gather().then(buildSession).then(function (res) {
-      if (res.plan || !res.noMedia) return res;
+    gather().then(read).then(function (res) {
+      if (!res || res.plan || !res.noMedia || !isCurrentSession()) return res;
       // 一条媒体地址都没抓到 ⇒ 页面可能还没开始拉流。
       // 替用户静音播一下就自愈，省得他「先点播放、再回来点下载」。
       UI.setBtn('busy', '正在加载回放');
-      return wakePlayer().then(function (woke) {
+      return wakePlayer(xhs).then(function (woke) {
         if (!woke) return res;
-        return gather().then(buildSession);
+        return gather().then(read);
       });
     }).then(function (res) {
       UI.setBtn('idle');
+      if (!res || !isCurrentSession()) return;
 
       if (!res.plan) {
-        UI.setBtn('dead', '未找到回放');
+        if (!res.retryable) UI.setBtn('dead', '未找到回放');
         say(res.reason || '没有找到可下载的回放', 'error', '', res.detail || '');
         return;
       }
 
       state.session = res;
-      var st = META.sessionTime();
+      var st = xhs ? xhs.time : META.sessionTime();
       var t = st.when;
       var expected = res.expected || res.plan.total || 0;
 
@@ -1474,19 +1700,21 @@
         encrypted: !!(res.plan.key && res.plan.key.method === 'AES-128'),
         playbackNote: res.playbackNote,
         ext: res.ext || '.mp4',
-        fileName: baseFileName(),
+        fileName: META.fileNameFor(t, xhs ? '小红书' : '抖音'),
         warn: res.warn,
         warnBad: res.blocked,
         blocked: res.blocked
       }, function (name) {
         // 用户可能在输入框里改了名；最终以他的为准
-        runDownload(res.plan, name, res.bytes);
+        if (isCurrentSession()) runDownload(res.plan, name, res.bytes);
       });
     }).catch(function (err) {
       UI.setBtn('idle');
       var errMsg = (err && err.message) || String(err);
       dlog('读取回放失败：' + errMsg);
       say('读取回放失败：' + clip(errMsg, 22), 'error', '', '读取回放失败：' + errMsg);
+    }).finally(function () {
+      state.reading = false;
     });
   }
 
@@ -1546,7 +1774,6 @@
    * 七、启动 / 停用
    * ========================================================== */
 
-  var observer = null;
   var remountTimer = null;
 
   /** 按钮壳是否还在页面上（SPA 切场次时会被平台连播放器一起重建掉） */
@@ -1556,7 +1783,7 @@
   }
 
   function attach() {
-    UI.mount();
+    UI.mount(pageKind() === 'xhs' ? XHS_PLAYER : undefined);
     UI.setBtn(state.running ? 'busy' : 'idle', state.running ? '下载中' : undefined);
     UI.onBtnClick(onDownloadClick);
     // 平台切页 / 换场次会把按钮壳连进度卡一起拆掉重建。下载还在跑时必须把
@@ -1565,7 +1792,8 @@
     // 分页，回来按钮点不开、不知道有没有在运行」正是这条链。
     // 数据不用手填：onProgress 每片都回调，下一次回调就把新卡填到当前进度。
     if (state.running && state.dlName && typeof UI.showProgress === 'function') {
-      UI.showProgress(state.dlName, { silent: true });
+      UI.showProgress(state.dlName, { silent: true, xhs: state.control && state.control.xhs,
+        autoRetry: state.control && state.control.autoRetry });
     }
   }
 
@@ -1578,6 +1806,7 @@
     // 事件系统）会走到这里 —— 下载还在跑就报一句，用户不用切回复盘页才知道。
     // lastRoute 为 null（首次）只记录不报；confirm 拦成功时路由没变，也不会报。
     var routeNow = location.href;
+    if (lastRoute !== null && routeNow !== lastRoute && pageKind() === 'xhs') UI.hideCard();
     if (state.running && lastRoute !== null && routeNow !== lastRoute) {
       say('已切换页面，下载仍在进行', 'info', '勿关此页');
     }
@@ -1671,13 +1900,7 @@
     tick();
   }
 
-  function stop() {
-    if (remountTimer) { clearInterval(remountTimer); remountTimer = null; }
-    if (observer) { observer.disconnect(); observer = null; }
-    UI.unmount();
-  }
-
-  var prevOn = null;    // 上一次的「生效与否」；null = 还没读到初始态
+  var prevOn = null;    // 上一次的下载开关值；null = 还没读到初始态
 
   /* 「上次下载未完成」回执：真导航（刷新 / 跳转）会杀掉页面里的下载，
    * 但 sessionStorage 的 BUSY_KEY 标记来不及清 —— 回来时据此报一句，
@@ -1699,7 +1922,7 @@
 
   dycReadFlags().then(function (f) {
     flags = f;
-    var on = enabled();
+    var on = flags.replayDownload !== false;
     // 初始态在这里记下来：否则 prevOn 一直是 null，页面加载后**第一次**
     // 拨开关会被当成「首次读」而静默（回声被吃掉，用户以为没生效）。
     if (prevOn === null) prevOn = on;
@@ -1715,13 +1938,14 @@
       if (flags.replayResume === false) state.control.resume();
       else state.control.refresh();
     }
-    var now = enabled();
-    if (prevOn === null) { prevOn = now; if (now) start(); return; }
+    var now = flags.replayDownload !== false;
     if (now === prevOn) return;
+    var initialized = prevOn !== null;
     prevOn = now;
-    // 先出声再停用：stop() 会把提示壳一起摘掉，反了就没了落点
-    if (now) { start(); UI.say('已开启', 'info', { source: '回放下载' }); }
-    else { UI.say('已关闭', 'info', { source: '回放下载' }); stop(); }
+    if (!pageKind()) return;
+    if (initialized) UI.say(now ? '已开启' : '已关闭', 'info', { source: '回放下载' });
+    if (now) start();
+    else tick();
   });
 
   // 首屏兜底：文档解析 / 播放器渲染都可能比脚本慢，多敲几次「现在该挂了吗」。

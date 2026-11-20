@@ -14,9 +14,7 @@
  *      可能拦 chrome-extension:// 脚本；
  *   ② 请后台 chrome.scripting.executeScript({world:'MAIN'})：CSP 管不着，
  *      但需要内核 Chromium 95+。
- *   每次 arm 两条都发，探针侧幂等（防重入）+ 每次注入都补发 ready，
- *   哪条路先到都一样。ready 后 200ms 再补发 arm 命令 —— 探针首次 eval
- *   是在挂命令监听器「之前」报的到，命令直接跟着 ready 发会跑在监听器前面。
+ *   首次使用时装探针，收到 ready 后开窗。同一页面只装一次。
  *
  * 【对外接口】window.__DYC_STOCK_PROBE__
  *   arm(ttlMs)                     开监听窗口并清空旧记录
@@ -30,16 +28,10 @@
   if (window.__DYC_STOCK_PROBE__) return;
 
   var xhs = /(?:^|\.)xiaohongshu\.com$/i.test(location.hostname);
-  function available() {
-    return !xhs || !!(window.DYC_PAGE_PATTERNS && window.DYC_PAGE_PATTERNS.xhsCtrl.test(location.href));
-  }
-
   var MAX_RECORDS = 120;
   var records = [];
   var ready = false;          // MAIN world 探针是否已回话
   var armedEver = false;      // 本页是否开过监听窗（区分「没开窗」与「开窗失败」）
-  var pendingTtl = 0;         // 待补发的监听窗口时长
-  var ensureTimer = null;
   var sendSeq = 0;            // 转发请求序号
   var pendingSends = {};      // id → resolve
   var paramsSeq = 0;          // 参数查询序号
@@ -88,14 +80,6 @@
     }
   }
 
-  function sendArm() {
-    try {
-      window.postMessage({
-        source: 'DYC_STOCK_PROBE_CMD', type: 'arm', ttl: pendingTtl
-      }, '*');
-    } catch (e) { /* 理论不失败 */ }
-  }
-
   window.addEventListener('message', function (ev) {
     if (ev.source !== window) return;
     var m = ev.data;
@@ -107,8 +91,6 @@
       while (readyWaiters.length) {
         try { readyWaiters.shift()(); } catch (e) { /* 等待者自兜 */ }
       }
-      // 补发 arm：探针首次 eval 先报到、后挂监听器，稍等一拍再发命令
-      if (pendingTtl > 0) setTimeout(sendArm, 200);
       return;
     }
 
@@ -236,42 +218,35 @@
    * @param {number} ttlMs 窗口时长（毫秒），默认 30 秒
    */
   function arm(ttlMs) {
-    if (!available()) return;
-    records = [];
-    ready = false;
     armedEver = true;
-    pendingTtl = ttlMs > 0 ? ttlMs : 30000;
-
-    if (!xhs) injectViaScriptTag();
-    injectViaBackground();
-
-    // 2.5 秒还没 ready 就留日志证据 —— 报告附加段会如实标注「未注入」
-    clearTimeout(ensureTimer);
-    ensureTimer = setTimeout(function () {
-      if (!ready) say('网络监听未注入成功(两条通道都没回话),本轮抓不到请求');
-    }, 2500);
+    records = [];
+    return ensureReady(2500).then(function (ok) {
+      if (!ok) {
+        say('网络监听未注入成功，本轮抓不到请求');
+        return false;
+      }
+      window.postMessage({
+        source: 'DYC_STOCK_PROBE_CMD', type: 'arm', ttl: ttlMs
+      }, '*');
+      return true;
+    });
   }
 
   /** 诊断报告附加段：无记录也要给状态行，让分析侧分得清「没抓到」和「没在抓」 */
   function reportSection() {
-    if (!available() || (xhs && !armedEver)) return '';
+    if (!armedEver) return '';
     var lines = [];
     lines.push('');
-    lines.push(xhs ? '## 小红书中控台·接口取样（已脱敏）' : '## 库存清零·网络监听');
+    lines.push(xhs ? '## 小红书·接口取样（已脱敏）' : '## 接口取样');
 
     if (!ready && records.length === 0) {
-      if (!armedEver) {
-        lines.push('- 状态:监听已就绪但本页还没开过窗（点面板「开始接口取样 30 秒」,或在商品管理列表页执行一次清零后开窗）');
-      } else {
-        lines.push('- 状态:监听未注入成功(页面 CSP 拦截或内核不支持),本轮没有抓到任何请求');
-      }
+      lines.push('- 监听尚未就绪，本轮没有采到请求。');
       return lines.join('\n');
     }
 
     lines.push('- 状态:已注入,记录 ' + records.length + ' 条(只记本站接口,静态资源不计)');
     if (records.length === 0) {
-      lines.push(xhs ? '- 未采到请求，请在开始接口取样后 30 秒内搜索并保存。' :
-        '- 本轮窗口内没有本站请求经过(确认操作是否发生在点击「清空库存」后的 30 秒内)');
+      lines.push('- 未采到请求，请在开始接口取样后 30 秒内完成要记录的操作。');
       return lines.join('\n');
     }
 
@@ -288,7 +263,6 @@
   }
 
   window.__DYC_STOCK_PROBE__ = {
-    available: available,
     arm: arm,
     reportSection: reportSection,
     sendRequest: sendRequest,
@@ -297,10 +271,4 @@
     clear: function () { records = []; }
   };
 
-  // 模块加载即装 MAIN 侧探针(与开窗解耦):渠道品直提的「转发请求」依赖它就绪,
-  // 页面一打开就装好,点击时零等待。被动记录仍只在 arm 开窗后发生。
-  if (!xhs) {
-    injectViaScriptTag();
-    injectViaBackground();
-  }
 })();

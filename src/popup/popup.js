@@ -1518,6 +1518,8 @@ function applyPlatform(platId) {
     });
   }
 
+  const replayLink = root && root.querySelector('.replay-page-link');
+  if (replayLink) replayLink.hidden = pid !== 'dy';
   updatePlatformUI(pid);
 
   platInitDone = true;

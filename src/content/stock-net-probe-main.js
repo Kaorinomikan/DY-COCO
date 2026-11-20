@@ -41,10 +41,11 @@
   var armedUntil = 0;        // 监听窗口截止时间戳
   var MAX_TEXT = 6000;       // 单条请求/响应体截断长度（字符）
   var xhs = /(?:^|\.)xiaohongshu\.com$/i.test(location.hostname);
-  var xhsCtrl = /^https:\/\/(?:pgy\.xiaohongshu\.com\/commerce\/redlive\/|ark\.xiaohongshu\.com\/live_center_control(?:\/|[?#]|$))/;
+  var xhsCtrl = /^https:\/\/(?:pgy\.xiaohongshu\.com\/commerce\/redlive|ark\.xiaohongshu\.com)\/live_center_control(?:\/|[?#]|$)/;
+  var armedPath = '';
 
   function armed() {
-    return Date.now() < armedUntil && (!xhs || xhsCtrl.test(location.href));
+    return Date.now() < armedUntil && (!xhs || armedPath === location.pathname);
   }
 
   /** 只认本站接口；静态资源与第三方域名一律不记 */
@@ -253,7 +254,7 @@
   } catch (e) { /* 读不到就走默认参数，直提侧自己兜底 */ }
 
   function rememberParams(url) {
-    if (!xhs) return;
+    if (!xhs || !xhsCtrl.test(location.href)) return;
     try {
       var u = new URL(url, location.href);
       if (u.pathname !== XHS_SEARCH && u.pathname !== XHS_POOL) return;
@@ -276,7 +277,7 @@
     if (xhs) {
       try {
         var u = new URL(rec.url, location.href);
-        rec.business = xhsBusiness(u, rec.method, request, response);
+        if (xhsCtrl.test(location.href)) rec.business = xhsBusiness(u, rec.method, request, response);
         var query = shape(Object.fromEntries(u.searchParams), 0);
         rec.url = u.origin + u.pathname.split('/').map(function (part) {
           return /^[a-z_][a-z0-9_.-]{0,63}$/i.test(part) && !/^[a-f0-9]{16,}$/i.test(part) ? part : part ? ':value' : '';
@@ -298,15 +299,15 @@
     if (!m || m.source !== 'DYC_STOCK_PROBE_CMD') return;
 
     if (m.type === 'arm') {
-      if (xhs && !xhsCtrl.test(location.href)) return;
       var ttl = Number(m.ttl);
       if (xhs) ttl = Math.min(30000, ttl);
+      armedPath = location.pathname;
       armedUntil = Date.now() + (isFinite(ttl) && ttl > 0 ? ttl : 30000);
       return;
     }
 
     /* ---- 直提参数查询：隔离世界问「平台最近一次商品池请求带了什么参数」 ---- */
-    if (m.type === 'params') {
+    if (m.type === 'params' && xhsCtrl.test(location.href)) {
       try {
         window.postMessage({
           source: 'DYC_STOCK_PROBE', type: 'paramsResult', id: m.id, params: apiParams
@@ -320,7 +321,7 @@
      * XHR** 发同一请求 —— 平台对 XMLHttpRequest.prototype 的全局注入
      * (签名/平台校验头)会自动作用到这个 XHR 上,与页面自己的请求同权。
      * 2026-11-18 小红书直提同走这条通道：与平台点「保存」发出的请求同权。 ---- */
-    if (m.type === 'send') {
+    if (m.type === 'send' && (!xhs || xhsCtrl.test(location.href))) {
       doSend(m.id, m.url, m.method, m.body, m.credentials);
       return;
     }

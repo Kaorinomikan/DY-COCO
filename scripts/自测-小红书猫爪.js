@@ -15,10 +15,15 @@ const path = require('node:path');
 const { JSDOM } = require('jsdom');
 const SRC_UNDER_TEST = 'src/content/cursor-fix.js';
 const source = fs.readFileSync(path.resolve(__dirname, '..', SRC_UNDER_TEST), 'utf8');
+const diag = fs.readFileSync(path.resolve(__dirname, '../src/content/diag.js'), 'utf8');
 
 const XHS_URL = 'https://pgy.xiaohongshu.com/commerce/redlive/live_center_control';
 const DY_URL = 'https://buyin.jinritemai.com/dashboard/live/control';
-const PATTERNS = { xhsCtrl: /^https:\/\/pgy\.xiaohongshu\.com\/commerce\/redlive\// };
+const SCREEN_URL = 'https://pgy.xiaohongshu.com/commerce/redlive/live_screen/operation';
+const PATTERNS = {
+  xhsCtrl: /^https:\/\/pgy\.xiaohongshu\.com\/commerce\/redlive\/live_center_control(?:\/|[?#]|$)/,
+  xhsAll: /^https:\/\/pgy\.xiaohongshu\.com\//
+};
 
 async function setup(url, flags) {
   const dom = new JSDOM(
@@ -130,6 +135,27 @@ async function setup(url, flags) {
     f.startDrag();
     assert.match(f.cursor(f.button), /url\(/, '重新开启后拖拽猫爪应恢复');
   });
+
+  await test('直播大屏：两个开关都开启也不注入猫爪，站内切页后自动对齐', SCREEN_URL,
+    { xhsCursorFix: true, cursorFix: true }, f => {
+      let pollRoute;
+      const setInterval = f.w.setInterval;
+      f.w.setInterval = callback => { pollRoute = callback; };
+      f.w.eval(diag);
+      f.w.setInterval = setInterval;
+      const style = () => f.w.document.getElementById('dyc-cursor-fix-style');
+      function navigate(url) {
+        f.w.history.pushState({}, '', url);
+        pollRoute();
+      }
+      assert.equal(style(), null);
+      f.watch({ xhsCursorFix: true, cursorFix: true });
+      assert.equal(style(), null);
+      navigate(XHS_URL);
+      assert.ok(style());
+      navigate(SCREEN_URL);
+      assert.equal(style(), null);
+    });
 
   console.log(`${passed} passed, ${failed} failed`);
   process.exitCode = failed ? 1 : 0;

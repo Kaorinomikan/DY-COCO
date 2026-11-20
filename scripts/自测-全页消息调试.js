@@ -21,7 +21,8 @@ function injected(url) {
   return manifest.content_scripts.filter(c => c.world !== 'MAIN' &&
     c.matches.some(p => matches(p, url)) && !(c.exclude_matches || []).some(p => matches(p, url)));
 }
-const baseline = ['src/content/diag.js', 'src/content/dialog.js', 'src/content/debug-panel.js'];
+const baseline = ['src/content/diag.js', 'src/content/dialog.js',
+  'src/content/stock-net-probe.js', 'src/content/debug-panel.js'];
 const urls = new Set([
   'https://fxg.jinritemai.com/', 'https://buyin.jinritemai.com/',
   'https://compass.jinritemai.com/', 'https://other.jinritemai.com/new/page',
@@ -51,11 +52,19 @@ async function exercise(url) {
   });
   const w = dom.window;
   const listeners = [];
+  const fetch = w.fetch = async () => ({ status: 200, clone: () => ({ text: async () => '{"ok":true}' }) });
+  // jsdom 不提供扩展 API，模拟后台注入与浏览器同窗口的消息来源。
+  w.postMessage = data => queueMicrotask(() => w.dispatchEvent(new w.MessageEvent('message', { data, source: w })));
   w.chrome = {
     runtime: {
       getManifest: () => manifest, getURL: p => 'chrome-extension://offline/' + p,
       onMessage: { addListener() {} },
-      sendMessage(msg, cb) { const r = { ok: true, items: [] }; if (cb) cb(r); return Promise.resolve(r); },
+      sendMessage(msg, cb) {
+        if (msg.type === 'dyc:stockProbeMain') w.eval(read('src/content/stock-net-probe-main.js'));
+        const r = { ok: true, items: [] };
+        if (cb) cb(r);
+        return Promise.resolve(r);
+      },
     },
     storage: {
       local: {
@@ -90,6 +99,16 @@ async function exercise(url) {
     assert.ok(!w.dybDebugPanel.isOpen(), '开关开启不自动展开');
     badge.click();
     assert.ok(w.dybDebugPanel.isOpen(), url + ' 点击可打开调试面板');
+    const panel = w.document.querySelector('#dyb-debug-panel');
+    const sample = (panel.shadowRoot || panel).querySelector('#dyb-debug-netarm');
+    assert.ok(sample && sample.style.display !== 'none', url + ' 调试面板可开启接口取样');
+    assert.equal(w.fetch, fetch, url + ' 首次取样前不包装页面请求');
+    sample.click();
+    await new Promise(setImmediate);
+    assert.equal(sample.disabled, false, url + ' 探针就绪后按钮恢复');
+    await w.fetch('/api/sample', { method: 'POST', body: '{"test":1}' });
+    await new Promise(setImmediate);
+    assert.match(w.__DYC_STOCK_PROBE__.reportSection(), /POST .*\/api\/sample.*\[200\]/, url + ' 报告包含本次请求');
     listeners.forEach(cb => cb({ dybDebug: { newValue: false } }, 'local'));
     assert.ok(!w.dybDebugPanel.isOpen(), '关闭调试收起面板');
     assert.ok(!badge.classList.contains('dyb-badge--debug'), url + ' 关闭调试恢复普通标记');
@@ -126,5 +145,5 @@ async function verifyInjection(reuse) {
   for (const url of urls) await exercise(url);
   await verifyInjection(true);
   await verifyInjection(false);
-  console.log('全页消息与调试：' + urls.size + ' 个支持页面的注入、消息入口、开关与面板通过');
+  console.log('全页消息、调试与接口取样：' + urls.size + ' 个支持页面通过');
 })().catch(e => { console.error(e); process.exitCode = 1; });

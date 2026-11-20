@@ -53,3 +53,14 @@ function dycRegisterTool(def) {
   }
   DYC_TOOL_SLOTS.push(def);
 }
+
+/** 平台切换加载态时会替换刷新入口，将常态宽度留在动作栏上。 */
+function dycReserveRefreshWidth(slot) {
+  var style = slot.parentElement.style;
+  var prop = '--dyc-refresh-slot-width';
+  if (style.getPropertyValue(prop) || slot.matches('[class*="refreshLoading-"]')) return;
+  var width = window.getComputedStyle(slot).inlineSize;
+  if (width.endsWith('px') && parseFloat(width) > 0) {
+    style.setProperty(prop, width);
+  }
+}

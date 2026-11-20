@@ -881,28 +881,17 @@
     (document.head || document.documentElement).appendChild(st);
   }
 
-  /* ==========================================================
-   * 落位吸附(2026-10-26)
-   * ----------------------------------------------------------
-   * 用户原话:「这两个自添加的按钮,会因为原生的刷新在刷新,然后会轻微左右抖动,
-   *   希望位置固定且不抖动」「两个按钮应该在同一个水平线上,不要因为其他按钮影响而抖动」。
-   * 根因不是算错,而是**每拍照抄测量值**:平台刷新期间按钮群会重排、图标会换加载态,
-   * getBoundingClientRect 每拍能差 1~3px;灯 250ms 一拍追一次,就是肉眼可见的左右抖。
-   * 规则(与 auto-loop-lecture.js 的胶囊同一套,两边各自持有状态):
-   *   |Δ| ≤ 2px  ⇒ 当噪声,**不写 style**(位置就此固定)
-   *   |Δ| ≥ 10px ⇒ 真移动(切页 / 缩放 / 行重排),立刻跟
-   *   中间档     ⇒ 连续两拍指同一个目标才跟(滤掉刷新那一瞬的单拍值)
-   * 复位:灯从藏到显、换了灯节点、窗口缩放。
-   * ========================================================== */
-  /* 吸附阈值与记忆:≤2px 当噪声不动、≥10px 立刻跟(详见 settle 头部) */
   /** 插在原生按钮旁，坐标由浏览器布局管理。平台重建时复用已绑定事件的节点。 */
   function placeLamp(btn) {
     if (!lamp) return false;
     if (btn && btn.isConnected) {
       var slot = btn.closest('button, a, [role="button"]') || btn;
       var parent = slot.parentElement;
-      if (parent && (lamp.parentElement !== parent || lamp.nextElementSibling !== slot)) {
-        parent.insertBefore(lamp, slot);
+      if (parent) {
+        if (typeof dycReserveRefreshWidth === 'function') dycReserveRefreshWidth(slot);
+        if (lamp.parentElement !== parent || lamp.nextElementSibling !== slot) {
+          parent.insertBefore(lamp, slot);
+        }
       }
     }
     if (!lamp.isConnected) return false;

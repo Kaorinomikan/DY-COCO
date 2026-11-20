@@ -2912,6 +2912,9 @@
           before = null;
         }
         if (parent && parent !== document.body) {
+          if (before && !before.classList.contains('dyc-ar-lamp') && typeof dycReserveRefreshWidth === 'function') {
+            dycReserveRefreshWidth(before);
+          }
           if (host.parentElement !== parent || (before && host.nextElementSibling !== before)) {
             parent.insertBefore(host, before || null);
           }

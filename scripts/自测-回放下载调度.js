@@ -47,6 +47,7 @@ function harness(fetcher) {
     __DYC_REPLAY_UI__: {
       setAbortHandler(fn) { ctx.cancel = fn; }, setBtn() {}, showProgress() {},
       setPauseHandler(fn) { ctx.pause = fn; },
+      setAutoRetryHandler(fn) { ctx.autoRetry = fn; },
       setProgress(ratio, meta) { frames.push({ time: now, ratio, ...meta }); },
       finishProgress(kind) { finishes.push(kind); }, say() {}, hideProgress() {},
       fmtBytes: n => String(Math.round(n)) + 'B',
@@ -124,6 +125,164 @@ async function check(name, fn) { await fn(); checks++; console.log('通过：' +
     assert.equal(result.best.url, 'https://offline/good.m3u8');
     assert.equal(result.best.total, 10); assert.equal(h.timers.size, 0);
   });
+  await check('小红书清单区分等待超时和服务器限流', async () => {
+    for (const [status, expected] of [[0, /超时/], [429, /HTTP 429/], [403, /HTTP 403/]]) {
+      const h = harness((url, o, t) => status
+        ? Promise.resolve({ ok: false, status })
+        : t.delay(null, 60000, o.signal));
+      h.ctx.__DYC_REPLAY_NET__.media = () => [{ kind: 'hls', url: 'https://offline/123_replay.m3u8?secret=fixture' }];
+      const result = await h.finish(h.ctx.__DYC_REPLAY_TEST__.buildSession({ roomId: '123', duration: 10 }), 24000);
+      assert.equal(result.plan, null);
+      assert.match(result.detail, expected);
+      assert.doesNotMatch(result.detail, /offline|secret|fixture/);
+      assert.equal(h.timers.size, 0);
+    }
+  });
+  await check('小红书有吞吐收益时恢复自适应升档', async () => {
+    const h = harness((url, o, t) => Promise.resolve(response([[Number(url)]], 275, o.signal, t.delay)));
+    const p = { type: 'hls', passthrough: true, segments: plan(90).segments, xhs: true };
+    await h.finish(h.ctx.__DYC_REPLAY_TEST__.runDownload(p, 'test'));
+    assert.ok(h.frames.some(frame => /[4-9] 线程/.test(frame.badge)));
+    assert.deepEqual(h.writes.flat(), Array.from({ length: 90 }, (_, i) => i));
+  });
+  await check('打开自动重试也遵守服务器要求的更长等待', async () => {
+    const requests = [];
+    let denied = false;
+    const h = harness((url, o, t) => {
+      requests.push({ url, at: t.now() });
+      if (!denied) {
+        denied = true;
+        return Promise.resolve({ ok: false, status: 429, headers: { get: () => '100' } });
+      }
+      return Promise.resolve(response([[1]], 1, o.signal, t.delay));
+    });
+    const planForXhs = { type: 'hls', passthrough: true, segments: plan(1).segments, xhs: true };
+    const p = h.ctx.__DYC_REPLAY_TEST__.runDownload(planForXhs, 'test');
+    await h.advance(3000);
+    h.ctx.autoRetry(true);
+    assert.equal(requests.length, 1);
+    assert.ok(h.frames.some(frame => frame.mode === 'cooldown' && /HTTP 429/.test(frame.reason)));
+    h.ctx.pause();
+    await h.advance(90000);
+    assert.equal(requests.length, 1, '冷却期间不允许手动提前重试');
+    await h.finish(p);
+    assert.equal(requests.length, 2);
+    assert.ok(requests[1].at - requests[0].at >= 100000);
+    assert.deepEqual(h.writes.flat(), [1]);
+    assert.equal(h.timers.size, 0);
+  });
+  await check('小红书遇到限流后单路探活恢复，不一次补满并发', async () => {
+    const started = [];
+    let denied = false;
+    const h = harness((url, o, t) => {
+      started.push({ url, at: t.now() });
+      if (url === '0' && !denied) {
+        denied = true;
+        return t.delay({ ok: false, status: 429 }, 50, o.signal);
+      }
+      return Promise.resolve(response([[Number(url)]], 500, o.signal, t.delay));
+    });
+    const media = { type: 'hls', passthrough: true, segments: plan(6).segments, xhs: true };
+    const p = h.ctx.__DYC_REPLAY_TEST__.runDownload(media, 'rate-limit');
+    await h.advance(1); h.ctx.autoRetry(true);
+    await h.advance(59999);
+    assert.equal(started.length, 3, '冷却期间不再发请求');
+    await h.advance(60);
+    assert.equal(started.length, 4, '恢复瞬间只放一路，不把刚解封的窗口再撞回去');
+    await h.advance(200);
+    assert.equal(started.length, 4, '探活片没下完之前不许起第二路');
+    await h.finish(p);
+    assert.deepEqual(h.writes.flat(), [0, 1, 2, 3, 4, 5]);
+    assert.equal(h.timers.size, 0);
+  });
+  await check('小红书分片沉默超时后停止发请求，冷却期间可以取消', async () => {
+    let requests = 0;
+    const h = harness((url, o, t) => {
+      requests++;
+      return url === '0'
+        ? t.delay(null, 60000, o.signal)
+        : Promise.resolve(response([[255]], 1, o.signal, t.delay));
+    });
+    const p = h.ctx.__DYC_REPLAY_TEST__.runDownload({ ...plan(2), xhs: true }, 'test');
+    await h.advance(1); h.ctx.autoRetry(true);
+    await h.advance(35000);
+    assert.equal(requests, 3, '超时后不再发出新请求');
+    assert.ok(h.frames.some(frame => frame.mode === 'cooldown' && /超时/.test(frame.reason)));
+    h.ctx.cancel();
+    await h.finish(p);
+    assert.equal(h.finishes.at(-1), 'warn');
+    assert.equal(h.timers.size, 0);
+  });
+  await check('两平台新任务默认手动，开启后重试间隔按 60/120/240 秒递增', async () => {
+    for (const xhs of [false, true]) {
+      let calls = 0;
+      const h = harness((url, o, t) => {
+        if (++calls <= 3) {
+          return Promise.resolve({ ok: false, status: 503 });
+        }
+        return Promise.resolve(response([[1]], 1, o.signal, t.delay));
+      });
+      const media = { type: 'hls', passthrough: true, segments: plan(1).segments, xhs };
+      const p = h.ctx.__DYC_REPLAY_TEST__.runDownload(media, 'auto');
+      await h.advance(45000);
+      assert.equal(calls, 1);
+      assert.equal(h.frames.at(-1).autoRetry, false);
+      assert.equal(h.frames.at(-1).mode, 'retry', '开关关闭时只等手动重试');
+      h.ctx.autoRetry(true);
+      await h.advance(59999);
+      assert.equal(calls, 1, '第一次自动重试要等满 60 秒');
+      assert.ok(h.frames.some(f => /第 1 次/.test(f.badge)), '冷却时露出「第几次重试」');
+      await h.advance(1);
+      assert.equal(calls, 2);
+      await h.advance(119999);
+      assert.equal(calls, 2, '连续第二次失败后间隔翻倍到 120 秒');
+      assert.ok(h.frames.some(f => /第 2 次/.test(f.badge)), '连续失败时次数递增，不是一直显示第 1 次');
+      await h.advance(1);
+      assert.equal(calls, 3);
+      h.ctx.autoRetry(false);
+      await h.advance(300000);
+      assert.equal(calls, 3, '关闭会取消已经安排的自动重试');
+      h.ctx.autoRetry(true);
+      await h.advance(239999);
+      assert.equal(calls, 3, '连续第三次失败后间隔 240 秒');
+      await h.advance(1);
+      assert.equal(calls, 4);
+      await h.finish(p);
+      assert.deepEqual(h.writes.flat(), [1]);
+      assert.doesNotMatch(String(h.frames.at(-1).badge || ''), /第 \d+ 次/, '下完后不再显示重试次数');
+      assert.equal(h.timers.size, 0);
+    }
+  });
+  await check('续传拿到分片后再次断流，等待从 60 秒重新起算', async () => {
+    const times = [];
+    let first = true;
+    const h = harness((url, o, t) => {
+      times.push({ url, at: t.now() });
+      if (url === '0' && first) {
+        first = false;
+        return Promise.resolve({ ok: false, status: 503 });
+      }
+      if (url === '1' && times.filter(x => x.url === '1').length === 1) {
+        return Promise.resolve({ ok: false, status: 503 });
+      }
+      return Promise.resolve(response([[1]], 1, o.signal, t.delay));
+    });
+    const p = h.ctx.__DYC_REPLAY_TEST__.runDownload(
+      { type: 'hls', passthrough: true, segments: plan(2).segments, xhs: true }, 'reset');
+    await h.advance(1);
+    h.ctx.autoRetry(true);
+    await h.advance(60001);
+    const seg0 = times.filter(x => x.url === '0').map(x => x.at);
+    assert.equal(seg0.length, 2, '第一次失败后 60 秒重试');
+    assert.ok(seg0[1] - seg0[0] >= 60000);
+    await h.advance(60001);
+    const seg1 = times.filter(x => x.url === '1').map(x => x.at);
+    assert.equal(seg1.length, 2, '有分片成功后，下一次失败仍按 60 秒起算');
+    assert.ok(seg1[1] - seg1[0] >= 60000 && seg1[1] - seg1[0] < 90000);
+    await h.finish(p);
+    assert.deepEqual(h.writes.flat(), [1, 1]);
+    assert.equal(h.timers.size, 0);
+  });
   await check('HEAD卡住按短时限降级，未知大小的直链仍可下载', async () => {
     const h = harness((url, o, t) => t.delay(null, 60000, o.signal));
     const result = await h.finish(h.ctx.__DYC_REPLAY_TEST__.pickBest([
@@ -200,6 +359,10 @@ async function check(name, fn) { await fn(); checks++; console.log('通过：' +
       const ui = dom.window.__DYC_REPLAY_UI__;
       ui.mount(); ui.showProgress('test.mp4');
       const root = dom.window.document.querySelector('#dyc-replay-host').shadowRoot;
+      // 文案闸门不覆盖下载卡，这条盯住「说明里的间隔」与重试常量一起改。
+      const note = root.querySelector('.pc-retry-note');
+      assert.ok(/60 秒/.test(note.textContent), '重试说明应写明首个等待是 60 秒');
+      assert.doesNotMatch(note.textContent, /30 秒/, '旧的固定 30 秒口径不许残留');
       const speed = root.querySelector('.pc-speed'), eta = root.querySelector('.pc-eta');
       for (const value of ['100时0分0秒', '1时0分0秒', '59分59秒', '9秒']) {
         ui.setProgress(0.5, { speed: '1.2 MB/s', eta: value, left: '1 GB' });
@@ -214,15 +377,19 @@ async function check(name, fn) { await fn(); checks++; console.log('通过：' +
   });
   await check('确认卡精简信息与字重，详情默认收起，保留改名和下载动作', async () => {
     const { JSDOM } = require('jsdom');
-    const dom = new JSDOM('<!doctype html><html><body></body></html>', {
+    const dom = new JSDOM('<!doctype html><html><body><div class="video-area"></div></body></html>', {
       runScripts: 'outside-only', pretendToBeVisual: true,
     });
     try {
       const w = dom.window;
       w.eval(read('src/replay/replay-ui.js'));
       const ui = w.__DYC_REPLAY_UI__;
-      ui.mount();
-      const root = w.document.querySelector('#dyc-replay-host').shadowRoot;
+      const player = w.document.querySelector('.video-area');
+      player.getBoundingClientRect = () => ({ left: 180, right: 420, top: 290, bottom: 650 });
+      ui.mount('.video-area');
+      const host = w.document.querySelector('#dyc-replay-host');
+      assert.ok(parseFloat(host.style.left) > player.getBoundingClientRect().right, '小红书按钮应位于播放器外侧右边');
+      const root = host.shadowRoot;
       const info = { timeText: '2026-10-21 10:34', durationSec: 8400, bytes: 7.7 * 1024 ** 3,
         qualityText: '页面默认', tracks: { video: 'h265', audio: true }, segCount: 848,
         fileName: 'test', ext: '.ts', playbackNote: '兼容播放说明' };
@@ -285,6 +452,77 @@ async function check(name, fn) { await fn(); checks++; console.log('通过：' +
     assert.equal(complete.warn, ''); assert.ok(complete.playbackNote);
     assert.equal(h.timers.size, 0);
   });
+  await check('小红书已结束场次从播放器旁读取本场，忽略上一场清单并校验时长', async () => {
+    const media = '#EXTM3U\n#EXTINF:40,\nmovie.ts\n#EXT-X-ENDLIST';
+    const requested = [];
+    const h = harness((url, o, t) => {
+      requested.push(url);
+      if (o.method === 'HEAD') return Promise.resolve({ ok: true, headers: { get: () => '100' } });
+      return Promise.resolve(response([new TextEncoder().encode(media)], 1, o.signal, t.delay));
+    });
+    const { ctx } = h;
+    const meta = ctx.__DYC_REPLAY_META__;
+    delete ctx.__DYC_REPLAY_META__;
+    vm.runInContext(read('src/replay/replay-meta.js'), ctx);
+    Object.assign(meta, ctx.__DYC_REPLAY_META__);
+    ctx.DYC_PAGE_PATTERNS = vm.runInNewContext(read('src/content/flags.js') + '\nDYC_PAGE_PATTERNS;');
+    ctx.location = new URL('https://pgy.xiaohongshu.com/commerce/redlive/live_screen/operation?roomId=123');
+    const header = { textContent: '直播中示例场次2026/11/18 14:36:43 开播时长 00:01:30' };
+    let playerVisible = false;
+    let mount, click, card;
+    ctx.document = {
+      querySelector(sel) {
+        if (sel === '.video-area' && playerVisible) return { getClientRects: () => [{}] };
+        if (sel === '.live-databoard-menu .live-info') return header;
+        return null;
+      },
+      getElementById: () => mount,
+      contains: () => !!mount,
+    };
+    Object.assign(ctx.__DYC_REPLAY_UI__, {
+      mount(sel) { mount = sel; },
+      unmount() { mount = null; },
+      onBtnClick(fn) { click = fn; },
+      hideCard() { card = null; },
+      showCard(info) { card = info; },
+    });
+    ctx.__DYC_REPLAY_NET__.media = () => [
+      { kind: 'hls', url: 'https://offline/1234_456.m3u8' },
+      { kind: 'hls', url: 'https://offline/123_456.m3u8?token=fixture' },
+    ];
+    ctx.updateFlags({ replayDownload: true });
+    assert.equal(mount, undefined, '没有播放器时不挂载');
+    playerVisible = true;
+    await h.advance(2000);
+    assert.equal(mount, undefined, '直播中不挂载');
+    header.textContent = header.textContent.replace('直播中', '已结束');
+    await h.advance(2000);
+    assert.equal(mount, '.video-area');
+    click();
+    await h.advance(5000);
+    assert.ok(card, '点击应打开回放确认卡');
+    assert.equal(card.fileName, '小红书_直播回放_2026.11.18_14点36分');
+    assert.equal(card.durationSec, 90);
+    assert.equal(card.blocked, true, '清单只覆盖 40 秒时禁止下载');
+    assert.ok(requested.some(url => url.includes('/123_456.m3u8')));
+    assert.ok(!requested.some(url => url.includes('/1234_456.m3u8')));
+    header.textContent = header.textContent.replace('00:01:30', '00:00:40');
+    click();
+    await h.advance(5000);
+    assert.equal(card.blocked, false, '时长一致的清单可以下载');
+    ctx.location.searchParams.set('roomId', '999');
+    await h.advance(2000);
+    assert.equal(card, null, '换场后清理确认卡');
+    ctx.updateFlags({ replayDownload: false });
+    assert.equal(mount, null);
+
+    ctx.location = new URL('https://anchor.douyin.com/anchor/review');
+    ctx.document.body = { innerText: '开播时间 2026-11-18 14:36:43 直播时长 40秒' };
+    ctx.updateFlags({ replayDownload: true });
+    click();
+    await h.advance(5000);
+    assert.equal(card.fileName, '抖音_直播回放_2026.11.18_14点36分');
+  });
   await check('请求无响应时超时，中止后清理计时器', async () => {
     const h = harness((url, o, t) => t.delay(null, 60000, o.signal));
     const p = h.ctx.__DYC_REPLAY_NET__.fetchBuf('slow', { timeoutMs: 12000 });
@@ -324,7 +562,8 @@ async function check(name, fn) { await fn(); checks++; console.log('通过：' +
       return Promise.resolve(response([[url === 'init' ? 255 : Number(url)]], 1000, o.signal, t.delay));
     });
     const p = h.ctx.__DYC_REPLAY_TEST__.runDownload(plan(6), 'test');
-    await h.advance(9000);
+    await h.advance(1); h.ctx.autoRetry(true);
+    await h.advance(8999);
     const waiting = h.frames.filter(f => f.time >= 102000 && f.time <= 109000);
     assert.ok(waiting.length >= 12, '没有落盘进度时仍持续刷新');
     assert.ok(waiting.some(f => parseFloat(f.speed) === 0), '停止收包后不能残留旧速度');
@@ -421,7 +660,8 @@ async function check(name, fn) { await fn(); checks++; console.log('通过：' +
       ? Promise.resolve(response([[255]], 1, o.signal, t.delay))
       : Promise.resolve({ ok: false, status: 503 }));
     const p = h.ctx.__DYC_REPLAY_TEST__.runDownload(plan(5), 'retry');
-    await h.advance(100); h.ctx.cancel(); await h.finish(p);
+    await h.advance(1); h.ctx.autoRetry(true);
+    await h.advance(99); h.ctx.cancel(); await h.finish(p);
     assert.deepEqual(h.finishes, ['warn']); assert.equal(h.timers.size, 0);
   });
   await check('转封装初始化同步抛错也中止写入并清理状态', async () => {
@@ -474,18 +714,20 @@ async function check(name, fn) { await fn(); checks++; console.log('通过：' +
     assert.deepEqual(h.finishes, ['ok']); assert.equal(h.timers.size, 0);
     assert.ok([...h.listeners.values()].every(v => v.size === 0));
   });
-  await check('断网等待超过一分钟不销毁任务，联网后自动从未完成分片继续', async () => {
+  await check('默认关闭时，恢复联网仍等用户手动继续并保留进度', async () => {
     const h = harness((url, o, t) => Promise.resolve(response(
       [[url === 'init' ? 255 : Number(url)]], url === 'init' ? 1 : 1000, o.signal, t.delay)));
     const p = h.ctx.__DYC_REPLAY_TEST__.runDownload(plan(9), 'offline');
     await h.advance(1200); h.network(false); await h.advance(60000);
     assert.equal(h.frames.at(-1).mode, 'offline');
     assert.equal(h.finishes.length, 0);
-    h.network(true); await h.finish(p);
+    h.network(true); await h.advance(31000);
+    assert.equal(h.frames.at(-1).mode, 'retry');
+    h.ctx.pause(); await h.finish(p);
     assert.deepEqual(h.writes, [[255], ...Array.from({ length: 9 }, (_, i) => [i])]);
     assert.deepEqual(h.finishes, ['ok']); assert.equal(h.timers.size, 0);
   });
-  await check('重试耗尽保留已写入进度，手动重试后整场完成', async () => {
+  await check('自动重试关闭时保留已写入进度，手动重试后整场完成', async () => {
     let broken = true, calls = 0;
     const h = harness((url, o, t) => {
       calls++;
@@ -510,13 +752,16 @@ async function check(name, fn) { await fn(); checks++; console.log('通过：' +
     assert.deepEqual(h.finishes, ['warn']); assert.equal(h.timers.size, 0);
     assert.ok([...h.listeners.values()].every(v => v.size === 0));
   });
-  await check('先重试耗尽再收到断网事件时改为等待联网，并自动恢复', async () => {
+  await check('等待重试时遇到断网，开启自动重试后按间隔恢复', async () => {
     let broken = true;
     const h = harness((url, o, t) => broken ? Promise.resolve({ ok: false, status: 503 }) :
       Promise.resolve(response([[255]], 100, o.signal, t.delay)));
     const p = h.ctx.__DYC_REPLAY_TEST__.runDownload(plan(1), 'late-offline');
     await h.advance(5000); assert.equal(h.frames.at(-1).mode, 'retry');
     h.network(false); await h.advance(500); assert.equal(h.frames.at(-1).mode, 'offline');
+    h.ctx.autoRetry(true);
+    await h.advance(61000);
+    assert.equal(h.frames.at(-1).mode, 'cooldown');
     broken = false; h.network(true); await h.finish(p);
     assert.deepEqual(h.finishes, ['ok']); assert.equal(h.timers.size, 0);
   });
@@ -607,7 +852,9 @@ async function check(name, fn) { await fn(); checks++; console.log('通过：' +
           : Promise.reject(new Error('连接中断')) }) },
       });
     });
-    await h.finish(h.ctx.__DYC_REPLAY_TEST__.runDownload({ type: 'mp4', url: 'movie', segments: [] }, 'network'));
+    const p = h.ctx.__DYC_REPLAY_TEST__.runDownload({ type: 'mp4', url: 'movie', segments: [] }, 'network');
+    await h.advance(1); h.ctx.autoRetry(true);
+    await h.finish(p);
     assert.equal(calls, 2); assert.deepEqual(h.writes, [[1, 2], [3, 4]]);
     assert.deepEqual(h.finishes, ['ok']); assert.equal(h.timers.size, 0);
   });
@@ -636,7 +883,10 @@ async function check(name, fn) { await fn(); checks++; console.log('通过：' +
     h.ctx.crypto = { subtle: { importKey: async () => ({}), decrypt: async (_, key, bytes) => bytes } };
     const p = h.ctx.__DYC_REPLAY_TEST__.runDownload({ type: 'hls', passthrough: true,
       key: { method: 'AES-128', url: 'key' }, segments: [{ url: '0', seq: 0 }] }, 'encrypted');
-    await h.advance(1000); assert.equal(h.frames.at(-1).mode, 'retry');
+    await h.advance(1000); h.ctx.autoRetry(true);
+    await h.advance(31000);
+    assert.equal(h.frames.at(-1).mode, 'retry');
+    assert.equal(keyCalls, 1, '403 不会自动重复请求');
     broken = false; h.ctx.pause(); await h.finish(p);
     assert.equal(keyCalls, 2); assert.equal(segmentCalls, 1);
     assert.deepEqual(h.writes, [[1]]); assert.deepEqual(h.finishes, ['ok']);
@@ -647,9 +897,23 @@ async function check(name, fn) { await fn(); checks++; console.log('通过：' +
     try {
       dom.window.eval(read('src/replay/replay-ui.js'));
       const ui = dom.window.__DYC_REPLAY_UI__;
-      ui.mount(); ui.showProgress('test.mp4');
+      ui.mount(); ui.showProgress('test.mp4', { xhs: true });
       const root = dom.window.document.querySelector('#dyc-replay-host').shadowRoot;
       const button = root.querySelector('[data-act="pause"]');
+      const toggle = root.querySelector('.pc-body [role="switch"]');
+      assert.equal(toggle.checked, false);
+      assert.equal(root.querySelector('.pc-limit').hidden, false);
+      dom.window.innerWidth = 320;
+      const card = root.querySelector('.pc');
+      const hostRect = { left: 108, right: 226, top: 158, bottom: 190 };
+      ui.placePop(card, 344, hostRect);
+      const cardLeft = hostRect.left + parseFloat(card.style.left);
+      assert.ok(cardLeft >= 0 && cardLeft + parseFloat(card.style.maxWidth) <= dom.window.innerWidth,
+        '窄窗的进度卡和自动重试开关必须完整留在视口内');
+      let enabled = false;
+      ui.setAutoRetryHandler(on => { enabled = on; });
+      toggle.click();
+      assert.equal(enabled, true);
       let clicks = 0; ui.setPauseHandler(() => { clicks++; });
       for (const mode of ['', 'paused', 'offline', 'retry']) {
         ui.setProgress(0.4, { mode, recoverable: true, reason: 'HTTP 403' });
@@ -660,6 +924,11 @@ async function check(name, fn) { await fn(); checks++; console.log('通过：' +
       ui.setProgress(0.4, { mode: '', recoverable: false }); assert.equal(button.hidden, true);
       ui.finishProgress('ok', 'done'); assert.equal(root.querySelector('[data-act="pause"]'), null);
       assert.equal(root.querySelector('.pc-hint').hidden, true);
+      assert.equal(root.querySelector('.pc-retry').hidden, true);
+      ui.showProgress('douyin.mp4');
+      assert.equal(root.querySelectorAll('.pc').length, 1);
+      assert.equal(root.querySelector('.pc-body [role="switch"]').checked, false);
+      assert.equal(root.querySelector('.pc-limit').hidden, true);
       ui.unmount();
     } finally { dom.window.close(); }
   });

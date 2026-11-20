@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "可可助手",
-  "version": "26.11.19.2",
+  "version": "26.11.21.1",
   "description": "抖音抖店、微信小店、中控台小助手",
   "permissions": [
     "storage",
@@ -32,8 +32,7 @@
   "web_accessible_resources": [
     {
       "resources": [
-        "src/feedback/*",
-        "src/content/stock-net-probe-main.js"
+        "src/feedback/*"
       ],
       "matches": [
         "https://*.jinritemai.com/*",
@@ -42,12 +41,28 @@
     },
     {
       "resources": [
-        "src/content/wx-link-main.js",
-        "src/content/stock-net-probe-main.js"
+        "src/content/wx-link-main.js"
       ],
       "matches": [
         "https://store.weixin.qq.com/*",
         "https://channels.weixin.qq.com/*"
+      ]
+    },
+    {
+      "resources": [
+        "src/content/stock-net-probe-main.js"
+      ],
+      "matches": [
+        "https://*.jinritemai.com/*",
+        "https://anchor.douyin.com/*",
+        "https://ark.xiaohongshu.com/*",
+        "https://buyin.jinritemai.com/*",
+        "https://channels.weixin.qq.com/*",
+        "https://compass.jinritemai.com/*",
+        "https://fxg.jinritemai.com/*",
+        "https://liveservice.douyin.com/*",
+        "https://pgy.xiaohongshu.com/*",
+        "https://store.weixin.qq.com/*"
       ]
     }
   ],
@@ -216,6 +231,7 @@
         "src/content/diag.js",
         "src/content/anchor.js",
         "src/content/dialog.js",
+        "src/content/stock-net-probe.js",
         "src/content/debug-panel.js",
         "src/content/item-code.js",
         "src/live/live-detail.js",
@@ -238,6 +254,7 @@
         "src/content/flags.js",
         "src/content/diag.js",
         "src/content/dialog.js",
+        "src/content/stock-net-probe.js",
         "src/content/debug-panel.js",
         "src/replay/replay-net.js",
         "src/replay/m3u8.js",
@@ -262,6 +279,7 @@
         "src/content/compass-screen-flag.js",
         "src/content/diag.js",
         "src/content/dialog.js",
+        "src/content/stock-net-probe.js",
         "src/content/debug-panel.js",
         "src/live/hide-elements.js",
         "src/replay/replay-ui.js",
@@ -286,6 +304,7 @@
         "src/content/diag.js",
         "src/content/anchor.js",
         "src/content/dialog.js",
+        "src/content/stock-net-probe.js",
         "src/content/debug-panel.js",
         "src/content/item-code.js",
         "src/live/compass-table.js",
@@ -307,6 +326,7 @@
         "src/content/diag.js",
         "src/content/anchor.js",
         "src/content/dialog.js",
+        "src/content/stock-net-probe.js",
         "src/content/debug-panel.js",
         "src/content/campaign-channel-tick.js",
         "src/live/hide-elements.js"
@@ -384,6 +404,23 @@
     },
     {
       "matches": [
+        "https://pgy.xiaohongshu.com/commerce/redlive/live_screen/operation*"
+      ],
+      "js": [
+        "src/content/flags.js",
+        "src/replay/replay-net.js",
+        "src/replay/m3u8.js",
+        "src/replay/replay-meta.js",
+        "src/replay/replay-ui.js",
+        "src/replay/vendor/mux.min.js",
+        "src/replay/replay-writer.js",
+        "src/replay/replay-guard.js",
+        "src/replay/replay-download.js"
+      ],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
         "https://fxg.jinritemai.com/*"
       ],
       "js": [
@@ -415,6 +452,7 @@
         "src/content/item-code.js",
         "src/content/return-goods-name.js",
         "src/live/hide-elements.js",
+        "src/content/stock-net-probe.js",
         "src/content/debug-panel.js"
       ],
       "css": [
@@ -435,6 +473,7 @@
         "src/content/item-code.js",
         "src/content/return-goods-name.js",
         "src/live/hide-elements.js",
+        "src/content/stock-net-probe.js",
         "src/content/debug-panel.js"
       ],
       "css": [
@@ -466,6 +505,7 @@
         "https://fxg.jinritemai.com/ffa/morder/logistics/*",
         "https://liveservice.douyin.com/*",
         "https://pgy.xiaohongshu.com/*",
+        "https://pgy.xiaohongshu.com/commerce/redlive/live_screen/operation*",
         "https://store.weixin.qq.com/*"
       ],
       "exclude_matches": [
@@ -494,6 +534,7 @@
         "src/content/flags.js",
         "src/content/diag.js",
         "src/content/dialog.js",
+        "src/content/stock-net-probe.js",
         "src/content/debug-panel.js"
       ],
       "css": [

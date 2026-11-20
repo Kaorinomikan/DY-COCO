@@ -116,9 +116,7 @@
    * 双平台分键（2026-11-17 猫爪上小红书中控台）
    *
    * 同一份脚本注入抖店系与小红书系两条 content_scripts 通道，
-   * 开关按作用页分键：pgy /commerce/redlive/ 读 xhsCursorFix，
-   * 其余页维持 cursorFix。两键互不影响 —— 「抖音关掉、小红书也关」
-   * 这种事说不清，所以照第一批「B 小红书专用行」口径各设一键。
+   * 小红书中控台读 xhsCursorFix，抖店系页面读 cursorFix。
    * ★ dycReadFlags() 返回 Promise，调用方一律 .then（本文件原有纪律）。
    * ========================================================== */
 
@@ -132,7 +130,10 @@
   }
 
   function flagKey() {
-    return onXhsCtrl() ? 'xhsCursorFix' : 'cursorFix';
+    if (onXhsCtrl()) return 'xhsCursorFix';
+    var pat = window.DYC_PAGE_PATTERNS;
+    if (pat && pat.xhsAll && pat.xhsAll.test(location.href)) return null;
+    return 'cursorFix';
   }
 
   /**
@@ -721,28 +722,33 @@
    * 启动
    * ========================================================== */
 
-  dycReadFlags().then(function (flags) {
-    if (flags[flagKey()] === false) {
-      console.log('[DYC-CURSOR] 抓手光标修复:开关为关闭,跳过');
-      return;
-    }
-    enable();
-  });
-
-  // 开关变化即时生效,无需刷新页面
-  // 状态条统一反馈(2026-10-11):开关切换报一声,首次对齐不报
-  // ★ 键按当前作用页取(SPA 路由切换后下次 watch 事件自动换键)
+  var currentFlags = null;
   var prevOn = null;
-  dycWatchFlags(function (flags) {
-    var on = flags[flagKey()] !== false;
-    if (prevOn !== null && on !== prevOn && typeof toast === 'function') {
+
+  function syncEnabled(reportChange) {
+    if (!currentFlags) return;
+    var key = flagKey();
+    var on = !!key && currentFlags[key] !== false;
+    if (reportChange && key && prevOn !== null && on !== prevOn && typeof toast === 'function') {
       toast(on ? '已开启' : '已关闭', 'info', { source: '抓手光标' });
     }
     prevOn = on;
-    if (flags[flagKey()] === false) {
-      disable();
-    } else if (!enabled) {
-      enable();
-    }
+    if (on) enable();
+    else disable();
+  }
+
+  dycReadFlags().then(function (flags) {
+    if (currentFlags) return;
+    currentFlags = flags;
+    syncEnabled(false);
+  });
+
+  dycWatchFlags(function (flags) {
+    currentFlags = flags;
+    syncEnabled(true);
+  });
+
+  window.addEventListener('dyc:pagechange', function () {
+    syncEnabled(false);
   });
 })();

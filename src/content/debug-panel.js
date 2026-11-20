@@ -598,16 +598,9 @@
     var btnProbe = $('dyb-debug-probe');
     var btnNetArm = $('dyb-debug-netarm');
 
-    /* 「开始接口取样 30 秒」依赖库存探针（window.__DYC_STOCK_PROBE__），
-     * 只有注入了 stock-net-probe 的条目才有（抖店商品列表 / 中控台 /
-     * 2026-10-31 起的微信小店两个域）。
-     * 按「在场才显示」处理：探针没装的页面点这按钮只会弹一句「监听模块不在场」，
-     * 让用户以为自己弄坏了什么。
-     * 用 style.display 而不是 hidden：面板 CSS 给按钮设了显示规则，
-     * hidden 属性会被 display 规则覆盖掉。 */
+    // 公共组件负责注入探针。脚本未完整加载时隐藏入口，以免按钮无法使用。
     var netProbe = window.__DYC_STOCK_PROBE__;
-    if (btnNetArm && !(netProbe && typeof netProbe.arm === 'function' &&
-        (!netProbe.available || netProbe.available()))) {
+    if (btnNetArm && !(netProbe && typeof netProbe.arm === 'function')) {
       btnNetArm.style.display = 'none';
     }
 
@@ -617,17 +610,21 @@
       });
     }
 
-    // 「开始接口取样 30 秒」(2026-10-24 渠道品直提配套):手动开一个监听窗口,
-    // 用于平台暂不支持的页面上现场侦察接口(如渠道品)。同一探针、只记本站请求。
-    if (btnNetArm) {
-      btnNetArm.addEventListener('click', function () {
-        var probe = window.__DYC_STOCK_PROBE__;
-        if (!probe || typeof probe.arm !== 'function' || (probe.available && !probe.available())) {
-          say('监听模块不在场(本页脚本未含或未刷新)', 'err');
-          return;
+    if (btnNetArm && netProbe && typeof netProbe.arm === 'function') {
+      btnNetArm.addEventListener('click', async function () {
+        btnNetArm.disabled = true;
+        say('正在准备接口取样…');
+        try {
+          if (await netProbe.arm(30000)) {
+            say('接口取样已开始，请在 30 秒内操作，再复制诊断报告。', 'ok');
+          } else {
+            say('接口取样启动失败，请刷新页面后重试。', 'err');
+          }
+        } catch (e) {
+          say('接口取样启动失败，请刷新页面后重试。', 'err');
+        } finally {
+          btnNetArm.disabled = false;
         }
-        probe.arm(30000);
-        say('监听已开窗 30 秒:现在手动做一次操作,完成后点「复制诊断报告」', 'ok');
       });
     }
 

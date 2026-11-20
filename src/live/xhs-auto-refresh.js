@@ -6,6 +6,7 @@
 
   var INTERVAL = 10000;
   var REFRESH = '.goods-list-tab .refresh-tips > .refresh-tips-icon';
+  var LOADING = ':scope > .d-v-loading';
   var OVERLAY = '.d-drawer,.detail-add-goods-drawer,.d-modal,.d-dialog,[role="dialog"]';
   var ID = 'dyc-xhs-auto-refresh';
   var STYLE_ID = ID + '-style';
@@ -49,7 +50,8 @@
       sel + ' i{position:absolute;top:-2px;right:-2px;width:8px;height:8px;border:1.5px solid #fff;',
       'border-radius:50%;background:currentColor}',
       sel + '[data-state="auto"]{color:#0a8f28;background:#f4fdf6;border-color:#b7ebc6}',
-      sel + '[data-state="force"]{color:#b95300;background:#fff7eb;border-color:#ffd9b3}'
+      sel + '[data-state="force"]{color:#b95300;background:#fff7eb;border-color:#ffd9b3}',
+      '.goods-manage-container > .d-v-loading[data-dyc-xhs-auto-loading]{display:none!important}'
     ].join('');
     document.head.appendChild(style);
   }
@@ -110,7 +112,15 @@
     if (now - typedAt < 8000 || document.getElementById('dyc-xhs-cart-paste')?.disabled ||
         refreshIcon.closest('[aria-busy="true"]') || Array.from(document.querySelectorAll(OVERLAY)).some(visible)) return;
     nextAt = now + INTERVAL;
+    var panel = refreshIcon.closest('.goods-manage-container');
+    var existingMask = panel?.querySelector(LOADING);
     refreshIcon.click();
+    if (panel && !existingMask) {
+      // 原生点击在微任务中挂载加载层，给本轮新增的节点做标记。
+      queueMicrotask(function () {
+        panel.querySelector(LOADING)?.setAttribute('data-dyc-xhs-auto-loading', '');
+      });
+    }
   }
   function markTyping(event) {
     if (event.target.matches('input,textarea,[contenteditable="true"]')) typedAt = Date.now();

@@ -536,3 +536,9 @@ body:has(:is(.d-drawer, .detail-add-goods-drawer):not([hidden], [aria-hidden="tr
   :is(#dyb-xhs-scroll, #dyc-xhs-loop) {
   display: none !important;
 }
+
+/* 抖音中控台：加载节点替换进来时，沿用动作栏记录的常态宽度。 */
+[style*="--dyc-refresh-slot-width:"] > :is(.dyc-ar-lamp, #dyc-auto-loop-host) + [class*="refreshLoading-"] {
+  min-inline-size: var(--dyc-refresh-slot-width);
+  max-inline-size: var(--dyc-refresh-slot-width);
+}

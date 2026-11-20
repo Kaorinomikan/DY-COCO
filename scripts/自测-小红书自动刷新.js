@@ -11,13 +11,13 @@ const id = 'dyc-xhs-auto-refresh';
   const dom = new JSDOM(`
     <main class="control-container">
       <button id="start">立即开播</button>
-      <section class="goods-list">
+      <section class="goods-manage-container"><div class="goods-list">
         <div class="goods-list-tab"><div class="refresh-tips">
           最近更新：2026年11月19日 22:02<span class="refresh-tips-icon"><svg></svg></span>
         </div></div>
         <input type="search"><button id="dyc-xhs-cart-paste">粘贴加车</button>
         <button>立即开播</button>
-      </section>
+      </div></section>
     </main>
     <div class="refresh-tips"><span class="refresh-tips-icon"></span></div>
   `, {
@@ -41,6 +41,13 @@ const id = 'dyc-xhs-auto-refresh';
   const row = () => d.querySelector('.goods-list-tab .refresh-tips');
   const control = () => d.getElementById(id);
   const original = row().querySelector('.refresh-tips-icon');
+  const panel = d.querySelector('.goods-manage-container');
+  function showLoading() {
+    const mask = d.createElement('div');
+    mask.className = 'd-v-loading';
+    panel.appendChild(mask);
+    return mask;
+  }
   original.addEventListener('click', () => clicks++);
   d.querySelector('body > .refresh-tips').addEventListener('click', () => otherClicks++);
   function advance(ms) { now += ms; ticks?.(); }
@@ -57,8 +64,18 @@ const id = 'dyc-xhs-auto-refresh';
     advance(9999);
     assert.equal(button.style.cssText, style, '滚动无需坐标跟位');
     assert.equal(clicks, 0);
+    let autoMask;
+    original.addEventListener('click', () => w.queueMicrotask(() => {
+      autoMask = showLoading();
+    }), { once: true });
     advance(1);
     assert.equal(clicks, 1, '确认未开播每 10 秒只点一次');
+    await Promise.resolve();
+    assert.equal(w.getComputedStyle(autoMask).display, 'none', '自动刷新时遮罩不挡商品操作');
+    autoMask.remove();
+    const nativeMask = showLoading();
+    assert.notEqual(w.getComputedStyle(nativeMask).display, 'none', '其他商品加载仍显示遮罩');
+    nativeMask.remove();
 
     const start = d.getElementById('start');
     start.textContent = '结束直播';

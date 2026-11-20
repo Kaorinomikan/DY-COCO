@@ -22,7 +22,7 @@
  *   A. 平台识别 —— 两条地址都判为 xhs
  *   B. 注入覆盖 —— manifest 同时 match 两域、公共组件完整、host_permissions 到位
  *   C. 页面分类 —— 具体路径键先于域级键，逐条 URL 落到正确键
- *      （含两个中控台入口：pgy /commerce/redlive/ 与 ark /live_center_control）
+ *      （含两个中控台入口：pgy /commerce/redlive/live_center_control 与 ark /live_center_control）
  *   D. 后台支持域 —— isHostPermittedUrl 对两域为真，且不误放行其它域
  *   E. 诊断可读性 —— 五个键都有中文名
  *   F. 判据唯一性 —— 五个中控台功能都只认页面键，不许各自写死域名
@@ -160,6 +160,13 @@ function pageKind(url) {
   return 'other';
 }
 assert.equal(pageKind(CTRL_URL), 'xhsCtrl', '中控台应落 xhsCtrl');
+assert.equal(pageKind(CTRL_URL + '?from=menu'), 'xhsCtrl', '蒲公英中控台带 query 仍应落 xhsCtrl');
+assert.equal(pageKind(CTRL_URL + '/'), 'xhsCtrl', '蒲公英中控台带尾斜杠仍应落 xhsCtrl');
+assert.equal(pageKind(CTRL_URL + '_backup'), 'xhsPgy', '相近路径仍应落 xhsPgy');
+assert.equal(pageKind('https://pgy.xiaohongshu.com/commerce/redlive/live_screen/operation?from=menu'),
+  'xhsReplayPage', '运营版应落独立回放页键');
+assert.equal(pageKind('https://pgy.xiaohongshu.com/commerce/redlive/live_screen/operation_preview'),
+  'xhsPgy', '相近路径不应启用运营版回放');
 /* 两个中控台入口都必须落 xhsCtrl：这是「直接兼容」的唯一开关点，
  *   落错键 ⇒ 五个中控台功能全部静默不生效（开关开着、页面没变化）。 */
 assert.equal(pageKind(ARK_CTRL_URL), 'xhsCtrl', 'ark 店播中控台应落 xhsCtrl');
@@ -174,7 +181,7 @@ assert.equal(pageKind('https://ark.xiaohongshu.com/app-order/logistics/list'), '
   '退货策略以外的订单页仍落 xhsArk（别把作用域写宽）');
 assert.equal(pageKind('https://ark.xiaohongshu.com/shop/detail'), 'xhsArk', 'ark 其它页应落 xhsArk');
 assert.equal(pageKind('https://www.xiaohongshu.com/explore'), 'xhsAll', '其它子域应落 xhsAll');
-ok('六条样本逐条落到正确页面键（顺序写反会被这条抓住）');
+ok('两个中控台及其相近路径、直播大屏和其他小红书页面均正确分类');
 
 console.log('D. 后台支持域');
 XHS_HOSTS.map((h) => h.replace('/*', '/x')).forEach((u) => {
@@ -189,10 +196,10 @@ XHS_HOSTS.map((h) => h.replace('/*', '/x')).forEach((u) => {
 ok('两域放行、抖店/微信不受影响、仿冒域名不放行');
 
 console.log('E. 诊断可读性');
-['xhsCtrl', 'xhsArkList', 'xhsArkReturn', 'xhsPgy', 'xhsArk', 'xhsAll'].forEach((k) => {
+['xhsCtrl', 'xhsArkList', 'xhsArkReturn', 'xhsReplayPage', 'xhsPgy', 'xhsArk', 'xhsAll'].forEach((k) => {
   assert.ok(ctx.KIND_CN[k], 'diag.js 的中文名表缺 ' + k);
 });
-ok('六个页面键都有中文名（报告里不会露英文键名）');
+ok('小红书页面键都有中文名（报告里不会露英文键名）');
 
 console.log('F. 判据唯一性');
 /* 五个中控台功能都读同一个页面键（pat.xhsCtrl）：加中控台入口只改 flags.js 一处。

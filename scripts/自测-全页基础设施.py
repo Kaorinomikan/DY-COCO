@@ -3,7 +3,10 @@ import copy
 import json
 from pathlib import Path
 import unittest
-from page_infrastructure import BASE_JS, check_infrastructure, fallback_entry, is_fallback
+from page_infrastructure import (
+    BASE_JS, DEBUG_PANEL, NET_PROBE, NET_PROBE_MAIN,
+    check_infrastructure, fallback_entry, fix_infrastructure,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -13,8 +16,7 @@ class CoverageTests(unittest.TestCase):
         self.manifest = json.loads((ROOT / 'manifest.json').read_text(encoding='utf-8'))
 
     def refresh(self):
-        entries = self.manifest['content_scripts']
-        entries[:] = [c for c in entries if not is_fallback(c)] + [fallback_entry(self.manifest)]
+        fix_infrastructure(self.manifest)
 
     def test_current_pages(self):
         self.assertEqual(check_infrastructure(self.manifest), [])
@@ -28,10 +30,23 @@ class CoverageTests(unittest.TestCase):
         baseline = self.manifest['content_scripts'][-1]
         self.assertIn(new['matches'][0], baseline['matches'])
         self.assertNotIn(new['matches'][0], baseline['exclude_matches'])
+        self.assertIn(NET_PROBE, baseline['js'])
+        resource = next(r for r in self.manifest['web_accessible_resources'] if NET_PROBE_MAIN in r['resources'])
+        self.assertIn('https://new.example.com/*', resource['matches'])
+
+    def test_independent_debug_group_inherits_probe(self):
+        entry = next(c for c in self.manifest['content_scripts'] if 'src/content/campaign-channel-tick.js' in c.get('js', []))
+        entry['js'].remove(NET_PROBE)
+        self.assertTrue(check_infrastructure(self.manifest))
+        entry['js'].append(NET_PROBE)
+        self.assertTrue(check_infrastructure(self.manifest))
+        self.refresh()
+        self.assertEqual(check_infrastructure(self.manifest), [])
+        self.assertLess(entry['js'].index(NET_PROBE), entry['js'].index(DEBUG_PANEL))
 
     def test_partial_bundle_is_rejected(self):
         entry = next(c for c in self.manifest['content_scripts'] if 'src/content/campaign-channel-tick.js' in c.get('js', []))
-        entry['js'].remove('src/content/debug-panel.js')
+        entry['js'].remove(DEBUG_PANEL)
         self.assertTrue(check_infrastructure(self.manifest))
 
     def test_complete_bundle_is_excluded_from_fallback(self):

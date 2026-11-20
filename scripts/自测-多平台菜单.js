@@ -115,16 +115,21 @@ async function test(name, fn) { await fn(); passed++; console.log('通过：' + 
     assert(!/直播回放页/.test(f.w.supportedScopeText()), '提示只列平台，不列细分页面');
     assert.deepEqual(f.errors, []); f.close();
   });
-  await test('小红书分组数与平台表一致、快手淘宝空态与未知存档回退', async () => {
+  await test('小红书显示所属分组和回放下载、快手淘宝空态与未知存档回退', async () => {
     const f = fixture('https://qianfan.xiaohongshu.com/'); await flush();
-    /* 2026-11-17：小红书新增「小红书中控台」分组（xhsLive）⇒ 原来写死的 2 变成 3。
-     * 断言改为「显示数 = 平台表认领数」，以后再加组不用回来改这里。 */
-    const claimed = f.w.DYC_PLATFORMS.find((p) => p.id === 'xhs').groups.length;
-    assert.equal(f.d.querySelectorAll('#flags-root > :not([hidden])').length, claimed);
+    const shown = Array.from(f.d.querySelectorAll('#flags-root > [data-gid]:not([hidden])'));
+    assert.deepEqual(shown.map((el) => el.dataset.gid), ['xhsLive', 'xhsShop', 'other']);
+    const crossPlatform = shown.find((el) => el.dataset.gid === 'other');
+    const rows = Array.from(crossPlatform.querySelectorAll('[data-flag-row]:not([hidden])'));
+    assert.deepEqual(rows.map((row) => row.dataset.flagRow), ['replayDownload']);
+    const replayLink = rows[0].querySelector('.replay-page-link');
+    assert.equal(replayLink.hidden, true, '小红书不显示抖音复盘链接');
     f.choose('ks'); assert.equal(f.selected(), 'ks'); assert.equal(f.d.getElementById('platform-empty').hidden, false);
     assert.equal(f.d.querySelectorAll('#flags-root > :not([hidden])').length, 0);
     f.choose('tb'); assert(f.d.getElementById('platform-empty-title').textContent.includes('淘宝'));
-    f.w.applyPlatform('broken'); assert.equal(f.selected(), 'dy'); f.close();
+    f.w.applyPlatform('broken'); assert.equal(f.selected(), 'dy');
+    assert.equal(replayLink.hidden, false, '切回抖音恢复复盘链接');
+    f.close();
   });
   await test('手动切换不写业务开关、不重建功能行与页脚，正文不做透明退场', async () => {
     const f = fixture('https://store.weixin.qq.com/'); await flush();
