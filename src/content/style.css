@@ -331,7 +331,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
   cursor: pointer;
-  z-index: 3;
+  /* 平台悬停时的遮罩/工具条常压在同一层叠上下文里(2026-11-22 用户:指针指上去就闪),
+     层级要压过它们,否则按钮会被遮住再露出来,看起来就是闪。 */
+  z-index: 2147483000;
   transition: background 0.15s, color 0.15s, border-color 0.15s;
 }
 .dyc-imgpaste-btn:hover { background: #1664ff; border-color: #1664ff; color: #fff; }
@@ -499,19 +501,24 @@
    胶囊挂在图标**正下方**(top:100%),不压图标、不推开后面的输入框;
    宽度与图标同宽,高 16px,文字 10px。固定 px。 */
 .dyc-imgpaste-btn.is-micro {
-  left: 50%;
-  right: auto;
-  bottom: auto;
-  top: 100%;
-  transform: translateX(-50%);
-  margin-top: 3px;
   width: 34px;
   height: 16px;
   padding: 0;
   border-radius: 4px;
   font-size: 10px;
   line-height: 14px;
-  z-index: 4;
+  z-index: 2147483001;
+}
+
+/* 用户 2026-11-22 定稿:小框的胶囊外置到**右侧空白处**、垂直居中 ——
+   下方与框内都会被单元格裁切或被浮层盖住;右侧是表格列的空白。 */
+.dyc-imgpaste-btn.is-micro-right {
+  left: 100%;
+  right: auto;
+  top: 50%;
+  bottom: auto;
+  margin: 0 0 0 4px;
+  transform: translateY(-50%);
 }
 
 /* 祖先 overflow 会裁掉下方胶囊时的降级:贴在图标内底部 11px,仍不遮中心 */
@@ -521,14 +528,14 @@
   bottom: 1px;
   top: auto;
   transform: none;
-  margin-top: 0;
+  margin: 0;
   width: auto;
   height: 11px;
   padding: 0;
   border-radius: 3px;
   font-size: 9px;
   line-height: 9px;
-  z-index: 4;
+  z-index: 2147483001;
 }
 
 /* 小红书中控台：平台抽屉打开时，滚动按钮和循环讲解控件一起让位。 */

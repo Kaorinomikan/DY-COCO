@@ -582,6 +582,10 @@
 
   function applyAll() {
     if (!enabled()) return;
+    /* 不在中控台：先把已写的内联样式还原，再退出（2026-11-21，与 copy-code 同因）。
+     * 不还原的话，SPA 切页后新页面里被我们改过的行会一直保持折行态 —— 平台重渲染
+     * 才洗掉，中途看着就是「商品管理页的名字自己变两行」。 */
+    if (!inLiveScope()) { restoreAll(); return; }
     if (dragHold()) return;      // 拖拽期不量测、不写样式（见 dragHold 注释）
     var rows;
     try {
@@ -688,7 +692,17 @@
     }
   }
 
+  /* ---------- 中控台作用域（2026-11-21，与 copy-code.js 同一根因） ----------
+   * 中控台是 Garfish 微前端，pushState 切页不重载 document；本模块原先没有页面
+   * 判断，切到商品管理页仍会拿表格行当小黄车行改写名称样式。判据只取
+   * flags.js 的 dycIsLiveControl()，不在本文件另写 URL 正则。
+   */
+  function inLiveScope() {
+    return typeof dycIsLiveControl !== 'function' || dycIsLiveControl();
+  }
+
   function start() {
+    if (!inLiveScope()) return;
     if (!observer) {
       observer = new MutationObserver(scheduleApply);
       observer.observe(document.body, { childList: true, subtree: true });
@@ -718,10 +732,19 @@
       if (prevNameWrap !== null && now !== prevNameWrap && typeof toast === 'function') {
         toast(now ? '已开启' : '已关闭', 'info', { source: '名称换行' });
       }
-      prevNameWrap = now;
-      if (now) start();
+    prevNameWrap = now;
+    if (now) start();
+    else stop();
+  });
+
+  /* 作用域订阅：切走立刻收（还原样式 + 断观察器），切回再起。
+     旧构建没有该 API 时跳过，由 applyAll 里的作用域闸兜底。 */
+  if (typeof dycWatchLiveScope === 'function') {
+    dycWatchLiveScope(function (inScope) {
+      if (inScope) { if (enabled()) start(); }
       else stop();
     });
+  }
   }
 
   // 首屏兜底:中控台是微前端,商品列表渲染得晚,定时补涂三次

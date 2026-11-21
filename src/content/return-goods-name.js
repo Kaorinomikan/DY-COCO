@@ -86,6 +86,21 @@
  *   分开是刻意的：两页场景不同（一个配置退货策略、一个挑素材绑商品），
  *   共用一个键会出现「关掉退货页，素材页跟着没了」的困惑。
  *   关掉即时生效：摘观察器 + 移除已注入按钮 + 还原全部内联属性，页面回原样。
+ *
+ * 【素材页抖动（2026-11-21 用户：「这个页面会抖动」）】
+ *
+ *   诊断轨迹里每 4 秒一条「本轮解开 9/10 个名称」—— 解开了、下一轮又要解开，
+ *   每一轮都是一次布局变化。三条原因叠加，缺一条都还会抖：
+ *     ① **规则注入晚于打属性**：scan 先 applyUnclip 再 ensureButton，而常驻 CSS
+ *        原先只在 ensureButton 里注入 ⇒ 首轮属性打了却没有规则，白解一次；
+ *        现在 applyUnclip 第一步就 ensureStyleFor(el)。
+ *     ② **只解最内层**：素材页名称是 `div.name(209×16) > div(名称文本)`，
+ *        外层高度被平台定死 ⇒ 文本就算解成两行也看不见，下一轮照样判截断。
+ *        新增 FIT_ATTR：把「真的切了内容」的祖先层一并解锁（只动高度，不动 display）。
+ *     ③ **上限挂错了层**：REDO_LIMIT 记在名称节点上，而平台会整段重建表格行，
+ *        计数随之归零 ⇒ 上限形同虚设。补两道与节点无关的闸：打摆静默期
+ *        （3 秒内重复解开 6 次即静默 30 秒）与 hover 让路（鼠标下的卡片不写）。
+ *   兜底取向与商品列表页一致：宁可这一条显示不全，也不让整页一直抖。
  * ============================================================
  */
 (function dycReturnGoodsName() {
@@ -142,6 +157,15 @@
    * 属性若也被洗掉，下一轮重新打上即可（一次 setAttribute，不重排多个属性）。 */
   var OPEN_ATTR = 'data-dyc-rgopen';
   var CAP_ATTR = 'data-dyc-rgcap';
+  /* 2026-11-21：**祖先层**的高度/裁切解锁标记。素材页把名称定死在 16px 高
+   * （见下方 fitChain），只解名称本身等于没解 —— 内容照样被祖先裁掉，
+   * 下一轮又判「截断」，于是每轮重写一次 = 用户说的抖动。 */
+  var FIT_ATTR = 'data-dyc-rgfit';
+  /* 按钮定位上下文 / 父容器换行：同样走属性 + 常驻规则。
+   * 2026-11-21 一并改 —— 这两处原先写内联，平台每轮重渲染洗掉、我们每轮重写，
+   * 也是「一直抖」的一部分（尤其 flex-wrap 会真改布局）。 */
+  var HOST_ATTR = 'data-dyc-rghost';
+  var WRAP_ATTR = 'data-dyc-rgwrap';
 
   var BTN_ATTR = 'data-dyc-rg-btn';      // 我们注入的按钮（读页面文本时整棵跳过）
   var BTN_CLASS = 'dyc-rg-btn';
@@ -153,6 +177,20 @@
   /* 同一个名称最多重写几次样式。超过就停手 —— 防止与平台重渲染打摆（会抖）。
    * 正常情况写完一轮后 truncReason 就返回空，永远用不到这个上限。 */
   var REDO_LIMIT = 3;
+
+  /* ---------- 打摆闸（2026-11-21 素材页抖动）----------
+   *
+   * REDO_LIMIT 挂在**名称节点**上，而素材页的表格行会被平台整段重建：
+   * 节点一换，计数归零 ⇒ 上限形同虚设，就变成「每 4 秒抖一次」。
+   * 所以再补一道**与节点无关**的闸：短时间内反复出现「刚解开又需要解开」，
+   * 判定页面正在打摆，静默一段时间（只保留按钮、不再改任何样式）。
+   * 静默期结束后自动恢复 —— 平台若只是偶发重渲染，不会长期降级。 */
+  var CHURN_WINDOW = 3000;    // 观察窗：3 秒内
+  var CHURN_HITS = 6;         // 累计这么多次重复解开
+  var CHURN_REST = 30000;     // 就静默这么久
+  var churn = { last: 0, hits: 0, restUntil: 0 };
+  /* 上一轮解开过的名称（元素引用）。同一元素下一轮又要解开 ⇒ 属性被洗了。 */
+  var lastOpened = typeof WeakSet === 'function' ? new WeakSet() : null;
 
   /* 首屏三次补涂：表单页是 React 分批挂载，商品卡常晚于首帧 */
   var BOOT_DELAYS = [1200, 3000, 6000];
@@ -603,6 +641,9 @@
       el.removeAttribute(MARK);
       el.removeAttribute(OPEN_ATTR);
       el.removeAttribute(CAP_ATTR);
+      el.removeAttribute(FIT_ATTR);
+      el.removeAttribute(HOST_ATTR);
+      el.removeAttribute(WRAP_ATTR);
     } catch (e2) { /* 忽略 */ }
     el.__dycRgCapped = false;
     el.__dycRgWrites = 0;
@@ -611,9 +652,16 @@
   function restoreAll() {
     for (var i = 0; i < touched.length; i++) restoreOne(touched[i]);
     touched = [];
+    /* 开关关掉再打开时重新计：静默期与「上轮解开过」名单不该跨开关残留，
+     * 否则用户会看到「刚打开开关却一动不动」。 */
+    churn = { last: 0, hits: 0, restUntil: 0 };
+    lastOpened = typeof WeakSet === 'function' ? new WeakSet() : null;
     for (var k = 0; k < wrapHosts.length; k++) {
       var h = wrapHosts[k];
-      if (h && h.__dycRgWrapPrev !== undefined) {
+      /* 2026-11-21：flex-wrap 改属性后，还原只需摘属性（内联那条老路径一并兼容）。 */
+      if (!h) continue;
+      try { h.removeAttribute(WRAP_ATTR); } catch (e1) { /* 忽略 */ }
+      if (h.__dycRgWrapPrev !== undefined) {
         try {
           if (h.__dycRgWrapPrev) h.style.setProperty('flex-wrap', h.__dycRgWrapPrev);
           else h.style.removeProperty('flex-wrap');
@@ -658,9 +706,14 @@
    * 展开一个被截断的名称：**只打属性**，具体样式见 CSS 里的 OPEN_ATTR 规则。
    * @return {boolean} true = 这次真的处理了
    */
-  function applyUnclip(el, reason) {
+  function applyUnclip(el, reason, card) {
     if (!el) return false;
     if (reason !== 'clamp' && reason !== 'nowrap' && reason !== 'height') return false;
+    /* ★ 2026-11-21：先把常驻规则注入到**元素所在的那棵树**再打属性。
+     *   scan 的顺序是「先解开、后 ensureButton」，而样式原先只在 ensureButton 里
+     *   注入 ⇒ 首轮解开时规则还不存在（属性打了也不生效）⇒ 下一轮再解一次。
+     *   素材页每 4 秒一轮，正好对上诊断里那条反复出现的「本轮解开 9/10 个名称」。 */
+    ensureStyleFor(el);
     try {
       el.setAttribute(OPEN_ATTR, '1');
       el.removeAttribute(CAP_ATTR);
@@ -671,7 +724,98 @@
     if (!appliedAt) appliedAt = Date.now();
     /* 规则生效后再量自然行数：超过 MAX_LINES 的钳回三行（换成 CAP_ATTR） */
     capLines(el);
+    /* 素材页：名称自身解开了，但外层容器高度被平台定死 ⇒ 内容照样看不见，
+     * 下一轮又判「截断」。所以把真正切内容的祖先一起解锁（见 fitChain）。 */
+    fitChain(el, card);
+    if (lastOpened) lastOpened.add(el);
     return true;
+  }
+
+  /**
+   * 解锁「把名称切掉的祖先层」（2026-11-21 用户报「素材页会抖动」）。
+   *
+   * 【真机结构】（用户交来的《页面结构报告》v26.11.21.1）
+   *   div.detail-WvY4DW (209×52)
+   *     ├ div.name-VOjSh9 (209×16)  ← 高度定死，内容解开后被这一层裁
+   *     │   └ div (209×16 可见 / 32 文本高)  ← 我们打 OPEN 的是这一层
+   *     ├ div.productIdWrapper (209×16)
+   *     └ div.statusWrapper (209×20)
+   *
+   * 【为什么只解名称本身没用】
+   *   名称文本解成两行（32px），外层仍是 16px ⇒ 可见部分没变 ⇒ 下一轮
+   *   truncReason 照样判「被裁」⇒ 再写一次属性。每轮一次布局变化，
+   *   用户看到的就是整块上下跳（诊断轨迹里 `本轮解开 9/10 个名称` 每 4 秒一条）。
+   *
+   * 【口径】
+   *   · 只认**真的切了内容**的层（scrollHeight > clientHeight，且不是可滚动容器）；
+   *   · 只解高度与裁切，**不动 display** —— 这层常是平台 flex 列，改 display 会散架；
+   *   · 上溯到卡片为止、最多 3 层，避免一路把整页容器都改成 auto。
+   *
+   * @param {Element} el 名称元素
+   * @param {Element|null} card 商品卡（边界，不含）
+   * @return {number} 解锁了几层
+   */
+  function fitChain(el, card) {
+    var n = (el && el.parentElement) || null;
+    var depth = 0;
+    var freed = 0;
+    /* 只解「贴着名称高度」的那几层（素材页名容器 16px、名称文本 48px）。
+     * 大容器（抽屉、滚动区）即使内容溢出也不动 —— 把它改成 height:auto 会
+     * 直接改掉页面主布局，那不是「解开名称」，那是拆页面。 */
+    var nameH = 0;
+    try { nameH = el.scrollHeight || 0; } catch (e0) { nameH = 0; }
+    while (n && n.nodeType === 1 && n !== card && depth < 3) {
+      var cut = false;
+      try {
+        var ch = n.clientHeight || 0;
+        if (ch > 0 && ch <= nameH + 8 && n.scrollHeight > ch + 1) {
+          var cs = window.getComputedStyle ? window.getComputedStyle(n) : null;
+          var oy = cs ? (cs.overflowY || '') : '';
+          /* 可滚动容器（auto/scroll）不碰：那是能滚的，拆了反而坏 */
+          cut = (oy !== 'auto' && oy !== 'scroll');
+        }
+      } catch (e) { cut = false; }
+      if (cut) {
+        try {
+          if (!n.getAttribute(FIT_ATTR)) n.setAttribute(FIT_ATTR, '1');
+        } catch (e2) { /* 打不上就交给下一轮 */ }
+        if (touched.indexOf(n) < 0) touched.push(n);
+        freed++;
+      }
+      n = n.parentElement;
+      depth++;
+    }
+    return freed;
+  }
+
+  /* ---------- 打摆检测与 hover 让路（2026-11-21 素材页抖动） ---------- */
+
+  /**
+   * 同一个名称「上一轮刚解开、这一轮又要解开」= 属性没留住（平台洗属性 / 换节点）。
+   * 短时间累计够多就判定页面在打摆，静默一段时间。判据与节点引用无关，
+   * 所以平台整段重建表格行也躲不过这道闸。
+   */
+  function noteChurn(el) {
+    var now = Date.now();
+    if (!churn.last || now - churn.last > CHURN_WINDOW) churn.hits = 0;
+    churn.last = now;
+    if (lastOpened && lastOpened.has(el)) churn.hits++;
+    if (churn.hits >= CHURN_HITS) {
+      churn.restUntil = now + CHURN_REST;
+      churn.hits = 0;
+      noteFact('名称反复被平台压回，已暂停改写 '
+        + Math.round(CHURN_REST / 1000) + ' 秒（继续写会让页面一直抖）', 'rest');
+    }
+  }
+
+  /**
+   * 鼠标是否停在这张卡上。
+   * 商品管理页已定过这条口径（2026-11-18）：hover 期间平台的布局还在变，
+   * 此刻写样式就是在用户眼皮底下跳。素材页卡片更高，更明显。
+   */
+  function hovered(card) {
+    if (!card || typeof card.matches !== 'function') return false;
+    try { return card.matches(':hover'); } catch (e) { return false; }
   }
 
   /* ---------- 货号 ---------- */
@@ -745,6 +889,18 @@
     '  overflow: hidden !important;',
     '  text-overflow: ellipsis !important;',
     '}',
+    /* 祖先层只解「高度 / 裁切」，**不动 display**（2026-11-21 素材页抖动）——
+     * 这一层多是平台的 flex 列（detail: 名称 / ID / 状态三行堆叠），
+     * 改 display 会把平台排版打散。height:auto 只让容器跟着内容长，
+     * 卡片随之变高（素材页 td 高 101、卡片仅 52，有空间容得下）。 */
+    '[' + FIT_ATTR + '] {',
+    '  height: auto !important;',
+    '  max-height: none !important;',
+    '  overflow: visible !important;',
+    '}',
+    /* 按钮的定位上下文（素材页名称容器）与父容器换行：属性化，不被平台洗掉 */
+    '[' + HOST_ATTR + '] { position: relative !important; }',
+    '[' + WRAP_ATTR + '] { flex-wrap: wrap !important; }',
     '.' + BTN_CLASS + ' {',
     '  all: initial;',
     '  display: inline-flex; align-items: center; justify-content: center;',
@@ -908,10 +1064,12 @@
     if (!cs || cs.display !== 'flex') return;
     var dir = cs.flexDirection || 'row';
     if (dir !== 'row' && dir !== 'row-reverse') return;
-    if (host.__dycRgWrapPrev !== undefined) return;   // 补过了
-    host.__dycRgWrapPrev = host.style.getPropertyValue('flex-wrap') || '';
-    try { host.style.setProperty('flex-wrap', 'wrap'); } catch (e2) { /* 忽略 */ }
-    wrapHosts.push(host);
+    /* 属性化（2026-11-21）：原先写内联 flex-wrap，平台洗一次我们就写一次，
+     * 而这条**会真改布局** —— 每次重写都是一次可见的重排。 */
+    try {
+      if (!host.getAttribute(WRAP_ATTR)) host.setAttribute(WRAP_ATTR, '1');
+    } catch (e2) { return; }
+    if (wrapHosts.indexOf(host) < 0) wrapHosts.push(host);
   }
 
   /** 给一个名称元素补按钮；已存在就不重复插 */
@@ -953,14 +1111,16 @@
    */
   function ensureCornerHost(host) {
     if (!host || host.nodeType !== 1) return;
-    try {
-      if (host.style && host.style.getPropertyValue('position') === 'relative') return;
-    } catch (e) { /* 读不到就照写 */ }
     var cs = null;
     try { cs = window.getComputedStyle ? window.getComputedStyle(host) : null; } catch (e2) { cs = null; }
     var pos = cs ? String(cs.position || '') : '';
     if (pos === 'relative' || pos === 'absolute' || pos === 'fixed') return;
-    setProp(host, 'position', 'relative');
+    /* 属性化（2026-11-21）：与 OPEN/FIT 同一理由 —— 内联会被平台重渲染洗掉，
+     * 洗一次写一次就构成循环；属性在，规则就在。 */
+    try {
+      if (!host.getAttribute(HOST_ATTR)) host.setAttribute(HOST_ATTR, '1');
+    } catch (e) { /* 打不上就算了：按钮仍在，只是位置可能差一点 */ }
+    if (touched.indexOf(host) < 0) touched.push(host);
   }
 
   /**
@@ -984,7 +1144,7 @@
     var card = cardOf(el);
     if (!card) return false;
     var reason = truncReason(el);
-    if (reason) applyUnclip(el, reason);
+    if (reason) applyUnclip(el, reason, card);
     ensureButton({ el: el, card: card });
     return true;
   }
@@ -1060,10 +1220,10 @@
           else host.insertBefore(exist, anchorEl.nextSibling);
         } catch (e2) { /* 挪不动就留在原地 */ }
       } else if (material) {
-        /* 已在名称容器里：保证是最后一个子节点（绝对定位不依赖顺序，但结构稳定好排查） */
-        if (exist !== host.lastElementChild) {
-          try { host.appendChild(exist); } catch (e5) { /* 忽略 */ }
-        }
+        /* 已在名称容器里就够 —— 绝对定位（right/bottom）不看兄弟顺序。
+         * ★ 2026-11-21：删掉「必须挪成最后一个子节点」那条。平台每轮渲染
+         *   都可能往后面塞节点，于是每轮搬一次按钮 = 每轮一次 DOM 变更 =
+         *   每次都可能带动重排。为了「好排查」付抖动的代价，不值。 */
       } else if (exist.previousSibling !== anchorEl) {
         try { host.insertBefore(exist, anchorEl.nextSibling); } catch (e6) { /* 忽略 */ }
       }
@@ -1129,6 +1289,9 @@
     var n = 0;
     var unclipped = 0;     // 本轮真的解开了几个名称（0 = 判据没命中；非 0 但页面没变 = 写了被洗）
     var stopped = 0;       // 本轮因重写上限跳过几个
+    var rested = 0;        // 本轮因打摆静默期跳过几个
+    var hoverSkip = 0;     // 本轮因鼠标正停在该卡片上跳过几个
+    var resting = Date.now() < churn.restUntil;
     for (var i = 0; i < cache.length; i++) {
       var it = cache[i];
       if (!it.el.isConnected) continue;
@@ -1138,17 +1301,25 @@
          *   平台若把内联样式洗掉、节点又留着，就会一轮一轮地重新解开 ⇒ 每次
          *   都触发布局变化 ⇒ 用户看到的是整块画面抖。写满 REDO_LIMIT 次就停手
          *   并留痕：最坏结果是这一条显示不全（看得见、能反馈），
-         *   而不是一直抖（看不见原因、也没法用）。 */
+         *   而不是一直抖（看不见原因、也没法用）。
+         * ★ 2026-11-21：节点会被整段重建，挂在节点上的计数随之归零（素材页
+         *   就是这么每 4 秒抖一次的）。补两道与节点无关的闸：打摆静默期 + hover 让路。 */
         var writes = it.el.__dycRgWrites || 0;
-        if (writes >= REDO_LIMIT) {
+        if (resting) {
+          rested++;
+        } else if (hovered(it.card)) {
+          hoverSkip++;
+        } else if (writes >= REDO_LIMIT) {
           stopped++;
           if (!it.warned) {
             it.warned = true;
             noteFact('同一名称被压回 ' + writes + ' 次，已停手（否则会一直抖）', 'skip');
           }
         } else {
+          /* 先记打摆，再写 —— applyUnclip 会把元素记进「上轮解开过」名单。 */
+          noteChurn(it.el);
           it.el.__dycRgWrites = writes + 1;
-          applyUnclip(it.el, reason);
+          applyUnclip(it.el, reason, it.card);
           unclipped++;
         }
       }
@@ -1159,12 +1330,16 @@
      * 有这句 = 脚本进来了但判据没认出来；连这句都没有 = 脚本没注入。
      * 2026-11-17 又补了「本轮解开 N 个」：用户在界面上看不到变化时，
      * 这一个数字就能把「判据没命中（0）」和「写了但被平台洗回（非 0）」分开。 */
-    var sig = cache.length + '/' + n + '/u' + unclipped;
+    var sig = cache.length + '/' + n + '/u' + unclipped
+      + (stopped ? 's' + stopped : '') + (rested ? 'r' + rested : '')
+      + (hoverSkip ? 'h' + hoverSkip : '');
     if (sig !== lastStat) {
       lastStat = sig;
       noteFact('本页识别 ' + cache.length + ' 个商品名 / 注入 ' + n + ' 个货号按钮'
         + ' / 本轮解开 ' + unclipped + ' 个名称'
-        + (stopped ? ' / 停手 ' + stopped + ' 个' : ''), sig);
+        + (stopped ? ' / 停手 ' + stopped + ' 个' : '')
+        + (rested ? ' / 静默期跳过 ' + rested + ' 个' : '')
+        + (hoverSkip ? ' / 鼠标下跳过 ' + hoverSkip + ' 个' : ''), sig);
     }
     return n;
   }

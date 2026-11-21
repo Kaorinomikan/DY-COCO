@@ -131,7 +131,8 @@ function boot(o) {
     nameOverflowY: 'visible',  // 真机素材页是 'hidden'
     nameOverflow: 'visible',   // 真机素材页 overflow 计算值是 'auto hidden'
     extraOutside: '',      // 塞进 productItem 之外的「像卡片」结构，测收窄
-    scrollH0: null         // 覆盖第 0 张名称的自然高度
+    scrollH0: null,        // 覆盖第 0 张名称的自然高度
+    clipAncestor: false    // 素材页真机形态：名称外层 .name-VOjSh9 定高 16，内容被它裁
   }, o || {});
 
   const cards = [];
@@ -200,6 +201,13 @@ function boot(o) {
     return box;
   };
 
+  /* 素材页真机形态（2026-11-21 抖动）：名称外层容器自己也定高 16，内容被它裁。
+   * 只解最内层时视觉没变化 ⇒ 下一轮又判截断 ⇒ 每轮一次布局变化 = 抖。 */
+  if (opt.clipAncestor) {
+    doc.querySelectorAll('.name-VOjSh9').forEach((el) => {
+      clip(el, { clamp: 0, scrollH: 48, clientH: 16, overflowY: 'hidden' });
+    });
+  }
   /* 名称按报告实测：clamp 1、盒子 16px、文本自然高 48px（平台按 3 行预留） */
   doc.querySelectorAll('[data-nm]').forEach((el) => {
     const i = parseInt(el.getAttribute('data-nm'), 10);
@@ -209,8 +217,7 @@ function boot(o) {
       overflow: opt.nameOverflow, overflowY: opt.nameOverflowY
     });
   });
-  /* ID 行本身也是 line-clamp:1，但它是字段行 —— 不许被碰 */
-  doc.querySelectorAll('[data-pid]').forEach((el) => clip(el, { clamp: 1, scrollH: 16, lineH: 16 }));
+  /* ID 行本身也是 line-clamp:1，但它是字段行 —— 不许被碰 */  doc.querySelectorAll('[data-pid]').forEach((el) => clip(el, { clamp: 1, scrollH: 16, lineH: 16 }));
   /* 卡片之外那块同形结构（测「收窄」是否生效）也给同样的截断状态 */
   doc.querySelectorAll('[data-out-name]').forEach((el) => {
     clip(el, { clamp: 1, scrollH: 48, lineH: 16, overflow: opt.nameOverflow, overflowY: opt.nameOverflowY });
@@ -298,15 +305,19 @@ const btns = (doc) => Array.from(doc.querySelectorAll('[data-dyc-rg-btn]'));
   });
   check('名称容器只加定位上下文，不加内边距', () => {
     const nmBox = A.doc.querySelector('.name-VOjSh9');
-    assert.equal(nmBox.style.getPropertyValue('position'), 'relative',
+    /* 2026-11-21：定位上下文改「属性 + 常驻 CSS」—— 内联会被平台重渲染洗掉，
+     * 洗一次写一次就是抖动循环（与 OPEN/FIT 同一口径）。 */
+    assert.ok(nmBox.hasAttribute('data-dyc-rghost'),
       '名称容器没有定位上下文，绝对定位的按钮会跑到外层');
+    assert.equal(String(nmBox.style.getPropertyValue('position') || ''), '',
+      '又写回内联 position 了 —— 平台洗掉后会每轮重写');
     assert.equal(String(nmBox.style.getPropertyValue('padding-bottom') || ''), '',
       '给名称容器加了内边距 —— 平台定高的容器会被压，名称又少一行');
   });
-  check('按钮是名称容器的最后一个子节点', () => {
+  check('按钮在名称容器内（绝对定位不看兄弟顺序）', () => {
     const nmBox = A.doc.querySelector('.name-VOjSh9');
     const btn = btns(A.doc)[0];
-    assert.equal(nmBox.lastElementChild, btn, '按钮不是最后一个子节点');
+    assert.equal(btn.parentElement, nmBox, '按钮不在名称容器里');
   });
 
   /* ========== 三、幂等 ========== */
@@ -583,8 +594,87 @@ const btns = (doc) => Array.from(doc.querySelectorAll('[data-dyc-rg-btn]'));
     });
   }
 
-  /* ========== 汇总 ========== */
-  process.stdout.write('\n────────────────────────────────────────\n');
+  console.log('\n【十】素材页抖动（2026-11-21 用户：「这个页面会抖动」）');
+
+  {
+    /* 10-1 名称外层定高：解开时必须连祖先一起解锁，否则「解了等于没解」，
+       下一轮又判截断 —— 每 4 秒一次布局变化，用户看到的就是整块上下跳。 */
+    const W6 = boot({
+      cards: 2, csMode: 'legacy', clipAncestor: true,
+      nameOverflowY: 'hidden', nameOverflow: 'auto hidden'
+    });
+    await waitFor(() => btns(W6.doc).length === 2, 2000);
+    check('名称外层把内容裁掉时，祖先一并解锁（否则解开看不见）', () => {
+      const holder = W6.doc.querySelector('[data-card="0"] .name-VOjSh9');
+      assert.ok(holder.hasAttribute('data-dyc-rgfit'),
+        '外层定高没解锁 —— 文本解成两行也被它裁掉，下一轮还会重解');
+    });
+    check('解锁祖先只动高度与裁切，不动 display（那层常是平台 flex 列）', () => {
+      const holder = W6.doc.querySelector('[data-card="0"] .name-VOjSh9');
+      assert.equal(String(holder.style.getPropertyValue('display') || ''), '',
+        '给祖先写了 display —— 会打散平台排版');
+      assert.equal(String(holder.style.getPropertyValue('height') || ''), '',
+        '写了内联 height —— 平台一重渲染就洗掉，等于又开始循环');
+    });
+    check('祖先解锁后不重复处理（属性在 ⇒ 规则在）', () => {
+      const nm = W6.doc.querySelector('[data-nm="0"]');
+      const w0 = nm.__dycRgWrites || 0;
+      assert.equal(w0, 1, '第一轮就该只写一次，实际 ' + w0);
+    });
+  }
+
+  {
+    /* 10-2 hover 让路：鼠标停在哪张卡，那张卡这轮不改（在眼皮底下改布局最显眼）。 */
+    const W7 = boot({ cards: 2, csMode: 'legacy', clipAncestor: true,
+      nameOverflowY: 'hidden', nameOverflow: 'auto hidden' });
+    const card0 = W7.doc.querySelector('[data-card="0"]');
+    const orig = card0.matches.bind(card0);
+    card0.matches = (sel) => (sel === ':hover' ? true : orig(sel));
+    const nm7 = W7.doc.querySelector('[data-nm="0"]');
+    nm7.removeAttribute('data-dyc-rgopen');
+    nm7.__dycRgWrites = 0;
+    W7.doc.body.appendChild(W7.doc.createElement('div'));   // 触发一轮扫描
+    await sleep(500);
+    check('鼠标停在该卡片上时不在它下面改写布局', () => {
+      assert.equal(nm7.hasAttribute('data-dyc-rgopen'), false,
+        'hover 期间照旧解开 —— 用户会看到鼠标底下文字跳动');
+    });
+    card0.matches = orig;
+    W7.doc.body.appendChild(W7.doc.createElement('div'));
+    const back = await waitFor(() => nm7.hasAttribute('data-dyc-rgopen'), 2500);
+    check('鼠标移开后补上（晚一帧也比在眼皮底下跳好）', () => {
+      assert.ok(back, '鼠标移开后再也不解开了 —— 功能被 hover 保护误伤');
+    });
+  }
+
+  {
+    /* 10-3 打摆闸：节点被整段重建时，挂在节点上的重写上限会归零（素材页就是这个
+       形态），所以必须有与节点无关的静默期。这里只钉源码结构 —— 行为上要跨多轮
+       重建表格行，jsdom 里模拟出来的时序比真机脆弱，静态断言更可信。 */
+    check('存在与节点无关的打摆静默闸（否则节点一换就会无限重写）', () => {
+      assert.ok(/var CHURN_WINDOW\s*=/.test(SRC) && /var CHURN_HITS\s*=/.test(SRC)
+        && /var CHURN_REST\s*=/.test(SRC), '缺少打摆闸常量');
+      assert.ok(/function\s+noteChurn\s*\(/.test(SRC), '缺少 noteChurn');
+      const at = SRC.indexOf('function scan(');
+      const rest = SRC.indexOf('churn.restUntil', at);
+      assert.ok(at > 0 && rest > at, 'scan 里没有读静默期，闸不生效');
+    });
+    check('打摆记录必须在写入之前（先判定再写，写完才记就永远不触发）', () => {
+      const at = SRC.indexOf('function noteChurn(');
+      assert.ok(at > 0, '没找到 noteChurn');
+      const callAt = SRC.indexOf('noteChurn(it.el)', at);
+      const writeAt = SRC.indexOf('applyUnclip(it.el, reason, it.card)', at);
+      assert.ok(callAt > 0 && writeAt > callAt, 'noteChurn 必须排在 applyUnclip 之前');
+    });
+    check('解开前先注入常驻规则（首轮属性打了没规则 = 白解一次）', () => {
+      const at = SRC.indexOf('function applyUnclip(');
+      const styleAt = SRC.indexOf('ensureStyleFor(el)', at);
+      const setAt = SRC.indexOf('setAttribute(OPEN_ATTR', at);
+      assert.ok(styleAt > at && setAt > styleAt, 'applyUnclip 必须先 ensureStyleFor 再打属性');
+    });
+  }
+
+  /* ========== 汇总 ========== */  process.stdout.write('\n────────────────────────────────────────\n');
   if (failures.length) {
     console.log('失败 ' + fail + ' 条，通过 ' + pass + ' 条：');
     failures.forEach((f) => console.log('  · ' + f));

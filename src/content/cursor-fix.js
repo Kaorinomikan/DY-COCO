@@ -46,7 +46,22 @@
  *   data-dyc-cursor-fix,由一条属性选择器规则统一接管光标。
  *
  * 【默认开启】与其它功能开关口径一致(见 flags.js 注释)。
- */
+ *
+ * 【作用范围：三平台全域（2026-11-21）】
+ *   用户原话:「让猫爪功能兼容整个平台，无论抖店还是小红书或者其他平台」。
+ *   此前只在中控台 / 商品列表 / 小红书中控台生效，其余页面连脚本都没注入。
+ *   现在由 manifest 一条独立条目在三域**整域**注入：
+ *     *.jinritemai.com            cursorFix
+ *     *.xiaohongshu.com (pgy/ark) xhsCursorFix
+ *     store/channels.weixin.qq.com wxCursorFix
+ *   判据同步放宽（三条路径共用 isGrabEl）：
+ *     · 结构：draggable="true" / rbd 手柄 —— 不依赖计算样式，先判；
+ *     · 光标：grab / grabbing / **move** —— 后台上大量用四向箭头表示可拖。
+ *   ⚠️ 不要把 draggable 直接写成 CSS 规则：规则一生效，getComputedStyle 读回来
+ *      就是我们自己的猫爪 url，光标判据立刻失效（自锁）。结构判据只用来打标。
+ *   拖拽起点也不再按平台分叉：任何平台的 grab/move/draggable 按下都能起拖，
+ *   只有输入框/文本域（且不在可拖宿主内）继续排除。
+ * ============================================================ */
 
 (function cursorVisibilityFix() {
   'use strict';
@@ -113,26 +128,39 @@
   var DRAG_ATTR = 'data-dyc-cursor-dragging';
 
   /* ==========================================================
-   * 双平台分键（2026-11-17 猫爪上小红书中控台）
+   * 分平台开关（2026-11-21 扩到整平台）
    *
-   * 同一份脚本注入抖店系与小红书系两条 content_scripts 通道，
-   * 小红书中控台读 xhsCursorFix，抖店系页面读 cursorFix。
+   * 用户口径：「让猫爪功能兼容整个平台，无论抖店还是小红书或者其他平台」。
+   * 此前只在中控台 / 商品列表 / 小红书中控台生效，其它页面连脚本都没注入；
+   * 现在脚本在三个域**全域**注入，开关按平台各一个键（与「宁可键多、不共用」
+   * 的既有口径一致）：
+   *   抖店系（*.jinritemai.com）      cursorFix
+   *   小红书系（pgy / ark）           xhsCursorFix
+   *   微信小店（store / channels）    wxCursorFix
    * ★ dycReadFlags() 返回 Promise，调用方一律 .then（本文件原有纪律）。
+   * ▼ 判据只取 DYC_PAGE_PATTERNS 一处真源，不在这里另写域名正则。
    * ========================================================== */
 
-  function onXhsCtrl() {
+  function pagePat(key) {
     try {
       var pat = window.DYC_PAGE_PATTERNS;
-      return !!(pat && pat.xhsCtrl && pat.xhsCtrl.test(location.href));
+      return !!(pat && pat[key] && pat[key].test(location.href));
     } catch (e) {
       return false;
     }
   }
 
+  function onXhsCtrl() {
+    return pagePat('xhsCtrl');
+  }
+
   function flagKey() {
-    if (onXhsCtrl()) return 'xhsCursorFix';
-    var pat = window.DYC_PAGE_PATTERNS;
-    if (pat && pat.xhsAll && pat.xhsAll.test(location.href)) return null;
+    /* 小红书：原先「非中控台一律关」（返回 null），千帆商品页/退货页因此没有
+     * 猫爪。2026-11-21 起整域生效，仍走 xhsCursorFix 这个键。 */
+    if (pagePat('xhsAll') || pagePat('xhsCtrl')) return 'xhsCursorFix';
+    /* 微信小店：整域一个键（本域此前没有猫爪）。 */
+    if (pagePat('wxAll')) return 'wxCursorFix';
+    /* 抖店系：fxg / buyin / compass / 千川… 全域。 */
     return 'cursorFix';
   }
 
@@ -196,7 +224,39 @@
   }
 
   function isGrab(c) {
-    return c === 'grab' || c === 'grabbing';
+    /* 2026-11-21 扩判据：平台的「可拖动」不止 grab 一种写法 ——
+     *   抖店中控台/小红书用 grab，后台大量表格与卡片用 move（四向箭头）。
+     * 二者语义都是「按住能拖」，一并认。 */
+    return c === 'grab' || c === 'grabbing' || c === 'move';
+  }
+
+  /* HTML5 原生拖拽 / react-beautiful-dnd 手柄。
+   * 这类元素自己常常写 cursor:auto（光标由子元素或浏览器接管），
+   * 光看计算光标会漏，所以另给一条不依赖扫描的样式规则（见 buildCss 3）。 */
+  var DRAG_HOST_SEL = '[draggable="true"],[data-rbd-drag-handle-draggable-id]';
+
+  function isDragHost(el) {
+    try {
+      return !!(el && el.closest && el.closest(DRAG_HOST_SEL));
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * 这个元素该不该显示猫爪（打标判据，三条路径共用）。
+   *
+   * 顺序有讲究 —— **先结构、后光标**：
+   *   · 结构判据（draggable / rbd 手柄）不依赖计算样式，不会被我们自己的规则
+   *     反噬。曾经把 draggable 直接写成 CSS 规则，规则生效后 getComputedStyle
+   *     读回来是猫爪 url，第二个判据永远 false，标记与按下态一起失效（自锁）。
+   *   · 光标判据（grab / grabbing / move）覆盖「平台用样式表声明可拖」这类
+   *     没有结构标记的写法 —— 店铺后台大量存在。
+   */
+  function isGrabEl(el) {
+    if (!el || el.nodeType !== 1) return false;
+    if (isDragHost(el)) return true;
+    return isGrab(cursorOf(el));
   }
 
   function mark(el) {
@@ -277,6 +337,14 @@
     parts.push('html[' + DRAG_ATTR + '] body, html[' + DRAG_ATTR + '] body * { '
       + cursorDecls(REPLACE_CURSOR_ACTIVE, REPLACE_CURSOR_HIDPI_ACTIVE) + ' }');
 
+    /* 3) 原生可拖元素（2026-11-21）不单独出规则 —— 统一走 MARK_ATTR。
+     *
+     * 曾写过「html body [draggable="true"] { cursor: 猫爪 }」这样的直出规则，
+     * 结果**自锁**：规则一生效，getComputedStyle 读回来就是我们自己写的 url(),
+     * 路径 B「实测光标是不是 grab」永远判 false ⇒ 该元素再也打不上标记、
+     * 按下态也失去统一接管点。所以 draggable 这类结构判据只用来**打标**
+     * （见 isGrabEl），光标仍由上面第 1 条规则统一负责。 */
+
     return parts.join('\n');
   }
 
@@ -311,7 +379,7 @@
     hovered.add(el);
 
     if (el.hasAttribute(MARK_ATTR)) return;
-    if (isGrab(cursorOf(el))) el.setAttribute(MARK_ATTR, '');
+    if (isGrabEl(el)) el.setAttribute(MARK_ATTR, '');
   }
 
   function onProbe(e) {
@@ -349,17 +417,21 @@
         || (e.pointerType && e.pointerType !== 'mouse')) return;
     var target = e.target;
     if (!target || !target.closest) return;
-    if (target.closest('button,input,textarea,select,a,[contenteditable="true"]')) return;
-    /* 拖拽起点判定：
-     *   抖店/百应  react-beautiful-dnd 手柄，认 data-rbd-drag-handle-* 属性；
-     *   小红书中控台  手柄结构未采（2026-11-17），判据 = 按下时**实测光标**
-     *   是 grab / grabbing，或元素已被打标 —— cursor:grab 的本义就是
-     *   「这里可以拖」，误伤面为空。悬停路径通常已先行打标，这里再
-     *   probe(force) 兜一次，防 :hover 规则在按下瞬间才生效的写法漏标。 */
-    if (!target.closest('[data-rbd-drag-handle-draggable-id]')) {
-      if (!onXhsCtrl()) return;
+    /* 输入类先排除：那里按下是选文本 / 输入，不是拖拽。
+     * 例外 —— 它正好在可拖宿主里（手柄做成 input 的写法少见但存在），仍算拖。
+     * ★ 2026-11-21：原先把 button / a 也一并排除，结果「拖动按钮」这件事本身
+     *   被排掉了（多数平台的拖拽把手就是一个 button）。现在只排输入类。 */
+    if (!isDragHost(target)
+        && target.closest('input,textarea,select,[contenteditable="true"]')) return;
+    /* 拖拽起点判定（2026-11-21 去平台化）：
+     *   ① 原生 draggable / rbd 手柄 —— 结构判据，最可靠；
+     *   ② 否则按下时**实测光标**是 grab / grabbing / move，或该元素已被打标 ——
+     *      cursor 的本义就是「这里可以拖」，不认平台、不认域名。
+     *   原写法只对小红书放开 ②（平台手柄没有 rbd 属性），抖店侧则要求必须命中
+     *   ①；用户要求「整个平台都兼容」后，这条限制已作废。 */
+    if (!isDragHost(target)) {
       probe(target, true);
-      if (!isGrab(cursorOf(target))
+      if (!isGrabEl(target)
           && !target.closest('[' + MARK_ATTR + ']')) return;
     }
     endCursorDrag();
@@ -386,7 +458,7 @@
         scanned.add(el);
       }
       if (el.hasAttribute(MARK_ATTR)) continue;
-      if (isGrab(cursorOf(el))) el.setAttribute(MARK_ATTR, '');
+      if (isGrabEl(el)) el.setAttribute(MARK_ATTR, '');
     }
   }
 
@@ -498,7 +570,7 @@
             while (node) {
               if (!scanned.has(node)) {
                 scanned.add(node);
-                if (!node.hasAttribute(MARK_ATTR) && isGrab(cursorOf(node))) {
+                if (!node.hasAttribute(MARK_ATTR) && isGrabEl(node)) {
                   node.setAttribute(MARK_ATTR, '');
                 }
               }

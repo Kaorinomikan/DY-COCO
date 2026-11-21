@@ -105,6 +105,9 @@ SELF_BOOTING = {
 
     'src/content/shop-header-name.js',  # 抖店全域的店名样式，自行订阅开关。
     'src/live/hide-elements.js',
+    # 猫爪光标(2026-11-21):三平台整域铺开,脚本自己读开关、自己订阅变化、
+    # 自己挂监听,不需要 main.js / toolbar.js —— 整条以它收尾。
+    'src/content/cursor-fix.js',
     # 直播回放下载(2026-10-18):这两个回放页没有工具栏入口,也不需要
     # main.js / toolbar.js —— 主流程自己读开关、自己订阅变化、自己挂按钮,
     # 末尾就是它,故整条只由「自启动脚本」收尾。

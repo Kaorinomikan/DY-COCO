@@ -27,7 +27,9 @@
  *   ③ 向框内派发 drop 事件 —— 只认拖拽的组件
  *   三级都不出图 ⇒ 如实报「没塞进去」,提示手动上传。**绝不假报成功**。
  *
- * 【消息】三段式(来源 ｜ 值 ｜ 结果数):来源=图片粘贴,值=图片/原因,结果数=已入框/未入框。
+ * 【消息】三段式(来源 ｜ 值 ｜ 结果数):来源=图片粘贴,值=图片/原因,
+ *   结果数=已入框/未入框/**待确认**(2026-11-22 新增:文件已交给平台、但页面上还没看到预览,
+ *   平台异步处理完就会出图 —— 这种既不能报「已入框」,也不该报「未入框」)。
  * ============================================================
  */
 (function goodsImagePaste() {
@@ -49,8 +51,15 @@
   var TOOLBAR_ATTR = 'data-dyc-imgpaste-toolbar';
   var TOOLBAR_ANCHOR = '从主图填入';
   var TOOLBAR_TIP = '点一下把剪贴板里的图片加到商详图片末尾（一次一张）';
+  /* 2026-11-21 新增:尺码图行级按钮(挂在「解析尺码图」右侧) */
+  var SIZE_CLASS = 'dyc-imgpaste-size';
+  var SIZE_ATTR = 'data-dyc-imgpaste-size';
+  var SIZE_ANCHOR = '解析尺码图';
+  var SIZE_TEXT = '粘贴尺码图';
+  var SIZE_TIP = '点一下把剪贴板里的图片交给「解析尺码图」（不弹选择文件的窗口）';
 
   var on = false;
+  var sizeOn = false;
   var observer = null;
   var scanTimer = 0;
   var scrollTimer = 0;
@@ -59,15 +68,16 @@
   var rootTimer = 0;
   var lastHref = '';
   var SHADOW_STYLE = 'data-dyc-imgpaste-style';
-  var shadowCss = '.dyc-imgpaste-btn{all:initial;position:absolute;left:6px;right:6px;bottom:6px;box-sizing:border-box;height:24px;margin:0;padding:0 4px;border:1px solid #d6e2ff;border-radius:6px;background:#eef3ff;color:#1664ff;font:12px/22px "Microsoft YaHei",sans-serif;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;z-index:3}'
+  var shadowCss = '.dyc-imgpaste-btn{all:initial;position:absolute;left:6px;right:6px;bottom:6px;box-sizing:border-box;height:24px;margin:0;padding:0 4px;border:1px solid #d6e2ff;border-radius:6px;background:#eef3ff;color:#1664ff;font:12px/22px "Microsoft YaHei",sans-serif;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;z-index:2147483000}'
     + '.dyc-imgpaste-btn:hover{background:#1664ff;border-color:#1664ff;color:#fff}'
     + '.dyc-imgpaste-btn:disabled{opacity:.6;cursor:default}'
     + '.dyc-imgpaste-btn.is-compact{height:20px;left:4px;right:4px;bottom:4px;font-size:11px;line-height:18px;border-radius:5px}'
     /* 微型入口:规格图相机图标只有 24~32px,按钮挂在图标**正下方**(top:100%),
        不压图标本身。宽度与图标同宽,高度 16px,文字 10px。
-       被祖先 overflow:hidden 裁掉时降级为 is-micro-inside(贴在图标内底部 11px)。 */
-    + '.dyc-imgpaste-btn.is-micro{left:50%;right:auto;bottom:auto;top:100%;transform:translateX(-50%);margin-top:3px;width:34px;height:16px;padding:0;border-radius:4px;font-size:10px;line-height:14px;z-index:4}'
-    + '.dyc-imgpaste-btn.is-micro-inside{left:2px;right:2px;bottom:1px;height:11px;padding:0;border-radius:3px;font-size:9px;line-height:9px;z-index:4}';
+       右侧放不下(贴着裁切区/视口边)时降级为 is-micro-inside(贴在图标内底部 11px)。 */
+    + '.dyc-imgpaste-btn.is-micro{width:34px;height:16px;padding:0;border-radius:4px;font-size:10px;line-height:14px;z-index:2147483001}'
+    + '.dyc-imgpaste-btn.is-micro-right{left:100%;right:auto;top:50%;bottom:auto;margin:0 0 0 4px;transform:translateY(-50%)}'
+    + '.dyc-imgpaste-btn.is-micro-inside{left:2px;right:2px;bottom:1px;top:auto;height:11px;border-radius:3px;font-size:9px;line-height:9px;transform:none}';
 
   // 微信商品表单在 micro-app 内；同源 iframe 也可能承载图片编辑区域。
   function collectRoots() {
@@ -105,7 +115,11 @@
     if (!changed && observer) return false;
     if (observer) observer.disconnect();
     roots = next;
-    observer = new MutationObserver(function () { scheduleScan(400); });
+    observer = new MutationObserver(function (records) {
+      quickMount(records);     // 新格子就地挂,不等防抖(见下)
+      scheduleScan(400);
+      schedulePopupGate();     // 浮层开/关是 childList 变更,一帧内收/放按钮
+    });
     roots.forEach(function (root) {
       observer.observe(root, { childList: true, subtree: true, attributes: true,
         attributeFilter: ['src', 'accept', 'disabled'] });
@@ -267,6 +281,57 @@
   }
 
   /**
+   * 平台浮层里的「按钮式上传入口」。
+   *
+   * 2026-11-21 第三次真机截图(尺码表图片列):点开格子后平台自己的来源浮层,
+   *   每一行「图像选择 / 图库选择」都是 `<label>` 包着 file input、48×34 ——
+   *   尺寸(18~55)正好落进 micro 档,而 micro 是「规格图相机直传」的放行档,
+   *   绕过了表格让位那道闸,于是扩展把自己的按钮挂到了平台自己那一行上。
+   *   用户原话:「展开的按钮里面不要有粘贴图片的按钮的注入」。
+   *
+   * 判据用 **ARIA role**(浮层的交互语义),不用类名 —— 浮层容器的类名带构建哈希
+   *   (`ecargo-power-inner` / `styles-module_*`),每版都变;role 不会。
+   * 这只手同时兜住「浮层被 portal 到 body」「浮层内联在表格里」两种挂法:
+   *   前者原先靠 `#goodsEditScrollContainer` 的 contains 判,后者只能靠 role。
+   */
+  var OVERLAY_ROLES = {
+    tooltip: 1, menu: 1, menubar: 1, listbox: 1,
+    dialog: 1, alertdialog: 1, tree: 1
+  };
+  function inPlatformOverlay(tile) {
+    var el = tile;
+    var guard = 0;
+    while (el && el.nodeType === 1 && guard < 40) {
+      guard++;
+      var role = '';
+      try { role = (el.getAttribute('role') || '').toLowerCase(); } catch (e) { role = ''; }
+      if (role && OVERLAY_ROLES[role]) return true;
+      /* 来源浮层的行还有第二种非哈希标记:data-microp-*(2026-11-21 截图实证
+         label[data-microp-model="micro"][data-microp-title="…"])。
+         有的浮层不带 role,只有这个属性 —— 漏了它,按钮就会挂进浮层,
+         而浮层一旦被我们塞了东西,悬停时开-关-开,用户看到的就是闪。 */
+      try {
+        if (el.hasAttribute('data-microp-model') || el.hasAttribute('data-microp-title')) return true;
+      } catch (e) { /* 只读节点忽略 */ }
+      el = el.parentElement;
+    }
+    return false;
+  }
+
+  /**
+   * 平台菜单项冒充「微型上传格」。
+   *
+   * 浮层万一没标 role,靠外形再兜一层:micro 尺寸的 `<label>` 自带 file input
+   *   且里面有字,那是一条**菜单项**(「图像选择」4 个字),不是图片占位格 ——
+   *   真格的规格图相机是无文字的小图标(尺寸同样 18~55,文本为空)。
+   */
+  function platformPickerRow(tile) {
+    if (!tile || tile.tagName !== 'LABEL') return false;
+    var text = (tile.textContent || '').replace(/\s+/g, '');
+    return text.length >= 2;
+  }
+
+  /**
    * 从 file input 向上找「微型入口」——规格图那种 18~55px 的小图标。
    *
    * 2026-11-10 用户需求:规格图（颜色分类右侧的相机）也要能贴剪贴板图片。
@@ -290,6 +355,23 @@
   }
 
   /**
+   * 表格内的「常规图格」—— 让位给平台自带的来源菜单。
+   *
+   * 2026-11-21 用户截图:尺码表图片列(表头是「批量传图 / 全部SKU图」)每行那颗格子,
+   *   点开是平台自己的浮层「粘贴图片 / 图库选择」——
+   *   **平台原生就能粘贴**,扩展在同一格里再挂一颗同名按钮,既重复又压住格子本身
+   *   (用户原话:「展开的按钮里面不要有粘贴图片的按钮的注入」)。
+   * 判据:离它最近的表格是平台表格组件 `ecom-g-table`。
+   *   这是组件库的稳定类名(不带构建哈希),不是某一版页面的样式实现。
+   * 不受影响的位置:主图 / 详情图在 `styles_previewInstanceImgSortableList` 里,
+   *   不在表格内;micro 档(规格图相机 24~32px)是直传入口,由调用方单独放行。
+   */
+  function inNativeTablePicker(tile) {
+    if (!tile || !tile.closest) return false;
+    try { return !!tile.closest('.ecom-g-table'); } catch (e) { return false; }
+  }
+
+  /**
    * 分类:这个候选是不是上传入口,是哪一档。
    *   'normal' 常规空白上传框(56~320 的方块)
    *   'micro'  微型入口(2026-11-10 新增:规格图那种 24~32px 的相机图标)
@@ -303,6 +385,9 @@
     if (!tile.isConnected) return null;
     if (!visible(tile)) return null;
     if (inFloatingChrome(tile)) return null;
+    /* 平台浮层(role=tooltip/menu/dialog…)里一律不挂:那里的 file input 是平台
+       自己的菜单项,不是待填的图片格(2026-11-21 第三次截图,见上方注释)。 */
+    if (inPlatformOverlay(tile)) return null;
     if (hasImage(tile)) return null;
 
     var hasInput = false;
@@ -312,11 +397,12 @@
     var r = boxOf(tile);
     var known = r.width > 0 && r.height > 0;
     var normalSize = false;
+    var microSize = false;
     if (known) {
       var ratio = r.width / r.height;
       normalSize = r.width >= 56 && r.width <= 320 && r.height >= 56 && r.height <= 320
         && ratio >= 0.5 && ratio <= 2.2;
-      var microSize = hasInput && r.width >= 18 && r.width <= 55 && r.height >= 18 && r.height <= 55
+      microSize = hasInput && r.width >= 18 && r.width <= 55 && r.height >= 18 && r.height <= 55
         && ratio >= 0.55 && ratio <= 1.8;
       if (!normalSize && !microSize) return null;
     }
@@ -330,10 +416,21 @@
       if (st.visibility === 'hidden') return null;
     }
 
+    /* 表格内的常规图格(尺码表图片列等):平台点开自带「粘贴图片 / 图库选择」,
+       扩展让位(用户 2026-11-21 连报两次)。
+       ⚠️ 这道闸**必须走在「尺寸未知也放行」前面**:虚拟表格每次重渲染会短暂量到 0×0,
+       否则同一批格子会在「量不到尺寸→挂上」与「量到了→摘掉」之间按重扫节奏翻来翻去,
+       表现就是按钮不停闪(2026-11-21 诊断报告:已挂 11 / 19 每 430ms 交替)。
+       只跳常规档 —— micro 档(规格图相机)是直传入口,用户明确需要,必须保留。 */
+    if (inNativeTablePicker(tile) && !microSize) return null;
+
     /* 0×0 = 尺寸未知(还没布局 / jsdom):不判尺寸,按常规档放行。
        ⛔ 这里不能顺手要求「上传图片」文案 —— 资质格只有「＋ / 0/20」,
        那样会把真机上的资质格一起判死(2026-11-08 踩过)。 */
     if (!known) return 'normal';
+    /* micro 档里也有冒充者:平台来源浮层的那几行是 48×34 的 <label>(带文字)。
+       真格子的规格图相机是无文字小图标,不受这条影响。 */
+    if (microSize && platformPickerRow(tile)) return null;
     return normalSize ? 'normal' : 'micro';
   }
 
@@ -408,11 +505,36 @@
     ['mousedown', 'mouseup', 'pointerdown', 'pointerup'].forEach(function (t) {
       btn.addEventListener(t, function (ev) { ev.stopPropagation(); });
     });
+    btn.addEventListener('mouseenter', function () { noteHover(tile); });
     return btn;
   }
 
+  /**
+   * 平台清掉按钮、却把格子节点留着 —— 属性还在、按钮没了。
+   *
+   * 2026-11-22 真机:诊断报告里「已挂 9」与「已挂 13」按重扫节奏交替,差的那 4 格
+   *   一直补不回来,只是偶尔随节点被整体替换而复活。原因是 `mount()` 以
+   *   `data-dyc-imgpaste-tile="1"` 当「已挂」凭据:React 复用格子节点、只清空子节点时,
+   *   属性还在 ⇒ 每轮 mount 直接 return,按钮永远不会补回。
+   *   ⇒ 凭据改成「按钮真的在框里」。属性只在按钮确实存在时才算数。
+   */
+  function mountedButtonIn(tile) {
+    if (!tile || !tile.children) return null;
+    for (var i = 0; i < tile.children.length; i++) {
+      var c = tile.children[i];
+      if (c.getAttribute && c.getAttribute(BTN_ATTR) === '1') return c;
+    }
+    return null;
+  }
+
   function mount(tile, mode) {
-    if (!tile || tile.getAttribute(TILE_ATTR) === '1') return;
+    if (!tile) return;
+    if (mountedButtonIn(tile)) return;
+    if (tile.getAttribute(TILE_ATTR) === '1') {
+      /* 属性在、按钮没了 = 平台清过子节点。把旧标记清掉,按新格子重新判一次。 */
+      tile.removeAttribute(TILE_ATTR);
+      tile.removeAttribute(MODE_ATTR);
+    }
     if (!mode) mode = classifyTile(tile);
     if (!mode) return;
 
@@ -431,16 +553,97 @@
     tile.setAttribute(MODE_ATTR, mode);
 
     if (mode === 'micro') {
-      /* 微型:挂在图标正下方。祖先若裁切(overflow:hidden),下方的胶囊会被剪掉,
-         这时降级成「贴在图标内底部 11px」—— 仍然不遮图标中心。 */
+      /* 微型:胶囊贴在小框**右侧空白处**、垂直居中(2026-11-22 用户定稿)。
+         下方与框内都会被单元格裁切或被浮层盖住;右边是表格列的空白,不占框、不压图标。
+         右侧放不下(贴着裁切区/视口边)时降级成 is-micro-inside —— 仍不遮图标中心。 */
       btn.classList.add('is-micro');
-      if (clipsOverflow(tile)) btn.classList.add('is-micro-inside');
-      return;
+      btn.classList.add(microFitsRight(tile) ? 'is-micro-right' : 'is-micro-inside');
+    } else {
+      /* 小框(详情图那类 80px 的格子)用紧凑版:24px 高的按钮会盖住中间的「+」 */
+      var r = boxOf(tile);
+      if (r.height > 0 && r.height < 90) btn.classList.add('is-compact');
     }
+    armTileGuard(tile, mode);
+  }
 
-    /* 小框(详情图那类 80px 的格子)用紧凑版:24px 高的按钮会盖住中间的「+」 */
+  /**
+   * 每格一个「就地补」观察器:平台清空子节点时,**在同一个回调里**把按钮补回去。
+   *
+   * 为什么要它:全局重扫是 400ms 防抖,按钮被平台清掉到补回来之间那段空白
+   *   就是用户看到的闪(2026-11-21 报「不停闪烁」,摘除滞回治不住 —— 因为不是我们摘的)。
+   *   与素材页名称「新节点就地补」同一套思路:不做批量重扫,只把这一个格子就地恢复。
+   * 只盯 childList、只守自己这一格,平台的重渲染跑多少次都只在按钮真没了时才动手。
+   */
+  function armTileGuard(tile, mode) {
+    disarmTileGuard(tile);
+    var guard = new MutationObserver(function () {
+      if (!tile.isConnected) { disarmTileGuard(tile); return; }
+      if (mountedButtonIn(tile)) return;          // 按钮还在:这次变更与我们无关
+      /* 平台刚清过子节点时,这一刻**往往连 input 都还没填回来**,classify 必然判 null。
+         所以只有「确实不该再挂」(出图 / 进了浮层)才放手;其余情况保留观察器,
+         等平台把子节点填回来那一刻再补 —— 提前放手等于这一轮放弃补挂。 */
+      var now = classifyTile(tile);
+      if (now) { mount(tile, now); noteRepair(tile); return; }
+      if (mustDropNow(tile)) disarmTileGuard(tile);
+    });
+    try { guard.observe(tile, { childList: true }); } catch (e) { return; }
+    try { tile.__dycImgGuard = guard; } catch (e) { /* 只读节点:放弃就地补 */ }
+  }
+
+  /* 就地补留痕:平台到底会不会反复清掉按钮,这是唯一能实证的地方。
+     节流 3 秒一条(首条带格子长相),避免重渲染期把调试面板刷满。 */
+  var repairCount = 0;
+  var repairLoggedAt = 0;
+  function noteRepair(tile) {
+    repairCount++;
+    var now = Date.now();
+    if (now - repairLoggedAt < 3000) return;
+    repairLoggedAt = now;
+    var cls = (tile && typeof tile.className === 'string' ? tile.className : '').trim().split(/\s+/)[0] || '';
+    var r = tile ? boxOf(tile) : { width: 0, height: 0 };
+    log('图片粘贴:就地补 ' + repairCount + ' 次 · 本格 '
+      + (tile ? tile.tagName.toLowerCase() : '?') + (cls ? '.' + cls : '')
+      + ' · ' + Math.round(r.width) + '×' + Math.round(r.height));
+  }
+
+  function disarmTileGuard(tile) {
+    if (!tile) return;
+    var g = tile.__dycImgGuard;
+    if (g) { try { g.disconnect(); } catch (e) { /* 已断开 */ } }
+    try { tile.__dycImgGuard = null; } catch (e) { /* 只读节点 */ }
+  }
+
+  /** 祖先裁切区与视口求交(右侧放不放得下就靠它) */
+  function clipFor(tile) {
+    var doc = tile.ownerDocument || document;
+    var win = doc.defaultView || window;
+    var clip = { l: 0, t: 0, r: win.innerWidth || 0, b: win.innerHeight || 0 };
+    var node = tile.parentElement;
+    var guard = 0;
+    while (node && guard < 40) {
+      guard++;
+      var ov = '';
+      try { ov = win.getComputedStyle(node).overflow || ''; } catch (e) { ov = ''; }
+      if (/hidden|auto|scroll/.test(ov)) {
+        var b = boxOf(node);
+        if (b.width > 0 && b.height > 0) {
+          clip.l = Math.max(clip.l, b.left);
+          clip.t = Math.max(clip.t, b.top);
+          clip.r = Math.min(clip.r, b.left + b.width);
+          clip.b = Math.min(clip.b, b.top + b.height);
+        }
+      }
+      node = node.parentElement;
+    }
+    return clip;
+  }
+
+  /** 小框右侧的空白放不放得下一颗 34px 胶囊(含 4px 间距) */
+  function microFitsRight(tile) {
     var r = boxOf(tile);
-    if (r.height > 0 && r.height < 90) btn.classList.add('is-compact');
+    if (!(r.width > 0)) return false;
+    var clip = clipFor(tile);
+    return r.left + r.width + 4 + 34 <= clip.r;
   }
 
   /** 向上 3 层看有没有 overflow 裁切 —— 决定微型胶囊能不能挂到图标外面 */
@@ -457,17 +660,30 @@
     return false;
   }
 
-  function unmountAll() {
+  /** 只摘「框内按钮」及它们的标记(尺码图按钮、商详工具栏按钮各自有卸载函数) */
+  function unmountTiles() {
     var btns = queryRoots('[' + BTN_ATTR + ']');
     for (var i = 0; i < btns.length; i++) {
       var tile = btns[i].parentElement;
       if (btns[i].parentNode) btns[i].parentNode.removeChild(btns[i]);
+      disarmTileGuard(tile);
       if (tile && tile.getAttribute(TILE_ATTR) === '1') {
         tile.removeAttribute(TILE_ATTR);
         tile.removeAttribute(MODE_ATTR);
       }
     }
+    /* 框内按钮都摘了,承载它们的样式表就多余了。
+       尺码图按钮与商详工具栏按钮用的是内联样式,不依赖这张表 ——
+       所以「只关『粘贴图片』、开着『粘贴尺码图』」时也要把表撤掉。 */
+    try {
+      queryRoots('style[' + SHADOW_STYLE + ']').forEach(function (s) { s.remove(); });
+    } catch (e) { /* 移除失败不影响按钮已摘除这件事 */ }
+  }
+
+  function unmountAll() {
+    unmountTiles();
     unmountToolbars();
+    unmountSizeChart();
   }
 
   /** 每个框独立判断，主图文案不能屏蔽同页只有「＋ / 0/20」的资质格。 */
@@ -475,10 +691,25 @@
     var tiles = collectTiles();
     var use = [];
     for (var i = 0; i < tiles.length; i++) {
-      var mode = classifyTile(tiles[i]);
+      var t = tiles[i];
+      /* 已挂的格子不再重判(2026-11-22 掉线留痕钉死):label.styles-module_button__v_0O2
+         这批格子会在 97×97 与 43×43 之间抖 —— 每轮重判尺寸,就一轮「合格挂上」、
+         一轮「太小摘掉」,交替不停,这就是闪烁的完整机理。
+         尺寸档只负责「初次认框」;已挂的只在确凿失效时摘:
+           离开文档 / 已出图 / 进了平台浮层(mustDropNow),其余一律保留。 */
+      if (t.getAttribute && t.getAttribute(MODE_ATTR)) {
+        /* 已挂的保留条件收紧到语义级:框里还得有图片 file input。
+           尺寸、可见性抖动不再参与 —— 那正是 97↔43 闪烁的来源。 */
+        var stillInput = false;
+        try { stillInput = !!inputForTile(t); } catch (e) { stillInput = false; }
+        if (!t.isConnected || !stillInput || mustDropNow(t)) continue;
+        use.push(t);
+        continue;
+      }
+      var mode = classifyTile(t);
       if (!mode) continue;
-      try { tiles[i].setAttribute(MODE_ATTR, mode); } catch (e) { /* 只读节点 */ }
-      use.push(tiles[i]);
+      try { t.setAttribute(MODE_ATTR, mode); } catch (e) { /* 只读节点 */ }
+      use.push(t);
     }
 
     /* 同一处只留最内层:行容器与行内小图标同时合格时,只挂小图标。
@@ -494,29 +725,146 @@
     return { all: tiles, use: use, tier: '结构' };
   }
 
+  /* 连续「本轮没通过」的计数(键 = 承载按钮的格子)。
+     用途见 scan() 清理段:滞回一轮,治「挂上-摘掉」来回翻造成的闪烁。 */
+  var missCounts = new Map();
+
+  /** 不能等缓冲、必须当场摘的情形:已出图、已被判进平台浮层。 */
+  function mustDropNow(tile) {
+    if (!tile) return true;
+    if (hasImage(tile)) return true;
+    return inPlatformOverlay(tile);
+  }
+
+  /* ---- 浮层闸(2026-11-22) ----
+     只认「整层浮层」的标记(role=tooltip/menu/dialog,真机实证 ecargo-power-inner[role=tooltip])。
+     data-microp-* 只用于 classify 的行级排除,不进这里 —— 页面上可能长期存在
+     带 microp 属性的节点,拿它当"浮层开着"会把按钮永久藏掉(【十】的教训)。 */
+  var POPUP_SELECTOR = '[role="tooltip"],[role="menu"],[role="dialog"]';
+
+  function popupPresent() {
+    for (var i = 0; i < roots.length; i++) {
+      var found;
+      try { found = roots[i].querySelectorAll(POPUP_SELECTOR); } catch (e) { continue; }
+      for (var j = 0; j < found.length; j++) {
+        var r = boxOf(found[j]);
+        /* 平台关浮层时常把节点留在 DOM 里(display:none)—— 尺寸为零不算「开着」,
+           否则按钮会被永久藏掉(2026-11-22 用户实测「彻底没有按钮了」) */
+        if (r.width > 0 && r.height > 0) return true;
+      }
+    }
+    return false;
+  }
+
+  function setTileButtonsHidden(hidden) {
+    var btns = queryRoots('[' + BTN_ATTR + ']');
+    for (var i = 0; i < btns.length; i++) {
+      try { btns[i].style.display = hidden ? 'none' : ''; } catch (e) { /* 只读节点 */ }
+    }
+  }
+
+  var gateRaf = 0;
+  function applyPopupGate() {
+    gateRaf = 0;
+    if ((!on && !sizeOn) || !inScope()) return;
+    setTileButtonsHidden(popupPresent());
+  }
+  function schedulePopupGate() {
+    if (gateRaf) return;
+    gateRaf = (typeof requestAnimationFrame === 'function')
+      ? requestAnimationFrame(applyPopupGate)
+      : setTimeout(applyPopupGate, 16);
+  }
+
+  /* ---- 新格子就地挂(2026-11-22 用户实测「按钮消失、滚动一下又回来」) ----
+     SKU 图这类格子住在**虚拟表格**里:滚动时行被回收,旧行连我们的按钮一起销毁,
+     新行要等 400ms 防抖重扫才补挂 —— 这段空白就是体感上的「消失」。
+     改成:观察器回调里直接对本次新增的节点就地走认框+挂载(素材页同款思路),
+     预算 60 个节点,超出交给全量重扫;浮层开着时不碰格子。 */
+  function quickMount(records) {
+    if ((!on && !sizeOn) || !inScope() || popupPresent()) return;
+    var seen = 0;
+    for (var i = 0; i < records.length && seen < 60; i++) {
+      var added = records[i].addedNodes;
+      for (var j = 0; j < added.length && seen < 60; j++) {
+        var node = added[j];
+        if (!node || node.nodeType !== 1) continue;
+        seen++;
+        if (node.tagName === 'INPUT' && node.type === 'file') { mountForInput(node); continue; }
+        var inputs;
+        try { inputs = node.querySelectorAll('input[type="file"]'); } catch (e) { continue; }
+        for (var k = 0; k < inputs.length; k++) mountForInput(inputs[k]);
+      }
+    }
+  }
+
+  function mountForInput(input) {
+    if (!acceptsImages(input)) return;
+    var t1 = tileFromInput(input);
+    if (t1) { repairLogFor(t1); mount(t1); }
+    var t2 = microTileFromInput(input);
+    if (t2) { repairLogFor(t2); mount(t2); }
+  }
+
+  /* 格子还挂着旧标记、按钮却没了 = 平台清过子节点,这次是补挂 —— 留一条节流日志 */
+  function repairLogFor(tile) {
+    if (tile && tile.getAttribute(TILE_ATTR) === '1' && !mountedButtonIn(tile)) noteRepair(tile);
+  }
+
   /** 幂等重扫:新框挂上、已出图的框摘掉、被平台重渲染掉的补回来 */
   function scan() {
-    if (!on) return;
+    if (!on && !sizeOn) return;
     if (!inScope()) { unmountAll(); refreshRoots(); return; }
     refreshRoots();
+
+    /* 只开了「粘贴尺码图」:不认上传框,只维护行级按钮 */
+    if (!on) {
+      unmountTiles();
+      unmountToolbars();
+      if (sizeOn) mountSizeChart(); else unmountSizeChart();
+      return;
+    }
+
+    /* 平台二级浮层开着时:只藏按钮,不挂、不摘、不往格子写任何东西。
+       浮层本来就盖在按钮上;而这一刻平台正在重排那片区域,
+       我们再插拔节点就是「SKU 图闪烁」的来源(2026-11-22 用户实测)。
+       浮层一关,observe 回调一帧内放出来,重扫随后补齐状态。 */
+    if (popupPresent()) { setTileButtonsHidden(true); return; }
+    setTileButtonsHidden(false);
+
     var q = collectQualified();
     for (var i = 0; i < q.use.length; i++) mount(q.use[i], q.use[i].getAttribute(MODE_ATTR));
 
-    /* 清理:不在本次名单里的(出图了 / 不再像上传框 / 已离开文档)一律摘掉 */
+    /* 清理:不在本次名单里的,按「两轮不合格才摘」处理。
+       为什么不是一轮就摘(2026-11-21 用户报「按钮不停闪烁」):
+       平台重渲染的瞬间,格子的尺寸 / 内部 input 会短暂读不到,某一轮判 null、
+       下一轮又判合格 —— 一轮即摘就会挂上-摘掉-挂上地翻,肉眼就是闪;
+       而且每次挂/摘都是 childList 变更,反过来又触发下一轮重扫,自激不停。
+       所以留一轮缓冲(滞回),让「瞬时读不到」自己恢复,只有真失效才摘。 */
     var btns = queryRoots('[' + BTN_ATTR + ']');
     for (var j = 0; j < btns.length; j++) {
       var t = btns[j].parentElement;
-      var keep = t && t.isConnected && q.use.indexOf(t) >= 0;
-      if (!keep) {
-        if (btns[j].parentNode) btns[j].parentNode.removeChild(btns[j]);
-        if (t && t.getAttribute(TILE_ATTR) === '1') {
-          t.removeAttribute(TILE_ATTR);
-          t.removeAttribute(MODE_ATTR);
-        }
+      if (t && t.isConnected && q.use.indexOf(t) >= 0) {
+        missCounts.delete(t);
+        continue;
+      }
+      if (t && t.isConnected && !mustDropNow(t) && (missCounts.get(t) || 0) < 1) {
+        missCounts.set(t, 1);
+        continue;
+      }
+      missCounts.delete(t);
+      if (btns[j].parentNode) btns[j].parentNode.removeChild(btns[j]);
+      disarmTileGuard(t);
+      noteDrop(t, t ? rejectReason(t) : '节点已不在文档');
+      if (t && t.getAttribute(TILE_ATTR) === '1') {
+        t.removeAttribute(TILE_ATTR);
+        t.removeAttribute(MODE_ATTR);
       }
     }
+    if (missCounts.size > 200) missCounts.clear();
 
     mountToolbars();
+    if (sizeOn) mountSizeChart(); else unmountSizeChart();
 
     summarize(q);
     return q;
@@ -684,13 +1032,354 @@
     }
   }
 
+  /* ==========================================================
+   * 二之三、尺码图「粘贴尺码图」行级按钮(2026-11-21 用户需求)
+   *
+   * 用户原话:「解析尺码图的右边,加一个粘贴尺码图的按钮,
+   *   可以直接把剪贴板的图片粘贴进左边的这个按钮里面」。
+   *
+   * 落点:锚点按钮**右侧紧邻**,与它同高。
+   * 取图入口:从锚点向上找最近的、含图片 file input 的祖先当区块根(最多 6 层);
+   *   取不到再退一步 —— 在锚点附近找一颗最近的空闲上传格。
+   *   **只在区块内取**,绝不跨区块拿主图/白底图的 input。
+   * 成功判据:区块内 <img> 变多(与商详工具栏同一口径)。
+   * ========================================================== */
+
+  var sizeBusy = false;
+  var sizeAnchor = null;      // 命中后缓存;平台重渲染会让它 isConnected=false,自动失效
+  var sizeMissAt = 0;         // 上次「全文档找不到」的时刻,1 秒内不重复遍历
+  var sizeLogged = {};
+
+  function sizeSayOnce(key, msg) {
+    if (sizeLogged[key]) return;
+    sizeLogged[key] = 1;
+    log(msg);
+  }
+
+  /** 找不到锚点:把页面上「含尺码」的候选文案打出来。
+   *  按真实文案补锚点,不靠猜 —— 与 live/nav.js 的 dumpAnchorDiagnostics 同一口径。
+   *  清单变了才再打一条,避免每次重扫刷屏。 */
+  function dumpSizeAnchors(hits) {
+    var out = [];
+    for (var i = 0; i < hits.length && out.length < 10; i++) {
+      var el = hits[i];
+      var t = (el.textContent || '').replace(/\s+/g, '');
+      if (t.length > 24) t = t.slice(0, 24) + '…';
+      var cls = (el.className && typeof el.className === 'string')
+        ? '.' + el.className.trim().split(/\s+/)[0] : '';
+      var s = el.tagName.toLowerCase() + cls + '「' + t + '」';
+      if (out.indexOf(s) < 0) out.push(s);
+    }
+    sizeSayOnce('miss', '尺码图:没找到「' + SIZE_ANCHOR + '」· 含「尺码」的候选 '
+      + (out.join(' / ') || '无'));
+  }
+
+  /** 锚点:三条路径,任一命中即用。
+   *  ① 平台埋点属性 `data-kora-json="AI解析尺码图"` —— **真机首选的唯一原因**:
+   *     2026-11-21 截图 + DevTools 证实,这颗按钮里没有文本节点(只有 <img alt="AI解析图片">),
+   *     文案只存在于 data 属性上,所以按文本找永远落空。
+   *  ② 图标 alt —— 属性被平台改名时的近邻兜底。
+   *  ③ 文本 —— 平台哪天真把文案写回 DOM 时照旧能用。 */
+  function probeSizeAnchor() {
+    var marks = [];
+    try { marks = queryRoots('[data-kora-json*="' + SIZE_ANCHOR + '"]'); } catch (e) { marks = []; }
+    for (var a = 0; a < marks.length; a++) {
+      if (visible(marks[a])) return marks[a];
+    }
+
+    var alts = [];
+    try { alts = queryRoots('img[alt*="解析图片"]'); } catch (e) { alts = []; }
+    for (var b = 0; b < alts.length; b++) {
+      if (!visible(alts[b])) continue;
+      try { return alts[b].closest('[data-kora-json]') || alts[b].parentElement || alts[b]; } catch (e) { return alts[b]; }
+    }
+
+    var exact = findByText(document, SIZE_ANCHOR, 3);
+    for (var i = 0; i < exact.length; i++) {
+      if (visible(exact[i])) return exact[i];
+    }
+    var loose = findByText(document, '尺码图', 8);
+    for (var j = 0; j < loose.length; j++) {
+      var el = loose[j];
+      if (!visible(el)) continue;
+      if (/解析|识别|上传/.test(el.textContent || '')) return el;
+    }
+    return null;
+  }
+
+  function findSizeAnchor() {
+    if (sizeAnchor && sizeAnchor.isConnected) return sizeAnchor;
+    sizeAnchor = null;
+    var now = Date.now();
+    /* 刚找过没有就等 1 秒再遍历:页面 8000+ 元素,TreeWalker 不该被每次重扫拖着跑 */
+    if (now - sizeMissAt < 1000) return null;
+    var found = probeSizeAnchor();
+    if (found) { sizeAnchor = found; return found; }
+    sizeMissAt = now;
+    var all = [];
+    try { all = findByText(document, '尺码', 10); } catch (e) { all = []; }
+    dumpSizeAnchors(all);
+    return null;
+  }
+
+  function findSizeHost() {
+    var anchor = findSizeAnchor();
+    if (!anchor) return null;
+
+    /* 挂载点 = 锚点自己。真机结构:
+         <ul style="display:flex;flex-wrap:wrap">
+           <label style="width:100%"><input type=file><div data-kora-json="AI解析尺码图">…
+       2026-11-22 修正:label 是 width:100% 的块,按钮插在 label **后面**会被 flex-wrap
+       挤到下一行(用户截图「错位了」)。所以按钮落在 label **内部**、紧跟锚点右边。
+       点它不会弹平台的选文件窗:makeSizeButton 对 click 做了 preventDefault,
+       label 的默认激活因此被拦下,且所有按下/抬起事件都 stopPropagation。 */
+    var mount = anchor;
+    if (!mount.parentElement) return null;
+
+    var root = null;
+    var node = mount;           // 锚点外层 label 就含 input,从它开始向上找
+    var guard = 0;
+    while (node && guard < 6) {
+      guard++;
+      if (firstImageInput(node)) { root = node; break; }
+      node = node.parentElement;
+    }
+
+    if (!root) {
+      /* 锚点旁边没有常驻 input(点了才创建) —— 退到最近的一颗空闲上传格。
+         ⛔ 这里**不走 classifyTile**:它对表格内常规图格一律判死(平台自带粘贴菜单),
+            而尺码图恰恰常落在表格里,走它等于把唯一的退路也堵上。 */
+      var tiles = [];
+      try { tiles = collectTiles(); } catch (e) { tiles = []; }
+      var ar = boxOf(anchor);
+      var best = null;
+      var bestD = Infinity;
+      for (var i = 0; i < tiles.length && i < 80; i++) {
+        var t = tiles[i];
+        if (!t || !t.isConnected || !visible(t) || hasImage(t)) continue;
+        var tr = boxOf(t);
+        var d = Math.abs(tr.top - ar.top) + Math.abs(tr.left - ar.left);
+        if (d < bestD) { bestD = d; best = t; }
+      }
+      root = best;
+    }
+    if (!root) {
+      var at = (anchor.textContent || anchor.getAttribute('data-kora-json') || '')
+        .replace(/\s+/g, '').slice(0, 16);
+      sizeSayOnce('noroot', '尺码图:锚点「' + at + '」附近没有图片上传入口');
+      return null;
+    }
+    return { anchor: anchor, mount: mount, root: root };
+  }
+
+  /** 尺码图区域的观察范围:向上找最近一个 class 含 module 的容器
+   *  (真机是 style-module_batchImageUpload_xxx)——解析结果与预览常落在 label **外面**,
+   *  只看 label 会「实际成功却判失败」。找不到就退回 input 所在节点。 */
+  function sizeScope(host) {
+    var node = host.mount || host.anchor;
+    var guard = 0;
+    while (node && guard < 6) {
+      guard++;
+      var cn = (typeof node.className === 'string') ? node.className : '';
+      if (cn.indexOf('module') >= 0) return node;
+      node = node.parentElement;
+    }
+    return host.root || host.anchor;
+  }
+
+  function makeSizeButton(host) {
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = SIZE_CLASS;
+    btn.setAttribute(SIZE_ATTR, '1');
+    btn.textContent = SIZE_TEXT;
+    btn.title = SIZE_TIP;
+    btn.setAttribute('aria-label', SIZE_TIP);
+
+    /* 与左边那颗「解析尺码图」同高;读不到按 32 兜底(注入控件用固定 px)。
+       位置由 placeSizeButton 用绝对定位接管 —— 这里不写 margin/left。 */
+    var h = Math.round(boxOf(host.anchor).height) || 32;
+    btn.style.cssText = 'box-sizing:border-box;height:' + h + 'px;padding:0 12px;'
+      + 'margin:0;border:1px solid #d6e2ff;border-radius:6px;'
+      + 'background:#eef3ff;color:#1664ff;'
+      + 'font-family:-apple-system,BlinkMacSystemFont,"Microsoft YaHei",sans-serif;'
+      + 'font-size:13px;line-height:1;cursor:pointer;white-space:nowrap;';
+
+    btn.addEventListener('mouseenter', function () {
+      if (btn.disabled) return;
+      btn.style.background = '#1664ff';
+      btn.style.borderColor = '#1664ff';
+      btn.style.color = '#fff';
+    });
+    btn.addEventListener('mouseleave', function () {
+      if (btn.disabled) return;
+      btn.style.background = '#eef3ff';
+      btn.style.borderColor = '#d6e2ff';
+      btn.style.color = '#1664ff';
+    });
+    btn.addEventListener('click', function (ev) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      sizePaste(host, btn);
+    });
+    ['mousedown', 'mouseup', 'pointerdown', 'pointerup'].forEach(function (t) {
+      btn.addEventListener(t, function (ev) { ev.stopPropagation(); });
+    });
+    return btn;
+  }
+
+  /**
+   * 把按钮绝对定位贴到锚点右侧。
+   *
+   * 为什么不靠正常流:真机的 label 是 `width:100%` 的块级容器,里面那颗
+   * `div.uploadButton` 也占整行 —— 按钮不管插在 label 后面还是锚点后面都会换行
+   * (用户 2026-11-22 两次截图都是这个现象)。
+   * 定位基准取 label(padding box),用 getBoundingClientRect 求差,
+   * 比 offsetLeft 稳:不受中间哪一层变成 positioned 祖先的影响。
+   * label 若不是 positioned,补 relative(它内部只有隐藏的 file input 与那颗按钮,
+   * 补 relative 不会带偏任何已有的绝对定位子元素)。
+   */
+  function placeSizeButton(btn, host) {
+    var base = host.mount && host.mount.parentElement;
+    if (!btn || !base || !host.anchor) return;
+    try {
+      var pst = window.getComputedStyle(base).position;
+      if (!pst || pst === 'static') base.style.position = 'relative';
+    } catch (e) { /* 拿不到样式就按 static 处理 */ }
+
+    var h = Math.round(boxOf(host.anchor).height) || 32;
+    var br = boxOf(base);
+    var ar = boxOf(host.anchor);
+    btn.style.position = 'absolute';
+    btn.style.margin = '0';
+    btn.style.height = h + 'px';
+    btn.style.left = (ar.right - br.left + 8) + 'px';
+    btn.style.top = (ar.top - br.top + Math.max(0, Math.round((ar.height - h) / 2))) + 'px';
+    btn.style.zIndex = '2';
+  }
+
+  function mountSizeChart() {
+    var host = findSizeHost();
+    if (!host) return;
+    var group = host.mount.parentElement;
+    if (!group) return;
+
+    var exist = group.querySelector('[' + SIZE_ATTR + ']');
+    if (exist) {
+      /* 页面重渲染 / 响应式改宽度后,绝对坐标要跟着锚点重算 */
+      placeSizeButton(exist, host);
+      return;
+    }
+    var btn = makeSizeButton(host);
+    try {
+      group.insertBefore(btn, host.mount.nextSibling);
+      placeSizeButton(btn, host);
+      var at = (host.anchor.textContent || host.anchor.getAttribute('data-kora-json') || '')
+        .replace(/\s+/g, '').slice(0, 16);
+      sizeSayOnce('mounted', '尺码图:已挂到「' + at + '」右侧');
+    } catch (e) {
+      log('尺码图:插入失败 ' + ((e && e.message) || e));
+    }
+  }
+
+  function unmountSizeChart() {
+    var btns = queryRoots('[' + SIZE_ATTR + ']');
+    for (var i = 0; i < btns.length; i++) {
+      if (btns[i].parentNode) btns[i].parentNode.removeChild(btns[i]);
+    }
+  }
+
+  function sizePaste(host, btn) {
+    if (!sizeOn || !inScope()) return;
+    if (sizeBusy) return;
+
+    if (!host || !host.root || !host.root.isConnected) {
+      host = findSizeHost();
+      if (!host) {
+        say('找不到「解析尺码图」旁边的上传入口', 'alert', '未入框',
+          '这一块里没有可写入的文件输入框。请点平台自己的上传入口手动选一张;若每次都不行,把这个提示发给开发者。');
+        log('尺码图:找不到区块根');
+        return;
+      }
+    }
+
+    var input = firstImageInput(host.root);
+    if (!input) {
+      say('找不到尺码图的上传入口', 'alert', '未入框',
+        '区块内没有可写入的图片输入框。请点左边「解析尺码图」里的上传入口手动选一张。');
+      log('尺码图:区块内没有 file input');
+      return;
+    }
+
+    sizeBusy = true;
+    setBtn(btn, '读取剪贴板…', true);
+    log('尺码图:开始');
+
+    readImage().then(function (img) {
+      if (!img || !img.ok) {
+        var why = (!img || !img.error || img.error === NO_IMAGE) ? '剪贴板里没有图片' : img.error;
+        say('剪贴板里没有图片', 'alert', '未入框',
+          why + '。请先截图或复制一张尺码图,再点一次「粘贴尺码图」。');
+        log('尺码图:读取失败 ' + why);
+        return null;
+      }
+      if (!sizeOn || !inScope()) return null;
+
+      var file;
+      try { file = toFile(img); } catch (e) {
+        say('图片读不出来', 'alert', '未入框', (e && e.message) || '图片转码失败');
+        return null;
+      }
+
+      var scope = sizeScope(host);
+      var base = scope.querySelectorAll('img').length;
+      var basePreview = previewCount();
+      setBtn(btn, '粘贴中…', true);
+
+      var ok = false;
+      try { ok = putFilesToInput(input, file); } catch (e) { ok = false; }
+      if (!ok) {
+        /* 只认拖拽/粘贴事件的组件再补一次(与商详工具栏同一兜底) */
+        try { putByEvent(host.root, file, 'drop'); ok = true; } catch (e) { ok = false; }
+      }
+      if (!ok) {
+        say('图片没能贴进去', 'alert', '未入框',
+          '这个上传入口不接受程序写入。请点左边「解析尺码图」里的上传入口手动选择文件。');
+        log('尺码图:两条通道都没交进去');
+        return null;
+      }
+
+      /* 2026-11-22:等待 4 秒 → 8 秒,观察范围从 label 扩到模块容器。
+         用户实测「很快提示失败、实际都成功」就是这两件事造成的。 */
+      return waitImageGrow(scope, base, 8000, basePreview).then(function (got) {
+        if (got) {
+          say('尺码图', 'success', '已入框');
+          log('尺码图:成功');
+        } else {
+          say('尺码图已交给平台，未看到预览', 'alert', '待确认',
+            '文件已经交给平台,但页面上还没出现预览或解析结果。平台可能还在处理 —— 请等几秒再看,不要重复点击;若始终没有,请点「AI 解析尺码图」手动选择文件。');
+          log('尺码图:已交付但未看到预览');
+        }
+        return null;
+      });
+    }).catch(function (e) {
+      log('尺码图异常:' + ((e && e.message) || e));
+      say('粘贴出错', 'alert', '未入框', (e && e.message) || String(e));
+    }).then(function () {
+      sizeBusy = false;
+      setBtn(btn, SIZE_TEXT, false);
+      scheduleScan(600);
+    });
+  }
+
   /** 区块内图片总数涨了 = 平台把图收下了 */
-  function waitImageGrow(root, base, ms) {
+  function waitImageGrow(root, base, ms, basePreview) {
     return new Promise(function (resolve) {
       var start = Date.now();
       (function tick() {
         if (!root || !root.isConnected) { resolve(false); return; }
         if (root.querySelectorAll('img').length > base) { resolve(true); return; }
+        if (typeof basePreview === 'number' && previewCount() > basePreview) { resolve(true); return; }
         if (Date.now() - start >= ms) { resolve(false); return; }
         setTimeout(tick, 150);
       })();
@@ -742,6 +1431,7 @@
       }
 
       var base = host.root.querySelectorAll('img').length;
+      var basePreview = previewCount();
       setBtn(btn, '粘贴中…', true);
 
       var ok = false;
@@ -756,14 +1446,14 @@
         return null;
       }
 
-      return waitImageGrow(host.root, base, 4000).then(function (got) {
+      return waitImageGrow(host.root, base, 6000, basePreview).then(function (got) {
         if (got) {
           say('图片', 'success', '已入框');
           log('商详工具栏:成功');
         } else {
-          say('图片没能贴进去', 'alert', '未上传',
-            '文件已经交给平台,但 4 秒内没看到图片增加。可以等一下再看;若一直不动,请手动上传并把这个提示发给开发者。');
-          log('商详工具栏:交出去了但没看到图');
+          say('图片已交给平台，未看到预览', 'alert', '待确认',
+            '文件已经交给平台,但页面上还没出现新图片。平台可能还在处理 —— 请等几秒再看,不要重复点击;若始终没有,请手动上传。');
+          log('商详工具栏:已交付但未看到预览');
         }
         return null;
       });
@@ -1046,13 +1736,24 @@
   /* 表单里的 <img> 总数:框被平台整块重渲染时的「出图」判据
      (2026-11-08 真机:塞完文件平台把上传框换成「上传中」节点,
       旧节点永远等不到 img —— 但全表单的图片总数一定会涨)。 */
-  function waitImageSmart(tile, ms, imageRoot, base) {
+  /** 平台出图不一定把 <img> 加回原容器:也可能落在浮层、预览区。
+   *  上传生成的预览是 blob:/data: 图,这里只数这两类 —— 普通的 svg 图标不参与,
+   *  所以「基数不干净」也不会影响判断(只比增量)。 */
+  function previewCount() {
+    try {
+      return document.querySelectorAll('img[src^="blob:"], img[src^="data:"]').length;
+    } catch (e) { return 0; }
+  }
+
+  function waitImageSmart(tile, ms, imageRoot, base, basePreview) {
     return new Promise(function (resolve) {
       var start = Date.now();
       (function tick() {
         if (hasImage(tile)) { resolve(true); return; }
         var n = imageRoot.querySelectorAll('img').length;
         if (base >= 0 && n > base) { resolve(true); return; }
+        /* 2026-11-22:图片跑到框外(浮层/预览区)时,靠这条兜住,避免「实际成功却判失败」 */
+        if (typeof basePreview === 'number' && previewCount() > basePreview) { resolve(true); return; }
         if (Date.now() - start >= ms) { resolve(false); return; }
         setTimeout(tick, 150);
       })();
@@ -1107,10 +1808,20 @@
         { name: 'drop', run: function () { return putByEvent(tile, file, 'drop'); } }
       ];
 
+      /* 三级依次尝试,每级给 1800ms 看平台是否出图
+         (2026-11-22 由 1200 放宽:用户实测「很快提示失败、实际都成功」——
+          平台受理后异步出图常要 2~4 秒)。 */
+      var steps = [
+        { name: 'input', run: function () { return putByInput(tile, file); } },
+        { name: 'paste', run: function () { return putByEvent(tile, file, 'paste'); } },
+        { name: 'drop', run: function () { return putByEvent(tile, file, 'drop'); } }
+      ];
+
       var i = 0;
       var imageRoot = tile.getRootNode();
       imageRoot = imageRoot.querySelector('#goodsEditScrollContainer') || imageRoot;
       var baseImages = imageRoot.querySelectorAll('img').length;
+      var basePreview = previewCount();
       function next() {
         if (!on || !inScope()) return Promise.resolve(false);
         if (i >= steps.length) return Promise.resolve(false);
@@ -1118,14 +1829,14 @@
         var okRoute = false;
         try { okRoute = step.run(); } catch (e) { okRoute = false; }
         if (!okRoute) return next();
-        return waitImageSmart(tile, 1200, imageRoot, baseImages).then(function (got) {
+        return waitImageSmart(tile, 1800, imageRoot, baseImages, basePreview).then(function (got) {
           if (got) return true;
           if (!tile.isConnected) {
             /* 框被平台整块重渲染 = 文件已被受理(上传转圈中)。
                ⛔ 不许再打后面的通道 —— 会重复上传;
                改成耐心等:上传完成后 <img> 出现,全表单图片总数会涨。 */
             log('图片粘贴:平台已受理(框被重渲染),等出图…');
-            return waitImageSmart(tile, 8000, imageRoot, baseImages);
+            return waitImageSmart(tile, 8000, imageRoot, baseImages, basePreview);
           }
           log('图片粘贴:通道 ' + step.name + ' 没出图,换下一条');
           return next();
@@ -1134,13 +1845,20 @@
 
       setBtn(btn, '粘贴中…', true);
       return next().then(function (got) {
+        if (got) return true;
+        /* 三条通道都交出去了、但当前帧还没看到图 —— 平台可能仍在异步处理。
+           再静默等一次(不重试通道,避免重复上传),这一步能把「实际成功却报失败」压到最低。 */
+        log('图片粘贴:通道都试过,再静默等 5 秒');
+        setBtn(btn, '等平台出图…', true);
+        return waitImageSmart(tile, 5000, imageRoot, baseImages, basePreview);
+      }).then(function (got) {
         if (got) {
           say('图片', 'success', '已入框');
           log('图片粘贴:成功');
         } else {
-          say('图片没能贴进去', 'alert', '未入框',
-            '三条通道都没能让平台出图。请点框里原来那个「+ 上传图片」手动选择文件;若每次都不行,把这个提示发给开发者。');
-          log('图片粘贴:三条通道全部失败');
+          say('图片已交给平台，未看到预览', 'alert', '待确认',
+            '文件已经交给平台,但页面上还没出现预览。平台可能还在处理 —— 请等几秒再看,不要重复点击;若始终没有,请点框里原来的「上传图片」手动选择。');
+          log('图片粘贴:已交付但未看到预览');
         }
       });
     }).catch(function (e) {
@@ -1173,29 +1891,61 @@
   }
 
   /** 候选有、但一个都没挂上:把第一张不合格的框长相报出来,便于下一轮校准 */
+  /** 这一格为什么不合格(诊断与掉线日志共用,别写成两份口径) */
+  function rejectReason(t) {
+    if (!t) return '节点没了';
+    var wait = '';
+    var hasInput = false;
+    try { hasInput = !!inputForTile(t); } catch (e) { hasInput = false; }
+    var st = null;
+    try { st = window.getComputedStyle(t); } catch (e) { st = null; }
+    var r = boxOf(t);
+    var shape = Math.round(r.width) + '×' + Math.round(r.height);
+
+    if (!visible(t)) wait = '不可见';
+    else if (inFloatingChrome(t)) wait = '不在表单容器内(浮层/克隆)';
+    else if (inPlatformOverlay(t)) wait = '进了平台浮层';
+    else if (hasImage(t)) wait = '已有图';
+    else if (!hasInput && !hasUploadHint(t)) wait = '里面没有文件输入框';
+    else if (r.width > 0 && (r.width < 56 || r.height < 56)) wait = '太小 ' + shape;
+    else if (r.width > 0 && (r.width > 320 || r.height > 320)) wait = '太大 ' + shape;
+    else if (r.width > 0 && (r.width / r.height < 0.5 || r.width / r.height > 2.2)) wait = '不是方块 ' + shape;
+    else if (st && st.pointerEvents === 'none') wait = '不可点(pointer-events:none)';
+    else if (st && parseFloat(st.opacity) < 0.6) wait = '半透明(opacity ' + st.opacity + ')';
+    else if (inNativeTablePicker(t)) wait = '表格内图格(平台自带粘贴菜单)';
+    else wait = '未通过校验 ' + shape;
+    return wait;
+  }
+
+  /** 掉线留痕:哪一格、什么原因。节流 3 秒,只在真的摘了按钮时记。 */
+  var dropCount = 0;
+  var dropLoggedAt = 0;
+  var hoverLoggedAt = 0;
+  /** 指针进到本格按钮上时留一条(节流 3 秒):和随后的「掉线 / 就地补」对照,
+      就能判出「指上去才闪」到底是悬停遮罩压住,还是平台悬停重渲染把按钮清了。 */
+  function noteHover(tile) {
+    var now = Date.now();
+    if (now - hoverLoggedAt < 3000) return;
+    hoverLoggedAt = now;
+    var cls = (tile && typeof tile.className === 'string' ? tile.className : '').trim().split(/\s+/)[0] || '';
+    log('图片粘贴:指针进按钮 · 本格 ' + (tile ? tile.tagName.toLowerCase() : '?') + (cls ? '.' + cls : ''));
+  }
+  function noteDrop(tile, why) {
+    dropCount++;
+    var now = Date.now();
+    if (now - dropLoggedAt < 3000) return;
+    dropLoggedAt = now;
+    var cls = (tile && typeof tile.className === 'string' ? tile.className : '').trim().split(/\s+/)[0] || '';
+    log('图片粘贴:掉线 ' + dropCount + ' 次 · 本格 '
+      + (tile ? tile.tagName.toLowerCase() : '?') + (cls ? '.' + cls : '')
+      + ' · ' + why);
+  }
+
   function explainRejects(tiles) {
     for (var i = 0; i < tiles.length; i++) {
       var t = tiles[i];
       if (!t) continue;
-      var wait = '';
-      var shape = '';
-      var hasInput = false;
-      try { hasInput = !!inputForTile(t); } catch (e) { hasInput = false; }
-      var st = null;
-      try { st = window.getComputedStyle(t); } catch (e) { st = null; }
-      var r = boxOf(t);
-      shape = Math.round(r.width) + '×' + Math.round(r.height);
-
-      if (!visible(t)) wait = '不可见';
-      else if (inFloatingChrome(t)) wait = '不在表单容器内(浮层/克隆)';
-      else if (hasImage(t)) wait = '已有图';
-      else if (!hasInput && !hasUploadHint(t)) wait = '里面没有文件输入框';
-      else if (r.width > 0 && (r.width < 56 || r.height < 56)) wait = '太小 ' + shape;
-      else if (r.width > 0 && (r.width > 320 || r.height > 320)) wait = '太大 ' + shape;
-      else if (r.width > 0 && (r.width / r.height < 0.5 || r.width / r.height > 2.2)) wait = '不是方块 ' + shape;
-      else if (st && st.pointerEvents === 'none') wait = '不可点(pointer-events:none)';
-      else if (st && parseFloat(st.opacity) < 0.6) wait = '半透明(opacity ' + st.opacity + ')';
-      else wait = '未通过校验 ' + shape;
+      var wait = rejectReason(t);
 
       var cls = (typeof t.className === 'string' ? t.className : '').trim().split(/\s+/).slice(0, 2).join('.');
       log('图片粘贴:不合格 ' + t.tagName.toLowerCase() + (cls ? '.' + cls : '') + ' · ' + wait);
@@ -1204,7 +1954,7 @@
   }
 
   function boot() {
-    if (on) {
+    if (on || sizeOn) {
       /* 观察器先建好:scan 抛错也不至于让后续变更无人处理(上一版就是这样静默死掉的) */
       refreshRoots();
       // attachShadow 不触发外层 DOM 变更；只检查微前端宿主，不轮询全部上传框。
@@ -1248,15 +1998,21 @@
 
   dycReadFlags().then(function (f) {
     on = !f || f.goodsImagePaste !== false;
-    if (on) log('图片粘贴:已启用');
+    sizeOn = !f || f.sizeChartPaste !== false;
+    /* 运行指纹:报告里这一行就能判定跑到的是哪一版判据(否则改了没生效都看不出来) */
+    if (on) log('图片粘贴:已启用 · 判据 r10(滚动就地挂/挂后不重判/浮层闸)');
+    if (sizeOn) log('尺码图粘贴:已启用');
     boot();
   });
 
   dycWatchFlags(function (f) {
     var next = !f || f.goodsImagePaste !== false;
-    if (next === on) return;
+    var nextSize = !f || f.sizeChartPaste !== false;
+    if (next === on && nextSize === sizeOn) return;
+    if (next !== on) log('图片粘贴:' + (next ? '已启用' : '已停用'));
+    if (nextSize !== sizeOn) log('尺码图粘贴:' + (nextSize ? '已启用' : '已停用'));
     on = next;
-    log('图片粘贴:' + (on ? '已启用' : '已停用'));
+    sizeOn = nextSize;
     boot();
   });
 })();

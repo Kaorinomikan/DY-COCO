@@ -207,7 +207,11 @@ console.log('F. 判据唯一性');
 ['src/live/xhs-name-wrap.js', 'src/live/xhs-copy-code.js', 'src/live/xhs-scroll.js',
  'src/live/xhs-locate.js', 'src/content/cursor-fix.js'].forEach((rel) => {
   const code = fs.readFileSync(path.join(ROOT, rel), 'utf8');
-  assert.ok(/pat\.xhsCtrl/.test(code), rel + ' 没走 DYC_PAGE_PATTERNS.xhsCtrl 判定');
+  /* 2026-11-21：猫爪扩到小红书全域后，判据改走 pagePat()（内部仍是
+   * DYC_PAGE_PATTERNS），源码里不再出现 `pat.xhsCtrl` 字面量 —— 两种写法都算合格，
+   * 关键是不能写死域名。 */
+  assert.ok(/pat\.xhsCtrl|pagePat\('xhsCtrl'\)/.test(code),
+    rel + ' 没走 DYC_PAGE_PATTERNS.xhsCtrl 判定');
   assert.ok(!/pgy\.xiaohongshu|ark\.xiaohongshu/.test(code),
     rel + ' 里写死了域名 —— 新增中控台入口会漏掉它，判定只能认页面键');
 });

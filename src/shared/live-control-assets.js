@@ -37,7 +37,6 @@ var DYC_INJECT_GROUPS = {
       'src/live/live-control-flag.js',   // 在场标记：必须紧跟开关层、早于任何建 UI 的脚本
       'src/content/drag-gate.js',        // 拖拽闸门（#130）：拖拽期让路的公共判据
       'src/content/diag.js',
-      'src/content/cursor-fix.js',
       'src/content/anchor.js',
       'src/content/dialog.js',
       'src/content/row-scan.js',
@@ -97,7 +96,6 @@ var DYC_INJECT_GROUPS = {
       'src/content/flags.js',
       'src/content/goods-list-flag.js',
       'src/content/diag.js',
-      'src/content/cursor-fix.js',
       'src/content/anchor.js',
       'src/content/dialog.js',
       'src/content/row-scan.js',

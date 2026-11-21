@@ -83,6 +83,13 @@
  * 【开关】
  *   flags.js 的 liveCopyCode（中控台组，默认开）。关掉即时生效：
  *   摘观察器 + 移除已注入的按钮，页面回原样。
+ *
+ * 【作用域（2026-11-21 修「货号按钮跑到商品管理页右上角」）】
+ *   中控台是 Garfish 微前端，pushState 切页不重载 document。本模块原先没有任何
+ *   页面判断 ⇒ 切到商品管理页（/ffa/g/list）后仍在扫，而那个页面的 ecom-g-table
+ *   行满足 isProductRow 判据，顶栏容器还会被补捞反查成「行」⇒ 按钮落到右上角。
+ *   现在作用域订阅 + start/applyAll 双闸，判据统一取 flags.js 的 dycIsLiveControl()
+ *   （与 cart-paste / 全能搜索同一口径，见 scripts/自测-中控台作用域.js）。
  * ============================================================
  */
 
@@ -602,6 +609,8 @@
 
   function applyAll() {
     if (!enabled()) return 0;
+    // 不在中控台：先清掉可能残留的按钮再退出（见【中控台作用域】）。
+    if (!inLiveScope()) { removeAll(); return 0; }
     if (dragHold()) return 0;    // 拖拽期不往 Draggable 内部插按钮（见 dragHold 注释）
     var items = getRows();
     var n = 0;
@@ -666,8 +675,33 @@
     }
   }
 
+  /* ---------- 中控台作用域（2026-11-21 修「货号按钮跑到别的页右上角」） ----------
+   *
+   * 【现象】用户报：在抖店商品管理页（/ffa/g/list）**有时**右上角店铺名旁会冒出一枚
+   *   「货号」按钮。
+   *
+   * 【根因】抖店后台是 Garfish 微前端：从中控台 pushState 切到商品管理页**不重载
+   *   document**，本脚本仍在场，MutationObserver 照常跑。而 locate.js 的 isProductRow
+   *   判据（文本含「货号」+ 价格、宽 > 300、同父等高 ≥3）在商品管理页的 ecom-g-table
+   *   行上**完全成立** ⇒ 表格行被当成小黄车行；结构锚补捞还会在全页扫「ID」类小按钮，
+   *   顶栏容器也可能被 rowOfIdButton 反查成一个「行」⇒ 按钮插进顶栏，视觉上就是
+   *   「店铺名旁边多了一个货号」。间歇性来自「是否走 SPA 切页」+「扫描当拍的渲染状态」。
+   *
+   * 【两道保险（口径同 cart-paste.js，只留一道都会漏）】
+   *   ① 作用域订阅 —— 路由翻转即 stop()（断观察器 + 真移除按钮），不等下一拍；
+   *   ② start/applyAll 里再判一次 —— 兜住「平台重渲染触发的补扫」与「迟到的首读开关」，
+   *      这两条路径都不经过订阅回调。
+   *
+   * 与「拖拽让路」并列：一个管时机，一个管页面。判据只有 flags.js 一处真源，
+   * 不在这里另写 URL 正则（否则 manifest 的 matches 一改就两边打架）。
+   */
+  function inLiveScope() {
+    return typeof dycIsLiveControl !== 'function' || dycIsLiveControl();
+  }
+
   function start() {
     if (observer) return;
+    if (!inLiveScope()) return;
     applyAll();
     observer = new MutationObserver(scheduleApply);
     observer.observe(document.body, { childList: true, subtree: true });
@@ -676,6 +710,9 @@
   function stop() {
     if (observer) { observer.disconnect(); observer = null; }
     removeAll();
+    // 样式一并摘掉：SPA 长驻时留在 <head> 里的无用 CSS 会在别的页继续生效
+    var st = document.getElementById(STYLE_ID);
+    if (st && st.parentNode) st.parentNode.removeChild(st);
   }
 
   /* ---------- 开关联动 ---------- */
@@ -696,6 +733,16 @@
     if (now) start();
     else stop();
   });
+
+  /* 中控台作用域订阅：切走立刻收干净，切回再起。
+     旧构建没有这个 API 时跳过 —— 此时仅剩 applyAll 里的作用域闸兜底，
+     行为退化成「不会在别页新增按钮」，也不会把已有功能弄坏。 */
+  if (typeof dycWatchLiveScope === 'function') {
+    dycWatchLiveScope(function (inScope) {
+      if (inScope) { if (enabled()) start(); }
+      else stop();
+    });
+  }
 
   // 中控台是微前端，商品列表渲染得晚 —— 首屏补扫三次兜底
   [1500, 4000, 8000].forEach(function (ms) {

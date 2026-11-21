@@ -106,10 +106,18 @@ async function setup(url, flags) {
     assert.doesNotMatch(f.cursor(f.button), /url\(/);
   });
 
-  await test('抖音页：非 rbd 手柄的 grab 元素按下不启用（旧口径不变）', DY_URL, {}, f => {
+  /* 2026-11-21 口径变更（用户：「让猫爪功能兼容整个平台，无论抖店还是小红书」）：
+   *   旧口径是「抖音侧只认 rbd 手柄」，非 rbd 的 grab 元素按下不启用 —— 当时
+   *   的目的是防止抖店侧误伤。现在扩到整平台后这条作废：抖店后台的表格排序、
+   *   卡片拖拽大量不是 rbd，只认 rbd 会让「整个平台」这个要求落空。
+   *   反向保护仍在：按下点若是输入框/文本域（且不在可拖宿主内），照旧不启用。 */
+  await test('抖音页：非 rbd 手柄的 grab 元素同样能起拖（全平台口径）', DY_URL, {}, f => {
     f.startDrag();
-    assert.doesNotMatch(f.cursor(f.button), /url\(/, '抖音侧仍只认 rbd 手柄，放宽即是改坏');
-    assert.ok(!f.w.document.documentElement.hasAttribute('data-dyc-cursor-dragging'), '拖动态标记不该出现');
+    assert.match(f.cursor(f.button), /url\(/, '抖店侧 grab 元素按下应启用全页猫爪');
+    assert.ok(f.w.document.documentElement.hasAttribute('data-dyc-cursor-dragging'),
+      '拖动态标记应出现');
+    f.fire(f.w, 'pointerup');
+    assert.doesNotMatch(f.cursor(f.button), /url\(/, '松手立即还原');
   });
 
   await test('抖音页：小红书键关闭不影响抖音侧', DY_URL, { xhsCursorFix: false, cursorFix: true }, f => {
@@ -136,7 +144,9 @@ async function setup(url, flags) {
     assert.match(f.cursor(f.button), /url\(/, '重新开启后拖拽猫爪应恢复');
   });
 
-  await test('直播大屏：两个开关都开启也不注入猫爪，站内切页后自动对齐', SCREEN_URL,
+  /* 2026-11-21：小红书从「只在中控台生效」扩到**整域**（用户要求全平台兼容）。
+   * 大屏页也属 pgy 域 ⇒ 现在应当注入；站内 pushState 切页后仍要按新页重判。 */
+  await test('小红书全域：大屏页同样注入，站内切页后自动对齐', SCREEN_URL,
     { xhsCursorFix: true, cursorFix: true }, f => {
       let pollRoute;
       const setInterval = f.w.setInterval;
@@ -148,13 +158,13 @@ async function setup(url, flags) {
         f.w.history.pushState({}, '', url);
         pollRoute();
       }
-      assert.equal(style(), null);
+      assert.ok(style(), '大屏页属 pgy 域，应启用猫爪');
+      f.watch({ xhsCursorFix: false, cursorFix: true });
+      assert.equal(style(), null, '关掉小红书键应立即收掉（抖音键开着不影响）');
       f.watch({ xhsCursorFix: true, cursorFix: true });
-      assert.equal(style(), null);
-      navigate(XHS_URL);
       assert.ok(style());
-      navigate(SCREEN_URL);
-      assert.equal(style(), null);
+      navigate(XHS_URL);
+      assert.ok(style(), '切到中控台仍启用');
     });
 
   console.log(`${passed} passed, ${failed} failed`);

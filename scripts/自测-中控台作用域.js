@@ -136,13 +136,44 @@ console.log('C. 模块接入（防漏接 / 防改回去）');
     'src/live/auto-loop-lecture.js',
     'src/live/lucky-bag.js',
     'src/live/auto-refresh.js',
-    'src/live/search.js'
+    'src/live/search.js',
+    'src/live/copy-code.js',
+    'src/live/name-wrap.js'
   ];
   mods.forEach((rel) => {
     const src = fs.readFileSync(path.join(ROOT, rel), 'utf8');
     assert.ok(/dycWatchLiveScope\s*\(/.test(src), rel + ' 没有注册中控台作用域守卫');
   });
-  ok('四个跟中控台走的模块都注册了守卫（循环讲解 / 福袋 / 自动刷新 / 全能搜索）');
+  ok('六个跟中控台走的模块都注册了守卫（循环讲解 / 福袋 / 自动刷新 / 全能搜索 / 货号复制 / 名称换行）');
+
+  /* 货号复制【2026-11-21 用户报：商品管理页右上角冒出「货号」按钮】
+   * 只注册订阅不够 —— 平台重渲染触发的补扫、迟到的首读开关都不经过订阅回调，
+   * 所以 start / applyAll 各自还要有一道作用域短路（本用例钉住这三处）。 */
+  const copyCode = fs.readFileSync(path.join(ROOT, 'src/live/copy-code.js'), 'utf8');
+  assert.ok(/function\s+inLiveScope\s*\(/.test(copyCode),
+    '货号复制缺少统一作用域判据 inLiveScope（不许自己另写 URL 正则）');
+  assert.ok(/dycIsLiveControl\s*\(/.test(copyCode),
+    '货号复制的作用域判据必须取 flags.js 的 dycIsLiveControl()');
+  ['applyAll', 'start'].forEach((fn) => {
+    const at = copyCode.indexOf('function ' + fn + '(');
+    const guard = copyCode.indexOf('inLiveScope(', at);
+    assert.ok(at > 0 && guard > at && guard - at < 400,
+      fn + ' 缺作用域判定：不在中控台时仍会注入 / 补扫');
+  });
+  ok('货号复制：作用域订阅 + start/applyAll 双闸（离开中控台不再注入）');
+
+  /* 名称换行【2026-11-21 同因】：它改的是行内元素的内联样式，SPA 切页后若不还原，
+   * 商品管理页的名字会保持折行态，直到平台下一次重渲染 —— 与 copy-code 一起修。 */
+  const nameWrap = fs.readFileSync(path.join(ROOT, 'src/live/name-wrap.js'), 'utf8');
+  ['applyAll', 'start'].forEach((fn) => {
+    const at = nameWrap.indexOf('function ' + fn + '(');
+    const guard = nameWrap.indexOf('inLiveScope(', at);
+    assert.ok(at > 0 && guard > at && guard - at < 400,
+      fn + ' 缺作用域判定：不在中控台时仍会改写名称样式');
+  });
+  assert.ok(/dycIsLiveControl\s*\(/.test(nameWrap),
+    '名称换行必须取 flags.js 的 dycIsLiveControl()，不许另写 URL 正则');
+  ok('名称换行：作用域订阅 + start/applyAll 双闸（离开中控台还原样式）');
 
   /* 粘贴加车【2026-11-06 用户改口径】：橱窗商品管理页上**也要收掉**。
    * 原 11-05 的「该页允许粘贴加车」作废 —— 当时它被刻意排除在守卫之外，

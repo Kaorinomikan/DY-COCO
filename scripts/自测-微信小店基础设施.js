@@ -72,8 +72,21 @@ check('同一条 content_scripts 同时覆盖两个域（拆两条容易改一�
   });
   assert.equal(partial.length, 0, '有 ' + partial.length + ' 条只覆盖了一个域');
   const hit = (mf.content_scripts || []).filter((e) => WX_HOSTS.every((h) => (e.matches || []).includes(h)));
-  const biz = hit.filter((e) => (e.js || []).includes('src/content/flags.js') && !WX_HOSTS.every(h => (e.exclude_matches || []).includes(h)));
+  const biz = hit.filter((e) => {
+    const js = e.js || [];
+    if (!js.includes('src/content/flags.js')) return false;
+    if (WX_HOSTS.every(h => (e.exclude_matches || []).includes(h))) return false;
+    /* 2026-11-21：猫爪光标改成三平台整域注入，条目里也带 flags.js。
+     * 它是**修正类**（只换光标，不改数据、不注入业务按钮），与 diag /
+     * hide-elements 同级，单独成条，不与业务条目争「唯一」。
+     * 排除它之后再数业务条目 —— 否则「加了猫爪」会被误判成「微信域多了一套业务」。 */
+    return !js.includes('src/content/cursor-fix.js');
+  });
   assert.equal(biz.length, 1, '带开关层的业务条目应恰有 1 条，实际 ' + biz.length);
+  const cursorEntry = hit.filter((e) => (e.js || []).includes('src/content/cursor-fix.js'));
+  assert.equal(cursorEntry.length, 1, '猫爪全域条目应恰有 1 条，实际 ' + cursorEntry.length);
+  assert.deepEqual(cursorEntry[0].js, ['src/content/flags.js', 'src/content/cursor-fix.js'],
+    '猫爪条目只该带开关层 + 它自己，不夹带业务脚本');
   const bridge = hit.filter((e) => (e.js || []).includes('src/content/wx-link-main.js'));
   assert.equal(bridge.length, 1, '主世界桥条目应恰有 1 条，实际 ' + bridge.length);
   assert.equal(bridge[0].world, 'MAIN', '桥条目必须 world=MAIN，否则读不到页面实例');

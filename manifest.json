@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "可可助手",
-  "version": "26.11.21.1",
+  "version": "26.11.22.1",
   "description": "抖音抖店、微信小店、中控台小助手",
   "permissions": [
     "storage",
@@ -79,7 +79,6 @@
         "src/content/flags.js",
         "src/content/goods-list-flag.js",
         "src/content/diag.js",
-        "src/content/cursor-fix.js",
         "src/content/anchor.js",
         "src/content/dialog.js",
         "src/content/row-scan.js",
@@ -111,7 +110,6 @@
         "src/live/live-control-flag.js",
         "src/content/drag-gate.js",
         "src/content/diag.js",
-        "src/content/cursor-fix.js",
         "src/content/anchor.js",
         "src/content/dialog.js",
         "src/content/row-scan.js",
@@ -383,7 +381,6 @@
         "src/content/diag.js",
         "src/content/anchor.js",
         "src/content/dialog.js",
-        "src/content/cursor-fix.js",
         "src/content/item-code.js",
         "src/live/xhs-name-wrap.js",
         "src/live/xhs-ark-name-wrap.js",
@@ -479,6 +476,20 @@
       "css": [
         "src/content/style.css",
         "src/content/msgbox.css"
+      ],
+      "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://*.jinritemai.com/*",
+        "https://pgy.xiaohongshu.com/*",
+        "https://ark.xiaohongshu.com/*",
+        "https://store.weixin.qq.com/*",
+        "https://channels.weixin.qq.com/*"
+      ],
+      "js": [
+        "src/content/flags.js",
+        "src/content/cursor-fix.js"
       ],
       "run_at": "document_idle"
     },
