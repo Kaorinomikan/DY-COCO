@@ -9,7 +9,7 @@
 # ============================================================
 
 REPO="C:/Develop project/DY-COCO"
-WT_ROOT="C:/Develop project/DY-COCO-wt"
+WT_ROOT="C:/Develop project/DY-COCO/.worktrees"
 # git 路径自动探测(2026-10-14 修):原先硬编码 versions/1.2.0,本机 PortableGit
 # 升到 1.3.0 后所有脚本同时报「No such file or directory」—— 既开不了工也回收不了。
 # 现在取 versions/ 下版本号最大者,取不到再退回 PATH 里的 git。

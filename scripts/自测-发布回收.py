@@ -232,7 +232,15 @@ REMOTE=gitee
         end = source.index('NODE_BIN=', start)
         source = source[:start] + f"GIT='{self.fake_git.as_posix()}'\n" + source[end:]
         source = source.replace('REPO="C:/Develop project/DY-COCO"', f"REPO='{self.path.as_posix()}'")
-        source = source.replace('WT_ROOT="C:/Develop project/DY-COCO-wt"', f"WT_ROOT='{self.path.as_posix()}/tasks'")
+        before = source
+        source = source.replace(
+            'WT_ROOT="C:/Develop project/DY-COCO/.worktrees"',
+            f"WT_ROOT='{self.path.as_posix()}/tasks'",
+        )
+        # 字面量一旦漂移，替换会静默失效、自测就会去动真实工作树目录。
+        # 2026-11-22 工作树迁到 .worktrees/ 时踩过一次，这里加硬校验。
+        if source == before:
+            raise SystemExit("自测准备失败：wt-merge.sh 的 WT_ROOT 字面量已变，替换未生效")
         (self.path / 'tasks' / 'case').mkdir(parents=True)
         (self.path / 'tasks' / 'case' / 'scripts').mkdir(parents=True)
         self.write('tasks/case/scripts/check-syntax.py', '# 语法闸门占位，由 fake-python 执行\n')

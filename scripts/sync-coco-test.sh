@@ -19,7 +19,7 @@
 #
 # 2026-11-05 新增 --from（起因：用户原话「改动还未合并之前，我能从哪里拿到
 #   改动后的文件进行测试，每次改动完就问我真机测试，我都不知道在哪测」）：
-#   问题根因 —— 并行开发的改动在工作树 C:/Develop project/DY-COCO-wt/<名字> 里，
+#   问题根因 —— 并行开发的改动在工作树 C:/Develop project/DY-COCO/.worktrees/<名字> 里，
 #   而本脚本的源**写死**为主工作区，未合并的新代码没有任何通道进测试档，
 #   于是只能等合并后才测得到，用户全程不知道「测的是哪一版」。
 #   现在 --from <名字> 直接把工作树镜像进 COCO TEST：
@@ -47,7 +47,7 @@ HERE="$(dirname "$0")"
 
 REPO="C:/Develop project/DY-COCO"
 COCO_TEST_DIR="C:/Users/79412/Desktop/COCO TEST"
-WT_ROOT="C:/Develop project/DY-COCO-wt"
+WT_ROOT="C:/Develop project/DY-COCO/.worktrees"
 MARK="$REPO/.tmp/coco-test-source"
 
 # ---------- 扩展本体清单（同步与校验的唯一事实来源）----------

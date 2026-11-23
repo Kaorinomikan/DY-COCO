@@ -1,0 +1,159 @@
+<style>
+  #replay-confirmation-review{color-scheme:light dark}
+  #replay-confirmation-review .rp-stage{min-height:636px;display:flex;align-items:center;justify-content:center;padding:24px 14px;box-sizing:border-box}
+  #replay-confirmation-review .rp-dialog{--rp-bg:light-dark(#ffffff,#20232b);--rp-text:light-dark(#252a33,#edf0f5);--rp-soft:light-dark(#737d8b,#a6afbd);--rp-rule:light-dark(#e9edf2,#363c47);--rp-blue:light-dark(#165dff,#76a3ff);--rp-blue-fill:light-dark(#165dff,#2969ef);--rp-field:light-dark(#ffffff,#252a33);--rp-note:light-dark(#f4f7fb,#292f3a);--rp-orange:light-dark(#936009,#f1c36e);--rp-orange-bg:light-dark(#fff8e9,#3b3221);width:400px;max-width:100%;box-sizing:border-box;background:var(--rp-bg);color:var(--rp-text);border:1px solid var(--rp-rule);border-radius:14px;box-shadow:0 12px 40px light-dark(#27334b17,#00000040);font:400 14px/1.6 -apple-system,BlinkMacSystemFont,"Segoe UI","Microsoft YaHei",sans-serif;overflow:hidden}
+  #replay-confirmation-review .rp-dialog *{box-sizing:border-box}
+  #replay-confirmation-review .rp-heading{margin:0;padding:20px 22px 16px;font-size:17px;font-weight:500;line-height:1.5}
+  #replay-confirmation-review .rp-body{padding:0 22px 20px;display:flex;flex-direction:column;gap:18px}
+  #replay-confirmation-review .rp-kv{display:grid;grid-template-columns:78px minmax(0,1fr);gap:10px 16px;margin:0}
+  #replay-confirmation-review .rp-kv dt{color:var(--rp-soft);font-weight:400;margin:0}
+  #replay-confirmation-review .rp-kv dd{margin:0;font-weight:400;font-variant-numeric:tabular-nums}
+  #replay-confirmation-review .rp-label{display:block;color:var(--rp-soft);font-size:13px;margin:0 0 7px;font-weight:400}
+  #replay-confirmation-review .rp-name-box{display:flex;align-items:center;gap:8px;border:1px solid var(--rp-rule);border-radius:8px;background:var(--rp-field);padding:0 11px;min-height:40px}
+  #replay-confirmation-review .rp-input{width:100%;min-width:0;padding:9px 0;border:0;background:transparent;color:var(--rp-text);font:inherit;line-height:1.5}
+  #replay-confirmation-review .rp-input:focus-visible{outline:2px solid var(--rp-blue);outline-offset:2px;border-radius:2px}
+  #replay-confirmation-review .rp-ext{flex:none;font-size:13px;color:var(--rp-soft)}
+  #replay-confirmation-review .rp-note{background:var(--rp-note);color:var(--rp-soft);border-radius:8px;padding:11px 12px;font-size:13px;line-height:1.65}
+  #replay-confirmation-review .rp-note.is-warning{background:var(--rp-orange-bg);color:var(--rp-orange)}
+  #replay-confirmation-review .rp-details{border-top:1px solid var(--rp-rule);padding-top:12px;color:var(--rp-soft);font-size:13px}
+  #replay-confirmation-review .rp-details summary{width:fit-content;cursor:pointer;user-select:none}
+  #replay-confirmation-review .rp-details .rp-kv{grid-template-columns:78px minmax(0,1fr);padding-top:12px;gap:5px 16px;font-size:12px}
+  #replay-confirmation-review .rp-details dd{color:var(--rp-soft)}
+  #replay-confirmation-review .rp-foot{padding:16px 22px 20px;border-top:1px solid var(--rp-rule)}
+  #replay-confirmation-review .rp-hint{margin:0 0 13px;font-size:12px;color:var(--rp-soft)}
+  #replay-confirmation-review .rp-actions{display:flex;justify-content:flex-end;gap:10px;align-items:center}
+  #replay-confirmation-review .rp-button{display:inline-flex;justify-content:center;align-items:center;min-height:38px;border-radius:8px;border:1px solid var(--rp-rule);background:transparent;color:var(--rp-text);padding:7px 16px;font:400 14px/1.5 inherit;font-family:inherit;font-size:14px;font-weight:400;cursor:pointer}
+  #replay-confirmation-review .rp-button-main{border-color:var(--rp-blue-fill);background:var(--rp-blue-fill);color:#ffffff;font-weight:500}
+  #replay-confirmation-review .rp-button:focus-visible,#replay-confirmation-review summary:focus-visible{outline:2px solid var(--rp-blue);outline-offset:3px}
+  #replay-confirmation-review .rp-button-main:hover{filter:brightness(.96)}
+  #replay-confirmation-review .rp-button-quiet{border:0;background:transparent;color:var(--rp-blue);padding:2px 0;min-height:28px;font-weight:400}
+  #replay-confirmation-review .rp-file-row{display:flex;align-items:flex-start;gap:12px}
+  #replay-confirmation-review .rp-file-info{min-width:0;flex:1}
+  #replay-confirmation-review .rp-file-name{margin:0;overflow-wrap:anywhere;font-weight:400;font-size:14px;line-height:1.7}
+  #replay-confirmation-review .rp-file-type{display:inline-block;margin-top:6px;font-size:12px;color:var(--rp-soft)}
+  #replay-confirmation-review .rp-rename{flex:none;white-space:nowrap}
+  #replay-confirmation-review .rp-summary{margin:0;padding:13px 0;border-top:1px solid var(--rp-rule);border-bottom:1px solid var(--rp-rule);display:flex;flex-direction:column;gap:5px;color:var(--rp-soft);font-size:13px;font-variant-numeric:tabular-nums}
+  #replay-confirmation-review .rp-summary span:first-child{color:var(--rp-text)}
+  #replay-confirmation-review .rp-inline-facts{display:flex;flex-wrap:wrap;gap:6px 18px}
+  #replay-confirmation-review .rp-inline-facts span{color:var(--rp-text)}
+  #replay-confirmation-review [hidden]{display:none!important}
+  @media(max-width:420px){#replay-confirmation-review .rp-stage{padding:18px 6px;min-height:678px}#replay-confirmation-review .rp-heading{padding-left:18px;padding-right:18px}#replay-confirmation-review .rp-body{padding-left:18px;padding-right:18px}#replay-confirmation-review .rp-foot{padding-left:18px;padding-right:18px}#replay-confirmation-review .rp-kv{grid-template-columns:66px minmax(0,1fr);column-gap:10px}#replay-confirmation-review .rp-button{padding-left:12px;padding-right:12px}}
+</style>
+<div id="replay-confirmation-review">
+  <div class="viz-carousel viz-dotted-background" aria-label="直播回放下载确认方案" data-previous-label="上一方案" data-next-label="下一方案">
+    <section data-variant="简洁确认" aria-label="简洁确认方案">
+      <div class="rp-stage">
+        <section class="rp-dialog" aria-label="简洁确认弹窗" data-design="simple">
+          <h2 class="rp-heading">下载直播回放</h2>
+          <div class="rp-body">
+            <dl class="rp-kv">
+              <dt>开播时间</dt><dd>2026-10-21 10:34</dd>
+              <dt>回放时长</dt><dd>2 小时 20 分</dd>
+              <dt>预计大小</dt><dd data-size>7.7 GB</dd>
+              <dt data-quality hidden>清晰度</dt><dd data-quality hidden>1080P</dd>
+            </dl>
+            <label><span class="rp-label">文件名</span><span class="rp-name-box"><input class="rp-input" aria-label="回放文件名" value="直播回放_2026.10.21_10点34分"><span class="rp-ext" data-extension>.ts</span></span></label>
+            <div class="rp-note" data-notice>若打开后没有画面，请换用支持 H.265 的播放器。</div>
+            <details class="rp-details"><summary>更多信息</summary><dl class="rp-kv"><dt>视频格式</dt><dd data-format>TS</dd><dt>视频编码</dt><dd data-codec>H.265</dd><dt>音频编码</dt><dd>AAC</dd><dt>分片数量</dt><dd>848 段</dd></dl></details>
+          </div>
+          <footer class="rp-foot"><p class="rp-hint">下载期间请保持本页开启。</p><div class="rp-actions"><button type="button" class="rp-button">取消</button><button type="button" class="rp-button rp-button-main">选择位置并下载</button></div></footer>
+        </section>
+      </div>
+    </section>
+    <section data-variant="文件优先" aria-label="文件优先方案" hidden>
+      <div class="rp-stage">
+        <section class="rp-dialog" aria-label="文件优先弹窗" data-design="file">
+          <h2 class="rp-heading">保存直播回放</h2>
+          <div class="rp-body">
+            <div class="rp-file-row"><div class="rp-file-info"><p class="rp-file-name" data-display-name>直播回放_2026.10.21_10点34分.ts</p></div><button class="rp-button rp-button-quiet rp-rename" type="button" aria-expanded="false">重命名</button></div>
+            <label data-editor hidden><span class="rp-label">文件名</span><span class="rp-name-box"><input class="rp-input" aria-label="修改回放文件名" value="直播回放_2026.10.21_10点34分"><span class="rp-ext" data-extension>.ts</span></span></label>
+            <div class="rp-summary"><span>2026-10-21 10:34 开播</span><div class="rp-inline-facts"><span>时长 2 小时 20 分</span><span><span data-size-prefix>预计</span> <span data-size>7.7 GB</span></span><span data-quality hidden>1080P</span></div></div>
+            <div class="rp-note" data-notice>若打开后没有画面，请换用支持 H.265 的播放器。</div>
+            <details class="rp-details"><summary>更多信息</summary><dl class="rp-kv"><dt>视频格式</dt><dd data-format>TS</dd><dt>视频编码</dt><dd data-codec>H.265</dd><dt>音频编码</dt><dd>AAC</dd><dt>分片数量</dt><dd>848 段</dd></dl></details>
+          </div>
+          <footer class="rp-foot"><p class="rp-hint">下载期间请保持本页开启。</p><div class="rp-actions"><button type="button" class="rp-button">取消</button><button type="button" class="rp-button rp-button-main">选择位置并下载</button></div></footer>
+        </section>
+      </div>
+    </section>
+  </div>
+</div>
+<script>
+(() => {
+  const root = document.getElementById('replay-confirmation-review');
+  const defaults = { state: '兼容提示', headingWeight: '中等', details: false, editing: false, qualityKnown: false,
+    fileName: '直播回放_2026.10.21_10点34分' };
+  const saved = globalThis.openai?.widgetState?.privateContent?.designs || {};
+  const designs = {};
+  function persist() {
+    const snapshot = Object.fromEntries(Object.entries(designs).map(([key, value]) => [key, { ...value.state }]));
+    if (globalThis.openai?.setWidgetState) globalThis.openai.setWidgetState({
+      modelContent: { preview: '回放下载确认', designs: snapshot }, privateContent: { designs: snapshot }
+    }).catch(() => {});
+  }
+  for (const dialog of root.querySelectorAll('[data-design]')) {
+    const key = dialog.dataset.design;
+    const state = { ...defaults, ...(saved[key] || {}) };
+    const details = dialog.querySelector('details');
+    const input = dialog.querySelector('input');
+    function render() {
+      const normal = state.state === '普通回放';
+      const incomplete = state.state === '内容不完整';
+      const unknown = state.state === '大小未知';
+      const extension = normal ? '.mp4' : '.ts';
+      dialog.querySelector('.rp-heading').style.fontWeight = state.headingWeight === '常规' ? '400' : '500';
+      dialog.querySelector('[data-size]').textContent = unknown ? '暂无法估算' : '7.7 GB';
+      const prefix = dialog.querySelector('[data-size-prefix]');
+      if (prefix) prefix.textContent = unknown ? '大小' : '预计';
+      dialog.querySelectorAll('[data-quality]').forEach(el => { el.hidden = !state.qualityKnown; });
+      dialog.querySelector('[data-format]').textContent = normal ? 'MP4' : 'TS';
+      dialog.querySelector('[data-codec]').textContent = normal ? 'H.264' : 'H.265';
+      dialog.querySelectorAll('[data-extension]').forEach(el => { el.textContent = extension; });
+      const notice = dialog.querySelector('[data-notice]');
+      notice.hidden = normal;
+      notice.classList.toggle('is-warning', incomplete);
+      notice.textContent = incomplete
+        ? '当前可下载约 96% 的回放，末尾可能缺失。'
+        : '若打开后没有画面，请换用支持 H.265 的播放器。';
+      details.open = state.details;
+      if (document.activeElement !== input) input.value = state.fileName;
+      const display = dialog.querySelector('[data-display-name]');
+      if (display) {
+        display.textContent = state.fileName + extension;
+        dialog.querySelector('[data-editor]').hidden = !state.editing;
+        const rename = dialog.querySelector('.rp-rename');
+        rename.textContent = state.editing ? '完成' : '重命名';
+        rename.setAttribute('aria-expanded', String(state.editing));
+      }
+    }
+    designs[key] = { state, render };
+    render();
+    details.querySelector('summary').addEventListener('click', () => {
+      setTimeout(() => { state.details = details.open; persist(); }, 0);
+    });
+    input.addEventListener('input', () => {
+      state.fileName = input.value;
+      const display = dialog.querySelector('[data-display-name]');
+      if (display) display.textContent = input.value + dialog.querySelector('[data-extension]').textContent;
+    });
+    input.addEventListener('change', persist);
+    const rename = dialog.querySelector('.rp-rename');
+    if (rename) rename.addEventListener('click', () => {
+      state.editing = !state.editing; render(); persist(); if (state.editing) input.focus();
+    });
+    if (globalThis.Tweak) {
+      const tweak = new Tweak({ container: dialog, onChange: () => { render(); persist(); } });
+      tweak.addSelect(state, 'state', { label: '回放状态', options: ['兼容提示', '普通回放', '内容不完整', '大小未知'] });
+      tweak.addSelect(state, 'headingWeight', { label: '标题字重', options: ['常规', '中等'] });
+      tweak.addToggle(state, 'details', { label: '展开更多信息' });
+      tweak.addToggle(state, 'qualityKnown', { label: '清晰度已识别（示例）' });
+    }
+  }
+  window.addEventListener('openai:set_globals', event => {
+    const next = event.detail?.globals?.widgetState?.privateContent?.designs;
+    if (!next) return;
+    for (const [key, design] of Object.entries(designs)) {
+      if (next[key]) { Object.assign(design.state, next[key]); design.render(); }
+    }
+  });
+})();
+</script>

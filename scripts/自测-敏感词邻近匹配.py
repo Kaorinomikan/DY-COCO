@@ -9,7 +9,7 @@
   ⇒ 闸门改成「触发词必须落在语境词邻近窗口内（±4 字）」才算同现。
     这个自测把该行为**钉死**：既不能漏放真表述，也不能误伤正常用语。
 
-★ 依赖：词表在工程外（<工程上级目录>/.dyc-sensitive-words.json）。
+★ 依赖：词表在工程内但被忽略（DY-COCO/.dyc-config/.dyc-sensitive-words.json）。
   词表缺失 → 本自测**直接判失败**（不跳过、不假装通过）——
   「没词表所以没命中」是假绿灯，比红灯危险。
 """
@@ -40,7 +40,7 @@ def main():
     words = g.load_words(None)
     if words is None:
         print("✗ 词表缺失 —— 闸门无法工作，自测判失败。")
-        print("  词表应位于：<工程上级目录>/.dyc-sensitive-words.json")
+        print("  词表应位于：DY-COCO/.dyc-config/.dyc-sensitive-words.json")
         return 1
 
     g.BLOCK_WORDS = words["block_words"]
@@ -152,7 +152,7 @@ def main():
     # 词表定位：工作树里也必须自动找到主工程的词表（不许靠人工拷贝）
     cands = [os.path.normpath(c) for c in g.word_candidates()]
     chosen = os.path.normpath(os.path.abspath(g.default_words()))
-    located = (chosen in cands) and ("DY-COCO-wt" not in chosen) and os.path.isfile(chosen)
+    located = (chosen in cands) and ("DY-COCO-wt" not in chosen) and (".worktrees" not in chosen) and os.path.isfile(chosen)
     if not located:
         failed.append("词表定位没指向主工程那份（工作树会判词表缺失）")
     print("  %-34s %s" % ("工作树自动定位主工程词表", "✓" if located else "✗ 定位错"))

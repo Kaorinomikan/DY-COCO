@@ -34,7 +34,7 @@ GIT="$(ls -d C:/Users/79412/.workbuddy/binaries/PortableGit/versions/*/cmd/git.e
 [ -n "$GIT" ] || GIT="$(command -v git)"
 NODE_BIN="C:/Users/79412/.workbuddy/binaries/node/versions/22.22.2-6/node.exe"
 REPO="C:/Develop project/DY-COCO"
-WT_ROOT="C:/Develop project/DY-COCO-wt"
+WT_ROOT="C:/Develop project/DY-COCO/.worktrees"
 # 2026-10-13 用户定:桌面**只保留一个**测试档 COCO TEST,旧档「DY-COCO-调试」取消生成。
 # (原第 18 条已删除,口径并入第 19 条 —— 见本文件末尾的 sync_to_coco_test)
 

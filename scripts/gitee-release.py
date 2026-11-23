@@ -47,8 +47,8 @@
 
     按以下顺序查找，**任何情况下都不写入仓库**：
         1. 环境变量 GITEE_TOKEN
-        2. 工程目录的上一级下的 .dyc-gitee-token 文件
-           （即 C:/Develop project/.dyc-gitee-token，刻意放在仓库外）
+        2. 工程内 .dyc-config/.dyc-gitee-token 文件
+           （即 DY-COCO/.dyc-config/.dyc-gitee-token，该目录被 gitignore，进不了提交）
 
 设计要点（改这个脚本前请先读）
     1. 【硬性】上传前校验：zip 内 manifest.json 的版本号必须等于待发布版本号。
@@ -107,9 +107,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 PARENT = os.path.dirname(ROOT)
 
-DIST_DIR = os.path.join(PARENT, "DY-COCO-dist")
+DIST_DIR = os.path.join(ROOT, "dist")
 URL_BAK = os.path.join(ROOT, ".gitee-url.bak")
-TOKEN_FILE = os.path.join(PARENT, ".dyc-gitee-token")
+TOKEN_FILE = os.path.join(ROOT, ".dyc-config", ".dyc-gitee-token")
 NOTES_FILE = os.path.join(ROOT, "RELEASE_NOTES.md")
 
 API = "https://gitee.com/api/v5"

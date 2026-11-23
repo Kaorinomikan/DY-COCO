@@ -15,7 +15,7 @@
  *   ② 逐文件按 fetchGitHubFile 的分流规则拉取（CDN 先行 / API 兜底）；
  *   ③ 逐字节 sha256 对比清单 —— 任何不一致都算失败。
  *
- * API 调用带 Token（工程外 .dyc-github-token，仅本机验证用）——
+ * API 调用带 Token（工程内 .dyc-config/.dyc-github-token，仅本机验证用，该目录被 gitignore）——
  * 商家端没有 Token，但配额消耗 7 次/更新，60/小时绰绰有余；
  * 这里带 Token 只是为了让**本机的验证过程**不受本机 IP 已耗尽的匿名配额影响。
  *
@@ -35,7 +35,7 @@ const REPO = 'DY-COCO';
 
 function token() {
   try {
-    const t = fs.readFileSync('C:/Develop project/.dyc-github-token', 'utf8').trim();
+    const t = fs.readFileSync('C:/Develop project/DY-COCO/.dyc-config/.dyc-github-token', 'utf8').trim();
     return t || null;
   } catch (e) { return null; }
 }

@@ -40,7 +40,7 @@ items.json（反馈文本由助手用 DB 工具查出后落盘，体积很小）
   **「垃圾反馈」默认不渲染**（与流程口径一致），要看得加 --show-junk。
 
 密钥来源（与 取反馈原图.py 同）：环境变量 DYC_SHOT_KEY，
-否则读工程上级目录的 .dyc-shot-key。
+否则读工程内 .dyc-config/.dyc-shot-key（被 gitignore，不会入库）。
 """
 import argparse
 import base64
@@ -54,7 +54,7 @@ RPC = "https://dycoco-feedback.app.workbuddy.host/.cloud/database/rest/rpc/dyc_s
 RPC_META = "https://dycoco-feedback.app.workbuddy.host/.cloud/database/rest/rpc/dyc_meta"
 ACCESS_KEY = "wbpk_TczgSmUCbUzky377FNk3Py_RxDXjaBU8BMDzAgt0Jo1f9AngmMn4f1n"
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_KEY_FILE = os.path.join(HERE, "..", "..", ".dyc-shot-key")
+DEFAULT_KEY_FILE = os.path.join(HERE, "..", ".dyc-config", ".dyc-shot-key")
 ACCENT = {
     # 流程内的分类（2026-10-14 起为准）
     "bug": "#ff7d00",

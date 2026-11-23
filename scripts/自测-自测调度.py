@@ -143,9 +143,15 @@ def main():
        untouched)
 
     # ---------- ⑨ 引用映射本身不能退化成空 ----------
-    blind = [s.name for s in scripts if not index.get(s) and s.name not in
-             ("自测-发布回收.py", "自测-敏感词邻近匹配.py", "自测-自测调度.py",
-             "自测-回收预检.py")]
+    # 脚本类自测（测闸门/脚本本身）正文里不会出现 src/ 路径，这是正常的：
+    # 它们与脚本的对应关系登记在 SCRIPT_TARGETS 里，--changed 照样反查得到。
+    # 判据直接读那张表，不再维护写死名单 —— 新增脚本类自测只要登记过就不会误红，
+    # 没登记的仍必须在正文里写出 src/ 路径（否则真成了盲用例）。
+    # 「自测-自测调度」测的是调度器自身（GLOBAL），没有可登记的脚本键，单独放行。
+    mapped = {"自测-自测调度.py"}
+    for entry in m.SCRIPT_TARGETS.values():
+        mapped.update(m._targets_of(entry))
+    blind = [s.name for s in scripts if not index.get(s) and s.name not in mapped]
     ok("除脚本类自测外，都在正文里引用了被测源文件", not blind, str(blind))
 
     # ---------- ⑩ 发布凭据指纹：内容变即失效 ----------

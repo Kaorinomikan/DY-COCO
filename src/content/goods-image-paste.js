@@ -118,7 +118,6 @@
     observer = new MutationObserver(function (records) {
       quickMount(records);     // 新格子就地挂,不等防抖(见下)
       scheduleScan(400);
-      schedulePopupGate();     // 浮层开/关是 childList 变更,一帧内收/放按钮
     });
     roots.forEach(function (root) {
       observer.observe(root, { childList: true, subtree: true, attributes: true,
@@ -270,6 +269,10 @@
     if (tile.closest) {
       if (tile.closest('[id*="DRAG_CONTROLLER"], [class*="draggerContainer"], [class*="DragController"]')) return true;
       if (tile.closest('#dyb-status-bar, #dyb-debug-panel, #dyb-dialog-root')) return true;
+      /* 平台自己的浮层容器(role=tooltip/menu/dialog,常 portal 到 body):
+         里面的图片格**要**挂按钮 —— 2026-11-23 用户原话「回到能够注入到哪怕是
+         浮动框,也能够有粘贴图片的按钮的时候」。所以它不算「表单外的浮动工具条」。 */
+      if (tile.closest('[role="tooltip"], [role="menu"], [role="dialog"]')) return false;
     }
     /* 只认「表单里」的上传框:平台把拖拽预览克隆、图片工具条这类浮层
        直接挂在 body 上(不在表单滚动容器内) —— 用户截图里被顶住的就是它们。
@@ -281,38 +284,26 @@
   }
 
   /**
-   * 平台浮层里的「按钮式上传入口」。
+   * 平台「来源菜单」那一行(「图像选择 / 图库选择」)里的按钮式上传入口。
    *
-   * 2026-11-21 第三次真机截图(尺码表图片列):点开格子后平台自己的来源浮层,
-   *   每一行「图像选择 / 图库选择」都是 `<label>` 包着 file input、48×34 ——
-   *   尺寸(18~55)正好落进 micro 档,而 micro 是「规格图相机直传」的放行档,
-   *   绕过了表格让位那道闸,于是扩展把自己的按钮挂到了平台自己那一行上。
-   *   用户原话:「展开的按钮里面不要有粘贴图片的按钮的注入」。
-   *
-   * 判据用 **ARIA role**(浮层的交互语义),不用类名 —— 浮层容器的类名带构建哈希
-   *   (`ecargo-power-inner` / `styles-module_*`),每版都变;role 不会。
-   * 这只手同时兜住「浮层被 portal 到 body」「浮层内联在表格里」两种挂法:
-   *   前者原先靠 `#goodsEditScrollContainer` 的 contains 判,后者只能靠 role。
+   * ⚠️ 2026-11-23 用户定(撤掉浮层闸):**浮层里的图片格要照常挂按钮**。
+   *   此前按「整层浮层」判死(role=tooltip 的祖先一律不挂),结果浮层一开按钮消失、
+   *   一关又回来 —— 用户看到的就是「时不时闪」。真正该排除的只有平台自己的菜单行:
+   *     · 行节点自带 data-microp-*(2026-11-21 截图实证
+   *       label[data-microp-model="micro"][data-microp-title="…"]);
+   *     · 或者它本身就是带文字的 <label>(由 platformPickerRow 判)。
+   *   向上只爬 3 层 —— 整个浮层容器也可能带 microp 属性,爬太远会把浮层里的图格
+   *   一起判死,等于又回到「浮层里没按钮」。
    */
-  var OVERLAY_ROLES = {
-    tooltip: 1, menu: 1, menubar: 1, listbox: 1,
-    dialog: 1, alertdialog: 1, tree: 1
-  };
-  function inPlatformOverlay(tile) {
+  var PICKER_ROW_ATTRS = ['data-microp-model', 'data-microp-title'];
+  function inPickerMenuRow(tile) {
     var el = tile;
     var guard = 0;
-    while (el && el.nodeType === 1 && guard < 40) {
+    while (el && el.nodeType === 1 && guard < 3) {
       guard++;
-      var role = '';
-      try { role = (el.getAttribute('role') || '').toLowerCase(); } catch (e) { role = ''; }
-      if (role && OVERLAY_ROLES[role]) return true;
-      /* 来源浮层的行还有第二种非哈希标记:data-microp-*(2026-11-21 截图实证
-         label[data-microp-model="micro"][data-microp-title="…"])。
-         有的浮层不带 role,只有这个属性 —— 漏了它,按钮就会挂进浮层,
-         而浮层一旦被我们塞了东西,悬停时开-关-开,用户看到的就是闪。 */
-      try {
-        if (el.hasAttribute('data-microp-model') || el.hasAttribute('data-microp-title')) return true;
-      } catch (e) { /* 只读节点忽略 */ }
+      for (var i = 0; i < PICKER_ROW_ATTRS.length; i++) {
+        try { if (el.hasAttribute(PICKER_ROW_ATTRS[i])) return true; } catch (e) { /* 只读节点 */ }
+      }
       el = el.parentElement;
     }
     return false;
@@ -385,9 +376,10 @@
     if (!tile.isConnected) return null;
     if (!visible(tile)) return null;
     if (inFloatingChrome(tile)) return null;
-    /* 平台浮层(role=tooltip/menu/dialog…)里一律不挂:那里的 file input 是平台
-       自己的菜单项,不是待填的图片格(2026-11-21 第三次截图,见上方注释)。 */
-    if (inPlatformOverlay(tile)) return null;
+    /* 平台「来源菜单」那一行不挂 —— 那里的 file input 是平台的菜单项,不是待填的
+       图片格。⚠️ 只排除菜单行本身,**不再按整层浮层判死**(2026-11-23 用户定:
+       浮层里的图片格要照常挂按钮,藏起来再放回来就是「时不时闪」)。 */
+    if (inPickerMenuRow(tile)) return null;
     if (hasImage(tile)) return null;
 
     var hasInput = false;
@@ -646,20 +638,6 @@
     return r.left + r.width + 4 + 34 <= clip.r;
   }
 
-  /** 向上 3 层看有没有 overflow 裁切 —— 决定微型胶囊能不能挂到图标外面 */
-  function clipsOverflow(el) {
-    var node = el;
-    var guard = 0;
-    while (node && guard < 3) {
-      guard++;
-      var ov = '';
-      try { ov = window.getComputedStyle(node).overflow || ''; } catch (e) { ov = ''; }
-      if (/hidden|auto|scroll/.test(ov)) return true;
-      node = node.parentElement;
-    }
-    return false;
-  }
-
   /** 只摘「框内按钮」及它们的标记(尺码图按钮、商详工具栏按钮各自有卸载函数) */
   function unmountTiles() {
     var btns = queryRoots('[' + BTN_ATTR + ']');
@@ -729,60 +707,20 @@
      用途见 scan() 清理段:滞回一轮,治「挂上-摘掉」来回翻造成的闪烁。 */
   var missCounts = new Map();
 
-  /** 不能等缓冲、必须当场摘的情形:已出图、已被判进平台浮层。 */
+  /** 不能等缓冲、必须当场摘的情形:已出图、自己变成了平台来源菜单行。 */
   function mustDropNow(tile) {
     if (!tile) return true;
     if (hasImage(tile)) return true;
-    return inPlatformOverlay(tile);
-  }
-
-  /* ---- 浮层闸(2026-11-22) ----
-     只认「整层浮层」的标记(role=tooltip/menu/dialog,真机实证 ecargo-power-inner[role=tooltip])。
-     data-microp-* 只用于 classify 的行级排除,不进这里 —— 页面上可能长期存在
-     带 microp 属性的节点,拿它当"浮层开着"会把按钮永久藏掉(【十】的教训)。 */
-  var POPUP_SELECTOR = '[role="tooltip"],[role="menu"],[role="dialog"]';
-
-  function popupPresent() {
-    for (var i = 0; i < roots.length; i++) {
-      var found;
-      try { found = roots[i].querySelectorAll(POPUP_SELECTOR); } catch (e) { continue; }
-      for (var j = 0; j < found.length; j++) {
-        var r = boxOf(found[j]);
-        /* 平台关浮层时常把节点留在 DOM 里(display:none)—— 尺寸为零不算「开着」,
-           否则按钮会被永久藏掉(2026-11-22 用户实测「彻底没有按钮了」) */
-        if (r.width > 0 && r.height > 0) return true;
-      }
-    }
-    return false;
-  }
-
-  function setTileButtonsHidden(hidden) {
-    var btns = queryRoots('[' + BTN_ATTR + ']');
-    for (var i = 0; i < btns.length; i++) {
-      try { btns[i].style.display = hidden ? 'none' : ''; } catch (e) { /* 只读节点 */ }
-    }
-  }
-
-  var gateRaf = 0;
-  function applyPopupGate() {
-    gateRaf = 0;
-    if ((!on && !sizeOn) || !inScope()) return;
-    setTileButtonsHidden(popupPresent());
-  }
-  function schedulePopupGate() {
-    if (gateRaf) return;
-    gateRaf = (typeof requestAnimationFrame === 'function')
-      ? requestAnimationFrame(applyPopupGate)
-      : setTimeout(applyPopupGate, 16);
+    return inPickerMenuRow(tile);
   }
 
   /* ---- 新格子就地挂(2026-11-22 用户实测「按钮消失、滚动一下又回来」) ----
      SKU 图这类格子住在**虚拟表格**里:滚动时行被回收,旧行连我们的按钮一起销毁,
      新行要等 400ms 防抖重扫才补挂 —— 这段空白就是体感上的「消失」。
      改成:观察器回调里直接对本次新增的节点就地走认框+挂载(素材页同款思路),
-     预算 60 个节点,超出交给全量重扫;浮层开着时不碰格子。 */
+     预算 60 个节点,超出交给全量重扫。浮层开着也照挂(2026-11-23 撤掉浮层闸)。 */
   function quickMount(records) {
-    if ((!on && !sizeOn) || !inScope() || popupPresent()) return;
+    if ((!on && !sizeOn) || !inScope()) return;
     var seen = 0;
     for (var i = 0; i < records.length && seen < 60; i++) {
       var added = records[i].addedNodes;
@@ -824,13 +762,6 @@
       if (sizeOn) mountSizeChart(); else unmountSizeChart();
       return;
     }
-
-    /* 平台二级浮层开着时:只藏按钮,不挂、不摘、不往格子写任何东西。
-       浮层本来就盖在按钮上;而这一刻平台正在重排那片区域,
-       我们再插拔节点就是「SKU 图闪烁」的来源(2026-11-22 用户实测)。
-       浮层一关,observe 回调一帧内放出来,重扫随后补齐状态。 */
-    if (popupPresent()) { setTileButtonsHidden(true); return; }
-    setTileButtonsHidden(false);
 
     var q = collectQualified();
     for (var i = 0; i < q.use.length; i++) mount(q.use[i], q.use[i].getAttribute(MODE_ATTR));
@@ -1904,7 +1835,7 @@
 
     if (!visible(t)) wait = '不可见';
     else if (inFloatingChrome(t)) wait = '不在表单容器内(浮层/克隆)';
-    else if (inPlatformOverlay(t)) wait = '进了平台浮层';
+    else if (inPickerMenuRow(t)) wait = '平台来源菜单行';
     else if (hasImage(t)) wait = '已有图';
     else if (!hasInput && !hasUploadHint(t)) wait = '里面没有文件输入框';
     else if (r.width > 0 && (r.width < 56 || r.height < 56)) wait = '太小 ' + shape;
@@ -2000,7 +1931,7 @@
     on = !f || f.goodsImagePaste !== false;
     sizeOn = !f || f.sizeChartPaste !== false;
     /* 运行指纹:报告里这一行就能判定跑到的是哪一版判据(否则改了没生效都看不出来) */
-    if (on) log('图片粘贴:已启用 · 判据 r10(滚动就地挂/挂后不重判/浮层闸)');
+    if (on) log('图片粘贴:已启用 · 判据 r11(滚动就地挂/挂后不重判/浮层内照挂)');
     if (sizeOn) log('尺码图粘贴:已启用');
     boot();
   });

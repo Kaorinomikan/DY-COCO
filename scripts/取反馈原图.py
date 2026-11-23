@@ -14,7 +14,7 @@
 
 密钥来源（按优先级）：
   1. 环境变量 DYC_SHOT_KEY
-  2. 工程上级目录的 .dyc-shot-key 文件（默认 ../.dyc-shot-key）
+  2. 工程内 .dyc-config/.dyc-shot-key 文件（该目录被 gitignore，不会入库）
 
 输出：
   <out>/反馈<id>-图<N><真实扩展名>，并在 stdout 打印每个文件的格式、像素尺寸与大小
@@ -38,7 +38,7 @@ import urllib.request
 RPC = "https://dycoco-feedback.app.workbuddy.host/.cloud/database/rest/rpc/dyc_shot"
 ACCESS_KEY = "wbpk_TczgSmUCbUzky377FNk3Py_RxDXjaBU8BMDzAgt0Jo1f9AngmMn4f1n"
 HERE = os.path.dirname(os.path.abspath(__file__))
-DEFAULT_KEY_FILE = os.path.join(HERE, "..", "..", ".dyc-shot-key")
+DEFAULT_KEY_FILE = os.path.join(HERE, "..", ".dyc-config", ".dyc-shot-key")
 
 
 def read_key():

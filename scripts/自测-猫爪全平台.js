@@ -43,6 +43,20 @@ const URL_SHOP_LIST = 'https://fxg.jinritemai.com/ffa/g/list';
 const URL_XHS_ARK = 'https://ark.xiaohongshu.com/app-item/list/shelf';
 const URL_WX = 'https://store.weixin.qq.com/shop/goods/list';
 
+/* 反馈 #143 的真机 DOM —— 逐字摘自该条反馈的 page_structure（中控台小黄车）：
+ *   行 = rbd 拖拽手柄（行本身就是手柄），行内每个子元素都会被 isDragHost 判成可拖；
+ *   行首 SVG 是拖拽图标，紧邻的 indexWrapper 才是「序号格」。
+ * 类名保留平台构建哈希（-d7a4a8），用来验证「按类名片段匹配」这条路走得通。 */
+const CART_ROW = '<div class="goodsList-e18222" id="list">'
+  + '<div class="goodsItem-d7a4a8 rpa_lc__live-goods__goods-item" id="row"'
+  + ' draggable="true" data-rbd-draggable-id="g1" data-rbd-drag-handle-draggable-id="g1">'
+  + '<svg class="iconDrag-d7a4a8" id="handle"></svg>'
+  + '<div class="indexWrapper-d7a4a8" id="idx">'
+  + '<span class="auxo-sp-input" id="num">1</span></div>'
+  + '<div class="auxo-row upper-d7a4a8" id="upper">'
+  + '<span id="title">商品名</span></div>'
+  + '</div></div>';
+
 async function boot(url, flags, body) {
   const dom = new JSDOM('<!doctype html><body>' + (body || '') + '</body>',
     { runScripts: 'outside-only', url });
@@ -204,6 +218,62 @@ async function test(name, fn) {
         const seg = FLAGS.slice(at, at + 400);
         assert.match(seg, new RegExp(page), key + ' 的 pages 应覆盖 ' + page);
       });
+  });
+
+  console.log('\n【六】反向排除：小黄车序号位不吃猫爪（反馈 #143）');
+  await test('悬停序号数字：序号格整格都不再显示猫爪（32px 猫爪会盖住数字）', async () => {
+    const f = await boot(URL_SHOP_LIST, { cursorFix: true }, CART_ROW);
+    const num = f.w.document.getElementById('num');
+    const idx = f.w.document.getElementById('idx');
+    f.fire(num, 'mouseover');
+    f.fire(num, 'mousedown');
+    assert.doesNotMatch(f.cursor(num), /url\(/, '序号数字上不该出现猫爪（用户原话「啥都看不到」）');
+    assert.doesNotMatch(f.cursor(idx), /url\(/, '序号格整格都不该出现猫爪');
+  });
+  await test('同一行里商品名照旧显示猫爪（排除只针对序号，不是把整行关掉）', async () => {
+    const f = await boot(URL_SHOP_LIST, { cursorFix: true }, CART_ROW);
+    const title = f.w.document.getElementById('title');
+    f.fire(title, 'mouseover');
+    f.fire(title, 'mousedown');
+    assert.match(f.cursor(title), /url\(/, '行内其它位置仍是抓手语义，改回隐形白手就是回退');
+  });
+  await test('拖动中序号位随整页显示「握紧爪」（排除只在静止悬停时生效）', async () => {
+    const f = await boot(URL_SHOP_LIST, { cursorFix: true }, CART_ROW);
+    const num = f.w.document.getElementById('num');
+    const idx = f.w.document.getElementById('idx');
+    f.fire(num, 'mouseover');
+    f.startDrag(f.w.document.getElementById('handle'));
+    assert.equal(f.dragMark(), true, '按下拖拽图标应进入拖动态');
+    assert.match(f.cursor(num), /url\(/, '拖动期间整页统一握紧爪，别让序号数字成为例外');
+    assert.match(f.cursor(idx), /url\(/, '序号格本身也要跟着变握紧爪（两条排除选择器都得让位）');
+  });
+  await test('平台自己给序号格写了 cursor:grab 时，排除依然赢（路径 A 会把那条规则照搬成猫爪）', async () => {
+    const f = await boot(URL_SHOP_LIST, { cursorFix: true },
+      '<style>.goodsItem-d7a4a8 .indexWrapper-d7a4a8 { cursor: grab !important; }</style>'
+      + CART_ROW);
+    const num = f.w.document.getElementById('num');
+    const idx = f.w.document.getElementById('idx');
+    assert.ok((f.style().textContent || '').indexOf('.goodsItem-d7a4a8 .indexWrapper-d7a4a8') > -1,
+      '前提：路径 A 应把平台的 grab 规则照搬进来（否则本用例测不到真实风险）');
+    f.fire(num, 'mouseover');
+    f.fire(num, 'mousedown');
+    assert.doesNotMatch(f.cursor(idx), /url\(/, '照搬回来的规则权重 (0,2,0)，排除要能压过它');
+    assert.doesNotMatch(f.cursor(num), /url\(/, '序号数字同样不能被照搬规则带成猫爪');
+  });
+  await test('排除规则写法有守卫：清单化 + 类名片段 + 权重叠加 + 排在标记规则之后', async () => {
+    assert.match(SRC, /var NO_PAW_SEL = \[[\s\S]{0,600}?class\*="indexWrapper"/,
+      '排除项应集中在 NO_PAW_SEL 清单里，且按类名片段匹配（哈希会随平台发版变）');
+    const f = await boot(URL_SHOP_LIST, { cursorFix: true }, CART_ROW);
+    const css = f.style().textContent;
+    const ex = '[class*="indexWrapper"][class*="indexWrapper"]';
+    assert.ok(css.indexOf(ex) > -1,
+      '排除规则要把属性选择器叠两遍，否则压不过平台自己的 .row .cell{cursor:grab}');
+    assert.ok(css.indexOf(ex + ' *') > -1,
+      '排除要覆盖整棵子树，否则序号数字那个 span 自带标记仍显示猫爪');
+    assert.ok(css.indexOf('html:not([data-dyc-cursor-dragging]) body ' + ex) > -1,
+      '排除规则要加「非拖动中」前缀，否则拖动态整页握紧爪的约定被破掉');
+    assert.ok(css.indexOf('cursor: default !important') > css.indexOf('[data-dyc-cursor-fix]'),
+      '排除规则必须排在标记规则之后（同权重靠顺序取胜）');
   });
 
   console.log('\n────────────────────────────────────────');

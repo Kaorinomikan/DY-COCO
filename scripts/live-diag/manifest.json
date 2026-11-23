@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "中控台结构诊断（临时）",
+  "version": "1.0",
+  "description": "dump 中控台商品列表的 DOM 结构，用于适配定位。用完即删。",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "clipboardWrite"
+  ],
+  "host_permissions": [
+    "https://fxg.jinritemai.com/*",
+    "https://buyin.jinritemai.com/*"
+  ],
+  "action": {
+    "default_title": "诊断中控台结构"
+  },
+  "background": {
+    "service_worker": "diag.js"
+  }
+}

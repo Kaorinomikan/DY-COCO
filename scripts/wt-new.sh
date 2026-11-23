@@ -14,7 +14,7 @@
 #     bash scripts/wt-new.sh sku-search   "中控台款号/商品名搜索"
 #
 # 产出:
-#   · 目录  <开发目录同级>/DY-COCO-wt/<名字>      <- 会话在这里干活
+#   · 目录  DY-COCO/.worktrees/<名字>              <- 会话在这里干活
 #   · 分支  task/<名字>                            <- 从 main 当前 HEAD 拉出
 #   · 任务卡 <上面的目录>/TASK.md                   <- 写给该会话看,已 gitignore
 #
@@ -34,7 +34,7 @@ set -e
 GIT="$(ls -d C:/Users/79412/.workbuddy/binaries/PortableGit/versions/*/cmd/git.exe 2>/dev/null | sort -V | tail -1)"
 [ -n "$GIT" ] || GIT="$(command -v git)"
 REPO="C:/Develop project/DY-COCO"
-WT_ROOT="C:/Develop project/DY-COCO-wt"
+WT_ROOT="C:/Develop project/DY-COCO/.worktrees"
 
 NAME="$1"
 TASK="$2"
@@ -51,7 +51,7 @@ fi
 # 因为用户明确说看不懂英文(原话「看英文我不会而且容易出错」)。
 # 已实测确认 **中文名完全可用**:
 #   · git worktree add 分支名 task/回到顶部 → 正常
-#   · 目录 C:/.../DY-COCO-wt/回到顶部 → 正常读写
+#   · 目录 C:/.../DY-COCO/.worktrees/回到顶部 → 正常读写
 #   · git -C 在中文目录下 status/log → 正常
 #   · 配套已设 core.quotepath=false,否则 git 输出会把中文转成八进制看不懂
 # 所以现在放开中文,只挡路径与 git 的保留字符。

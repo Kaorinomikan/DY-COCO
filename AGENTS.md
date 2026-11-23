@@ -13,6 +13,9 @@ Chromium 内核浏览器扩展（360 极速X / 夸克等），为抖店（抖音
 微信小店商家补装原平台没有的快捷操作。本目录即扩展根目录（`manifest.json` 在本层）。
 
 - 工程目录（唯一可写范围）：`C:\Develop project\DY-COCO`
+- 上级目录 `C:\Develop project` = **入口层，只放项目目录，不放任何文件**；
+  本工程的配置、密钥、发布包、工作树、设计稿一律下沉到本目录内，
+  细则见 `docs/agents/目录纪律.md`。
 - 远端双源：主源 Gitee（2026-11-01 账号被封，代码仍以它为主源，解封后自动恢复）、
   备用源 GitHub（SSH 或 `scripts/publish-github-api.py`）。
   详见 `docs/agents/当前状态.md`。
@@ -67,7 +70,8 @@ Chromium 内核浏览器扩展（360 极速X / 夸克等），为抖店（抖音
 8. **禁止创建 Gitee 发行版**（仅 v26.10.14.2 破例一次）；推送 = 主干 + 标签。
 9. **每个新功能带开关**：存 `dybFeatures`，调试类默认关、其余默认开；
    订阅 `chrome.storage.onChanged` 即时生效，不另搭消息通道。
-10. **可写范围只有 `C:\Develop project`**：不碰浏览器侧扩展目录、不代用户
+10. **可写范围只有 `C:\Develop project\DY-COCO`**：上级目录 `C:\Develop project`
+    是入口层，任何文件都不许落到那里；不碰浏览器侧扩展目录、不代用户
     点「重新加载/更新」、不催验收；改动抵达浏览器的唯一出口 = 推送 → 自更新。
 11. 请用户验收前先用 3~5 条要点说清：验哪个、怎么验、验完会怎样。
 12. 推送完成后**立即**按新增/改进/修复逐条列「本轮更新点」（页面→操作→预期），
@@ -102,6 +106,9 @@ Chromium 内核浏览器扩展（360 极速X / 夸克等），为抖店（抖音
     详细内容进 `使用手册.md`；版本号行不许删（publish.sh 有闸门）。
 27. **弹窗布局与平台数量解耦**：新增平台只加 `DYC_PLATFORMS`/`DYC_FLAG_GROUPS`
     数据；弹窗 CSS 铁律（body 600px flex、页脚 `margin-top:auto`）禁写平台分支。
+28. **上级目录只许放项目入口**：`C:\Develop project` 下除项目目录外不许出现
+    任何文件或目录；本机文件一律下沉进工程内（去向表见 `docs/agents/目录纪律.md`，
+    闸门 `scripts/check-root-clean.py`，已接入 publish.sh）。
 
 ---
 

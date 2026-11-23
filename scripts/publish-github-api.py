@@ -26,7 +26,7 @@ GitHub 上架脚本 · API 通道
 
 Token 来源（按优先级）：
   1. 环境变量 GITHUB_TOKEN
-  2. 文件 C:/Develop project/.dyc-github-token（工程外，不入仓库）
+  2. 文件 <仓库根>/.dyc-config/.dyc-github-token（该目录被 gitignore，不入仓库）
 
 安全约定：Token 只从上述两处读，**绝不写进仓库、绝不打印**；不做强制推送；
 只推主干 + 标签，不建发行版、不传附件。
@@ -53,7 +53,7 @@ import urllib.error
 import urllib.request
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TOKEN_FILE = r"C:\Develop project\.dyc-github-token"
+TOKEN_FILE = os.path.join(REPO_ROOT, ".dyc-config", ".dyc-github-token")
 API_ROOT = "https://api.github.com"
 
 

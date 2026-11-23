@@ -24,7 +24,7 @@
        中文文件名才能正常显示。
 
 用法
-    python make-dist.py                    # 输出到 ../DY-COCO-dist/
+    python make-dist.py                    # 输出到 <仓库根>/dist/
     python make-dist.py --out D:\\somewhere
     python make-dist.py --root <仓库根>     # 默认取本脚本的上一级目录
 """
@@ -266,8 +266,8 @@ def main():
     ap.add_argument("--root", default=DEFAULT_ROOT, help="仓库根目录")
     ap.add_argument(
         "--out",
-        default=os.path.join(os.path.dirname(DEFAULT_ROOT), "DY-COCO-dist"),
-        help="分发包输出目录（默认与仓库同级）",
+        default=os.path.join(DEFAULT_ROOT, "dist"),
+        help="分发包输出目录（默认仓库根下的 dist/，已被 gitignore）",
     )
     args = ap.parse_args()
 

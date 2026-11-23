@@ -757,15 +757,17 @@ const HTML = `<!doctype html><html><body>
     w7.close();
   }
 
-  console.log('\n【十】平台浮层:行里不挂按钮,浮层开着时格子按钮收起(2026-11-21~22)');
+  console.log('\n【十】平台浮层:菜单行不挂,浮层里的图片格与页面格子照常挂(2026-11-23 定)');
   {
     /* 真机结构(用户 2026-11-21 截图 + 2026-11-22 实测):
        悬停「添加图片」弹出二级浮层(ecargo-power-inner[role=tooltip]),
        行是 label[data-microp-model="micro"][data-microp-title="…"](48×34)包 file input。
-       两件事分别钉住:
-         ① 浮层的行(带 role 祖先 / 带 microp 属性 / 带文字的 label)一律不挂按钮;
-         ② 浮层**开着**时,格子按钮收起、也不往格子里插节点 —— 平台此刻正在重排,
-            我们再动格子就是 SKU 图闪烁的来源;浮层一关立即恢复。 */
+       三件事分别钉住:
+         ① 平台自己的菜单行(带 microp 属性 / 带文字的 label)不挂按钮;
+         ② 浮层**开着**时,页面上的格子按钮照常挂着、不被收起 —— 2026-11-23 用户原话
+            「回到能够注入到哪怕是浮动框,也能够有粘贴图片的按钮的时候,那时候不会闪」;
+            收起再放回来正是他看到的「时不时闪」;
+         ③ 浮层里的**图片格**(不是菜单行)也要挂上按钮。 */
     const html8 = `<!doctype html><html><body>
       <div id="goodsEditScrollContainer">
         <div class="ecom-g-table">
@@ -834,25 +836,32 @@ const HTML = `<!doctype html><html><body>
       assert.ok(edge.classList.contains('is-micro-inside'), '放不下却没有降级');
     });
 
-    /* --- 浮层开着:整层 role=tooltip,行不挂、格子按钮收起 --- */
+    /* --- 浮层开着:整层 role=tooltip,菜单行不挂、页面格子照常挂 --- */
+    RECTS8.popupTile = [97, 97];          // 浮层里的图片格:标准 97 方块
     const popup = d8.createElement('div');
     popup.setAttribute('role', 'tooltip');
-    popup.innerHTML = '<label id="pickerRow">图像选择<input type="file" accept="image/*" style="display:none"></label>';
+    popup.innerHTML = '<label id="pickerRow">图像选择<input type="file" accept="image/*" style="display:none"></label>'
+      + '<div id="popupTile"><input type="file" accept="image/*" style="display:none"></div>';
     d8.body.appendChild(popup);
     await sleep(650);
 
-    check('浮层开着时,浮层行不挂按钮', () => {
+    check('浮层开着时,平台菜单行不挂按钮', () => {
       assert.equal(d8.querySelector('#pickerRow .dyc-imgpaste-btn'), null, '按钮挂到了平台菜单项上');
     });
-    check('浮层开着时,格子按钮收起（浮层本来就盖在它上面）', () => {
-      assert.equal(camBtn.style.display, 'none', '浮层期按钮没有收起');
+    check('浮层开着时,页面上的格子按钮不被收起', () => {
+      assert.equal(camBtn.style.display, '', '浮层期按钮又被收起了');
+      assert.ok(camBtn.isConnected, '浮层期按钮被摘掉了');
+    });
+    check('浮层里的图片格照常挂按钮（用户 2026-11-23 要求）', () => {
+      assert.ok(d8.querySelector('#popupTile .dyc-imgpaste-btn'), '浮层里的图格没挂上按钮');
     });
 
-    /* --- 浮层关掉:一帧内恢复 --- */
+    /* --- 浮层关掉:按钮全程没被动过 --- */
     popup.remove();
     await sleep(650);
-    check('浮层关掉后格子按钮恢复', () => {
-      assert.notEqual(camBtn.style.display, 'none', '浮层关了按钮没回来');
+    check('浮层关掉后格子按钮仍在（全程没摘过）', () => {
+      assert.equal(camBtn.style.display, '', '按钮被收起了');
+      assert.ok(camBtn.isConnected, '按钮被摘掉了');
       assert.equal(d8.querySelector('#pickerRow'), null, '浮层 DOM 没清干净');
     });
     w8.close();

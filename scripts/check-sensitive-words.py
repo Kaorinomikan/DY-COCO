@@ -36,8 +36,8 @@
        于是**永远发不出去**（第一版就这么自锁了：实测阻断 32 处，
        全部来自本文件与白名单文件本身）。
 
-  ⇒ 所以词表挪到工程外：`<工程上级目录>/.dyc-sensitive-words.json`
-     （与令牌文件同级 —— 工程外、不入仓库、不进分发包）。
+  ⇒ 所以词表放在工程内的隐藏配置目录：`<工程根>/.dyc-config/.dyc-sensitive-words.json`
+     （与令牌文件同级 —— 整目录被 gitignore，不入仓库、不进分发包）。
      本文件只留**引擎**：怎么匹配、怎么判语境、怎么自动改写。
      ★ **词表缺失 = 直接中止**，绝不放行 ——
        「没词表所以没命中」是最危险的假绿灯，比红灯更糟。
@@ -71,12 +71,13 @@ import sys
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
-# ★ 词表位置（工程外）：默认在工程上级目录，可用 --words 覆盖。
-#   为什么要外置：词表装着要拦的词，进仓库会被机器审核扫到（自曝），
-#   而且闸门会扫到自己 → 永远发不出去。两害相权，只能外置。
-DEFAULT_WORDS = os.path.join(
-    os.path.dirname(REPO), ".dyc-sensitive-words.json"
-)
+# ★ 词表位置（工程内、但被 gitignore）：默认在 .dyc-config/，可用 --words 覆盖。
+#   为什么不能入库：词表装着要拦的词，进仓库会被机器审核扫到（自曝），
+#   而且闸门会扫到自己 → 永远发不出去。
+#   2026-11-22 起从「工程上级目录」搬进 `DY-COCO/.dyc-config/`：
+#   上级目录 C:/Develop project 定为「只放项目入口」，不再放任何杂物。
+#   安全边界没变 —— .dyc-config/ 在 .gitignore 里，永远进不了提交。
+DEFAULT_WORDS = os.path.join(REPO, ".dyc-config", ".dyc-sensitive-words.json")
 
 GIT = None
 for _p in sorted(
@@ -96,23 +97,23 @@ WORDS_NAME = ".dyc-sensitive-words.json"
 def word_candidates():
     """词表候选路径，按优先级排好。
 
-    ★ 为什么需要多候选（2026-11-02 立）：
+    ★ 为什么需要多候选（2026-11-02 立，2026-11-22 改）：
       「词表放在仓库的父目录」这条约定在**工作树**下会失效 ——
-      工作树位于 `<父目录>/DY-COCO-wt/<任务名>`，它的父目录是 `DY-COCO-wt`，
-      而不是放词表的 `<父目录>`。于是工作树里跑自测会直接判「词表缺失」，
-      以前靠人工把词表拷进 `DY-COCO-wt/` 才能跑（拷贝那份还会过期）。
+      工作树不在主仓库里，它的父目录不是放词表的地方。
+      以前靠人工把词表拷进工作树根才能跑（拷贝那份还会过期）。
 
-      ⇒ 先用 git 的 common dir 反推**主仓库**位置，再取其父目录：
-        主仓库 C:/Develop project/DY-COCO  →  common dir 的上一级就是它
-        → 父目录 C:/Develop project → 词表就在这里。
+      ⇒ 先用 git 的 common dir 反推**主仓库**位置，再取主仓库内的 .dyc-config/：
+        主仓库 C:/Develop project/DY-COCO → 词表在 DY-COCO/.dyc-config/
         工作树与主仓库因此**共用同一份词表**，不会各存一份、也不会过期。
 
-      优先级：显式环境变量 → 主仓库父目录 → 本仓库父目录 → 逐级上溯。
+      优先级：显式环境变量 → 主仓库 .dyc-config → 本仓库 .dyc-config
+              → 旧位置（工程上级目录，仅兼容）→ 逐级上溯。
     """
     cands = []
     env = os.environ.get("DYC_SENSITIVE_WORDS")
     if env:
         cands.append(env)
+    main_repo = None
     try:
         proc = subprocess.run([GIT, "rev-parse", "--git-common-dir"], cwd=REPO,
                               capture_output=True, text=True, encoding="utf-8",
@@ -122,9 +123,14 @@ def word_candidates():
             if not os.path.isabs(common):
                 common = os.path.abspath(os.path.join(REPO, common))
             main_repo = os.path.dirname(os.path.normpath(common))   # 去掉 /.git
-            cands.append(os.path.join(os.path.dirname(main_repo), WORDS_NAME))
     except Exception:
         pass
+    if main_repo:
+        cands.append(os.path.join(main_repo, ".dyc-config", WORDS_NAME))
+    cands.append(os.path.join(REPO, ".dyc-config", WORDS_NAME))
+    # 旧位置兜底：2026-11-22 前词表在工程上级目录，留着不影响新布局
+    if main_repo:
+        cands.append(os.path.join(os.path.dirname(main_repo), WORDS_NAME))
     cands.append(os.path.join(os.path.dirname(REPO), WORDS_NAME))
     probe = REPO
     for _ in range(3):
@@ -152,7 +158,7 @@ def default_words():
 # ============================================================
 # 词表（★ 工程外，见文件头说明）
 # ============================================================
-# 词表不在本文件里 —— 它在 <工程上级目录>/.dyc-sensitive-words.json。
+# 词表不在本文件里 —— 它在 <工程根>/.dyc-config/.dyc-sensitive-words.json。
 # 本文件只保留**引擎**：加载、匹配、语境判定、自动改写、报告。
 #
 # 词表 JSON 结构：
@@ -256,7 +262,7 @@ def load_words(path):
         print("     本工程的选择是「宁可发不出去，也不发没查过的内容」。")
         print("")
         print("   处理办法：")
-        print("     ① 词表通常与令牌文件同级（C:/Develop project/ 下）；")
+        print("     ① 词表与令牌文件同级，都在工程内的 .dyc-config/ 下；")
         print("        若确实丢失，按 docs/agents/当前状态.md「敏感词闸门」一节重建；")
         print("     ② 也可用 --words <path> 指向别处的词表文件。")
         print("=" * 68)
@@ -835,7 +841,7 @@ def main():
                     help="自动优化能改的敏感词，改完复检；改不掉的才报错")
     ap.add_argument("--words", default="",
                     help="指定词表文件（默认读工程外 "
-                         "<工程上级目录>/.dyc-sensitive-words.json）")
+                         "<工程根>/.dyc-config/.dyc-sensitive-words.json）")
     args = ap.parse_args()
 
     # ★ 词表缺失/损坏 → 直接中止（绝不「没词表所以没命中」）
