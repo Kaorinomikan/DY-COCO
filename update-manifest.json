@@ -1,5 +1,5 @@
 {
-  "version": "26.11.23.1",
+  "version": "26.11.25.1",
   "algorithm": "sha256",
   "files": [
     {
@@ -45,12 +45,12 @@
     {
       "path": "manifest.json",
       "size": 17154,
-      "sha256": "eeb40eeff76e83983efadb550ab4a03f0e8a80ad253db9a98ec4eda5b4b75ddc"
+      "sha256": "7004f7d42d0d17e742c67b805493173dcb8c443906e3f6e2b7701d34aeaae717"
     },
     {
       "path": "src/background/service-worker.js",
       "size": 91600,
-      "sha256": "7c58b73e00dd4836ac3778a4825ac603b17159866e6ae4272eb39cf68cf187a4"
+      "sha256": "9f7c4ccad31308e26c0a649b9f0396d739c27ba4a729f174544d78e72c63a274"
     },
     {
       "path": "src/content/anchor.js",
@@ -94,8 +94,8 @@
     },
     {
       "path": "src/content/cursor-fix.js",
-      "size": 58404,
-      "sha256": "b99c35812dc2311c2207ead0a55c6450ac77ee9f8927ebe3d8e4b4d9e315ac8f"
+      "size": 67931,
+      "sha256": "bd28959551cfd7ec5bb7d9605c8d925f57bf1b878eb2bcb5d9d5557736999cfd"
     },
     {
       "path": "src/content/debug-panel.js",
@@ -144,8 +144,8 @@
     },
     {
       "path": "src/content/goods-image-paste.js",
-      "size": 84593,
-      "sha256": "def458efc84355b84db51531dc2014c8f2badb23f8366a9782707496d4d215e7"
+      "size": 89512,
+      "sha256": "376895aab261cfe0f4ff836c40dd047a2a928dfaab14fab886bd1dc2a0f94b09"
     },
     {
       "path": "src/content/goods-list-flag.js",

@@ -276,6 +276,104 @@ async function test(name, fn) {
       '排除规则必须排在标记规则之后（同权重靠顺序取胜）');
   });
 
+  /* 反馈 #144 的真机结构：整行是 rbd 手柄，行内还有操作按钮区
+   *   div.goodsAction-f0ba48 > button.auxo-btn（上移/置顶/删除…）。
+   * 按钮多数自己写 cursor:pointer —— 上一版会把它们当「可拖」各打一份猫爪标。 */
+  const CART_ROW_BTNS = '<div class="goodsList-e18222" id="list">'
+    + '<div class="goodsItem-d7a4a8" id="row" draggable="true"'
+    + ' data-rbd-draggable-id="g1" data-rbd-drag-handle-draggable-id="g1">'
+    + '<svg class="iconDrag-d7a4a8" id="handle"></svg>'
+    + '<div class="indexWrapper-d7a4a8" id="idx"><span id="num">1</span></div>'
+    + '<div class="auxo-row upper-d7a4a8" id="upper"><span id="title">商品名</span></div>'
+    + '<div class="goodsAction-f0ba48" id="acts">'
+    + '<button class="auxo-btn" id="del" style="cursor:pointer">删除</button>'
+    + '<button class="auxo-btn" id="top" style="cursor:pointer">置顶</button>'
+    + '</div></div></div>';
+
+  console.log('\n【七】只对手柄生效：行内按键回到普通箭头（反馈 #144）');
+
+  await test('#144 行内按钮不再被猫爪接管，光标是普通箭头', async () => {
+    const f = await boot(URL_SHOP_LIST, { cursorFix: true }, CART_ROW_BTNS);
+    const del = f.w.document.getElementById('del');
+    f.fire(del, 'mouseover');
+    f.fire(del, 'mousedown');
+    assert.equal(del.hasAttribute('data-dyc-cursor-fix'), false,
+      '按钮不是拖动手柄，不该带猫爪标记（上一版 9 行打了 101 个）');
+    assert.doesNotMatch(f.cursor(del), /url\(/, '按钮上不该出现猫爪');
+    assert.equal(f.cursor(del), 'default', '用户要求按钮上是普通箭头，不是手型');
+  });
+
+  await test('#144 整行容器改走普通箭头，不再整行猫爪', async () => {
+    const f = await boot(URL_SHOP_LIST, { cursorFix: true }, CART_ROW_BTNS);
+    const row = f.w.document.getElementById('row');
+    f.fire(row, 'mouseover');
+    assert.ok(row.hasAttribute('data-dyc-cursor-arrow'), '整行应打上「箭头」标记');
+    assert.equal(row.hasAttribute('data-dyc-cursor-fix'), false, '整行不该再是猫爪');
+    assert.equal(f.cursor(row), 'default', '整行光标应是普通箭头');
+  });
+
+  await test('#144 同一行里商品名也随之回到箭头（猫爪只给拖动手柄）', async () => {
+    const f = await boot(URL_SHOP_LIST, { cursorFix: true }, CART_ROW_BTNS);
+    const title = f.w.document.getElementById('title');
+    f.fire(title, 'mouseover');
+    assert.doesNotMatch(f.cursor(title), /url\(/, '商品名继承整行的箭头，不再显示猫爪');
+    assert.equal(f.cursor(title), 'default', '应是普通箭头');
+  });
+
+  await test('#144 平台自己声明 grab 的拖拽图标仍然显示猫爪', async () => {
+    const f = await boot(URL_SHOP_LIST, { cursorFix: true },
+      CART_ROW_BTNS.replace('<svg class="iconDrag-d7a4a8" id="handle"></svg>',
+        '<svg class="iconDrag-d7a4a8" id="handle" style="cursor:grab"></svg>'));
+    const h = f.w.document.getElementById('handle');
+    f.fire(h, 'mouseover');
+    assert.ok(h.hasAttribute('data-dyc-cursor-fix'), '图标自己声明 grab，应保留猫爪');
+    assert.match(f.cursor(h), /url\(/, '拖动手柄这个位置必须是猫爪');
+  });
+
+  await test('#144 按钮后挂载：整行会从「纯手柄猫爪」改回箭头', async () => {
+    const f = await boot(URL_SHOP_LIST, { cursorFix: true }, CART_ROW);
+    const row = f.w.document.getElementById('row');
+    f.fire(row, 'mouseover');
+    assert.ok(row.hasAttribute('data-dyc-cursor-fix'), '前提：暂无按钮时，纯手柄行判为猫爪');
+    const btn = f.w.document.createElement('button');
+    btn.id = 'late';
+    btn.textContent = '删除';
+    row.appendChild(btn);
+    f.fire(row, 'mouseover');   // 手柄元素不进缓存，每次强制重判
+    assert.equal(row.hasAttribute('data-dyc-cursor-fix'), false,
+      '行内出现按钮后应撤掉猫爪（React 分步挂载是常态）');
+    assert.ok(row.hasAttribute('data-dyc-cursor-arrow'), '并改打箭头标记');
+  });
+
+  await test('#144 拖动期间按钮随整页握紧爪（既有约定不破）', async () => {
+    const f = await boot(URL_SHOP_LIST, { cursorFix: true }, CART_ROW_BTNS);
+    const del = f.w.document.getElementById('del');
+    f.fire(del, 'mouseover');
+    f.startDrag(f.w.document.getElementById('handle'));
+    assert.equal(f.dragMark(), true, '按下拖拽图标应进入拖动态');
+    assert.match(f.cursor(del), /url\(/, '拖动中整页统一握紧爪，按钮不例外');
+  });
+
+  await test('#144 守卫：打标判据不许再用「祖先可拖」判定', async () => {
+    const seg = SRC.split('function isGrabEl(')[1].split('function classify(')[0];
+    assert.ok(!/isDragHost\s*\(/.test(seg),
+      'isGrabEl 里不许再出现 isDragHost —— 它用 closest 判祖先，正是 #144 的病根');
+    assert.match(seg, /isHandleContainer/, '应先拦下整行/整卡式手柄');
+    assert.match(seg, /isHandleSelf/, '结构判据只看元素自身');
+  });
+
+  await test('#144 守卫：箭头规则带「非拖动中」前缀且叠两遍权重', async () => {
+    const f = await boot(URL_SHOP_LIST, { cursorFix: true }, CART_ROW_BTNS);
+    const css = f.style().textContent;
+    const arrow = '[data-dyc-cursor-arrow][data-dyc-cursor-arrow]';
+    assert.ok(css.indexOf('html:not([data-dyc-cursor-dragging]) body ' + arrow) > -1,
+      '整行箭头规则要有「非拖动中」前缀 + 属性叠两遍（压过平台照搬的 grab 规则）');
+    assert.ok(css.indexOf(arrow + ' button') > -1,
+      '行内按钮要压回普通箭头');
+    assert.ok(css.indexOf('cursor: default !important') > css.indexOf('[data-dyc-cursor-fix]'),
+      '箭头规则必须排在猫爪标记规则之后');
+  });
+
   console.log('\n────────────────────────────────────────');
   if (failures.length) {
     console.log('失败 ' + fail + ' 条，通过 ' + pass + ' 条：');

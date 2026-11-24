@@ -864,6 +864,124 @@ const HTML = `<!doctype html><html><body>
       assert.ok(camBtn.isConnected, '按钮被摘掉了');
       assert.equal(d8.querySelector('#pickerRow'), null, '浮层 DOM 没清干净');
     });
+
+    /* --- 只读预览层:大图预览 / 右侧预览面板里的图格不挂（2026-11-24 用户报） ---
+       三个容器都放在表单内、且带 role=dialog —— 这正是 11-23「浮层放行」
+       会放过它们的路径；不先判预览，按钮就会浮在图上。 */
+    RECTS8.previewTile = [97, 97];
+    RECTS8.panelTile = [97, 97];
+    RECTS8.editTile = [97, 97];
+    RECTS8.moveTile = [97, 97];
+    const form8 = d8.getElementById('goodsEditScrollContainer');
+
+    const bigPreview = d8.createElement('div');
+    bigPreview.className = 'img-preview-wrap';
+    bigPreview.setAttribute('role', 'dialog');
+    bigPreview.innerHTML = '<div id="previewTile"><input type="file" accept="image/*" style="display:none"></div>';
+    form8.appendChild(bigPreview);
+
+    const panel = d8.createElement('aside');
+    panel.className = 'styles_previewPanel__ilAnO';
+    panel.innerHTML = '<div id="panelTile"><input type="file" accept="image/*" style="display:none"></div>';
+    form8.appendChild(panel);
+
+    const editWrap = d8.createElement('div');
+    editWrap.className = 'styles_previewInstanceImgSortableList__fdC4o';
+    editWrap.innerHTML = '<div class="styles_previewInstanceImgSortableItem__oPvoW" id="editTile">'
+      + '<input type="file" accept="image/*" style="display:none"></div>';
+    form8.appendChild(editWrap);
+
+    await sleep(700);
+
+    check('大图预览（img-preview + role=dialog）里的图格不挂按钮', () => {
+      assert.equal(d8.querySelector('#previewTile .dyc-imgpaste-btn'), null,
+        '按钮浮在了预览大图上（用户 2026-11-24 报的就是这个）');
+    });
+    check('右侧预览面板（previewPanel）里的图格不挂按钮', () => {
+      assert.equal(d8.querySelector('#panelTile .dyc-imgpaste-btn'), null,
+        '按钮浮在了预览面板的图片上');
+    });
+    check('编辑用的主图/详情图格照旧挂（previewInstanceImgSortable 不能被误杀）', () => {
+      assert.ok(d8.querySelector('#editTile .dyc-imgpaste-btn'),
+        '把编辑图格一起排除了 —— 等于把功能关掉');
+    });
+
+    /* 已挂的格子被移进预览层:必须当场摘，不是等滞回 */
+    const moveTile = d8.createElement('div');
+    moveTile.id = 'moveTile';
+    moveTile.innerHTML = '<input type="file" accept="image/*" style="display:none">';
+    editWrap.appendChild(moveTile);
+    await sleep(700);
+    check('前提：编辑区里的格子先挂上按钮', () => {
+      assert.ok(d8.querySelector('#moveTile .dyc-imgpaste-btn'), '前提没成立，测不到摘除');
+    });
+    bigPreview.appendChild(moveTile);
+    await sleep(700);
+    check('格子被移进预览层后按钮当场摘掉', () => {
+      assert.equal(d8.querySelector('#moveTile .dyc-imgpaste-btn'), null,
+        '进了预览层还留着按钮');
+    });
+
+    /* --- 预览容器类名未知，但里面有平台自己的关闭按钮（2026-11-24 真机截图） ---
+       截图里预览大图上还浮着 5 颗按钮，说明真实容器的类名不含 previewPanel /
+       img-preview。改用「关闭按钮在哪个浮层里」来认，这条不随组件改类名而失效。 */
+    RECTS8.shellTile = [97, 97];
+    const shell = d8.createElement('div');
+    shell.className = 'ecom-g-some-unknown-shell';
+    shell.innerHTML = '<button class="img-preview-close" id="pclose"></button>'
+      + '<div id="shellTile"><input type="file" accept="image/*" style="display:none"></div>';
+    form8.appendChild(shell);
+    await sleep(700);
+    check('预览容器类名未知时，图格不会被误判（判据只认容器类名，不向上扫关闭按钮）', () => {
+      assert.ok(d8.querySelector('#shellTile .dyc-imgpaste-btn'),
+        '向上扫关闭按钮会把整个表单判进预览层 —— 按钮会全部消失');
+    });
+
+    /* --- 预览期让位（2026-11-24 真机：按钮浮在预览大图上） ---
+       按钮平时必须保持高层级（2026-11-22 报「指针指上去就闪」），
+       只在预览开着时把内联层级压到 0；预览一关清空内联恢复。 */
+    RECTS8.dimTile = [97, 97];
+    const dimTile = d8.createElement('div');
+    dimTile.id = 'dimTile';
+    dimTile.innerHTML = '<input type="file" accept="image/*" style="display:none">';
+    editWrap.appendChild(dimTile);
+    await sleep(800);
+    check('预览打开时，编辑区按钮的内联层级压到 0', () => {
+      const b = d8.querySelector('#dimTile .dyc-imgpaste-btn');
+      assert.ok(b, '前提：编辑区的按钮要挂着');
+      assert.equal(b.style.zIndex, '0', '预览开着却没让位，按钮会浮在图上');
+    });
+
+    /* 预览关掉后必须能恢复，不能被缓存永久判死 */
+    shell.remove();
+    await sleep(900);
+    check('预览关掉后按钮层级恢复（清空内联，回到样式表高值）', () => {
+      const b = d8.querySelector('#dimTile .dyc-imgpaste-btn');
+      assert.equal(b && b.style.zIndex, '', '预览关了还没恢复，平时的防闪层级丢了');
+    });
+    RECTS8.afterShellTile = [97, 97];
+    const afterShell = d8.createElement('div');
+    afterShell.id = 'afterShellTile';
+    afterShell.innerHTML = '<input type="file" accept="image/*" style="display:none">';
+    form8.appendChild(afterShell);
+    await sleep(700);
+    check('预览关掉后同一位置的新图格照常挂（缓存会过期）', () => {
+      assert.ok(d8.querySelector('#afterShellTile .dyc-imgpaste-btn'),
+        '预览关掉后按钮没回来 —— 缓存判死没收住');
+    });
+
+    /* 层级守卫：别再手改层级。平时的高值是为防「闪」（2026-11-22），
+       预览期让位由 syncPreviewLayer 负责（2026-11-24）。 */
+    check('层级守卫：平时保持高值，预览期靠 JS 让位', () => {
+      const src = read(SRC_UNDER_TEST);
+      assert.ok(!/\.dyc-imgpaste-btn\{[^}]*z-index:2\}/.test(src),
+        '不要把按钮层级直接调小 —— 2026-11-22 的「指针指上去就闪」会回归');
+      assert.match(src, /function syncPreviewLayer/, '缺预览期让位逻辑');
+      const css = read('src/content/style.css');
+      assert.match(css, /\.dyc-imgpaste-btn\s*\{[^}]*z-index:\s*2147483000/,
+        'style.css 这条是普通 DOM 那份定义，删了会重新闪');
+    });
+
     w8.close();
   }
 

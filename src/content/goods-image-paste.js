@@ -68,13 +68,24 @@
   var rootTimer = 0;
   var lastHref = '';
   var SHADOW_STYLE = 'data-dyc-imgpaste-style';
+  /* 按钮层级（2026-11-24 二修，见 syncPreviewLayer）：
+   *
+   * 平时必须保持高层级 —— 2026-11-22 用户报「指针指上去就闪」，成因是平台的
+   * 悬停遮罩/工具条层级很高，按钮压不过去就会被盖住再露出。
+   * 但高层级又会穿透图片大图预览浮层（2026-11-24 用户报「按钮浮在图上」）。
+   *
+   * 所以层级只在「预览打开的那段时间」动态降级（JS 写内联 z-index:0），
+   * 预览一关立刻清空内联、回到这里的高值。不要在这里直接写小值，
+   * 也不要把 style.css 里那条 21 亿删掉 —— 两条是同源双份（普通 DOM /
+   * Shadow DOM 各一份），删哪一份都会在对应路径上重新出现「闪」或「浮」。 */
   var shadowCss = '.dyc-imgpaste-btn{all:initial;position:absolute;left:6px;right:6px;bottom:6px;box-sizing:border-box;height:24px;margin:0;padding:0 4px;border:1px solid #d6e2ff;border-radius:6px;background:#eef3ff;color:#1664ff;font:12px/22px "Microsoft YaHei",sans-serif;text-align:center;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;cursor:pointer;z-index:2147483000}'
     + '.dyc-imgpaste-btn:hover{background:#1664ff;border-color:#1664ff;color:#fff}'
     + '.dyc-imgpaste-btn:disabled{opacity:.6;cursor:default}'
     + '.dyc-imgpaste-btn.is-compact{height:20px;left:4px;right:4px;bottom:4px;font-size:11px;line-height:18px;border-radius:5px}'
     /* 微型入口:规格图相机图标只有 24~32px,按钮挂在图标**正下方**(top:100%),
        不压图标本身。宽度与图标同宽,高度 16px,文字 10px。
-       右侧放不下(贴着裁切区/视口边)时降级为 is-micro-inside(贴在图标内底部 11px)。 */
+       右侧放不下(贴着裁切区/视口边)时降级为 is-micro-inside(贴在图标内底部 11px)。
+       层级与常规档同理,由 syncPreviewLayer 在预览期统一下压。 */
     + '.dyc-imgpaste-btn.is-micro{width:34px;height:16px;padding:0;border-radius:4px;font-size:10px;line-height:14px;z-index:2147483001}'
     + '.dyc-imgpaste-btn.is-micro-right{left:100%;right:auto;top:50%;bottom:auto;margin:0 0 0 4px;transform:translateY(-50%)}'
     + '.dyc-imgpaste-btn.is-micro-inside{left:2px;right:2px;bottom:1px;top:auto;height:11px;border-radius:3px;font-size:9px;line-height:9px;transform:none}';
@@ -265,10 +276,44 @@
     return text.indexOf('上传图片') >= 0;
   }
 
+  /* ==========================================================
+   * 只读预览层（2026-11-24 用户报「预览图片时按钮浮在图上」）
+   *
+   * 与 11-23 那条「浮层里的图格照常挂」并不冲突：
+   *   那条说的是**可操作的图片选择浮层**（点「添加图片」弹出的菜单 + 图格），
+   *   里面挂按钮是用户明确要的；这里说的是**只读预览**（点开大图 / 右侧预览面板），
+   *   那里的图只给人看，按钮浮在上面纯属遮挡。
+   *
+   * ★ 判据只认预览容器类名片段，不认「所有 preview」：
+   *   `styles_previewInstanceImgSortableList` 是**编辑用**的主图/详情图格，
+   *   按钮就该挂在那里 —— 把它写进来等于把功能关掉。
+   * ========================================================== */
+  var READONLY_PREVIEW_SEL = '[class*="previewPanel"],'
+    + '[class*="preview-panel"],'
+    + '[class*="img-preview"],[class*="imgPreview"],'
+    + '[class*="image-preview"],[class*="imagePreview"]';
+
+  /* 平台自己的「预览关闭」按钮 —— 只用来判断「预览是否开着」，
+   * **不要**用它判断「这个格子是不是在预览层里」。
+   * 2026-11-24 自测踩到：向上查关闭按钮时，祖先范围一大（form → main →
+   * section）就会把整个表单子树包进去，命中预览层的关闭按钮 ⇒ 所有按钮
+   * 被判死、全部消失。判断"开没开"用全局 querySelector 是安全的，
+   * 判断"在不在里面"必须靠容器类名（见上）。 */
+  var PREVIEW_CLOSE_SEL = '.img-preview-close,'
+    + '[class*="previewClose"],[class*="preview-close"],[class*="PreviewClose"]';
+
+  function inReadonlyPreview(tile) {
+    if (!tile || !tile.closest) return false;
+    try { return !!tile.closest(READONLY_PREVIEW_SEL); } catch (e) { return false; }
+  }
+
   function inFloatingChrome(tile) {
     if (tile.closest) {
       if (tile.closest('[id*="DRAG_CONTROLLER"], [class*="draggerContainer"], [class*="DragController"]')) return true;
       if (tile.closest('#dyb-status-bar, #dyb-debug-panel, #dyb-dialog-root')) return true;
+      /* 只读预览层先判（2026-11-24）：预览浮层也常带 role=dialog，
+         必须先于下面的放行规则命中，否则按钮会浮在大图上。 */
+      if (inReadonlyPreview(tile)) return true;
       /* 平台自己的浮层容器(role=tooltip/menu/dialog,常 portal 到 body):
          里面的图片格**要**挂按钮 —— 2026-11-23 用户原话「回到能够注入到哪怕是
          浮动框,也能够有粘贴图片的按钮的时候」。所以它不算「表单外的浮动工具条」。 */
@@ -555,6 +600,10 @@
       var r = boxOf(tile);
       if (r.height > 0 && r.height < 90) btn.classList.add('is-compact');
     }
+
+    /* 预览若正开着，新挂的按钮也要立刻让位（2026-11-24） */
+    setPreviewZ(btn, previewing);
+
     armTileGuard(tile, mode);
   }
 
@@ -707,10 +756,11 @@
      用途见 scan() 清理段:滞回一轮,治「挂上-摘掉」来回翻造成的闪烁。 */
   var missCounts = new Map();
 
-  /** 不能等缓冲、必须当场摘的情形:已出图、自己变成了平台来源菜单行。 */
+  /** 不能等缓冲、必须当场摘的情形:已出图、自己变成了平台来源菜单行、进了只读预览层。 */
   function mustDropNow(tile) {
     if (!tile) return true;
     if (hasImage(tile)) return true;
+    if (inReadonlyPreview(tile)) return true;
     return inPickerMenuRow(tile);
   }
 
@@ -750,10 +800,48 @@
   }
 
   /** 幂等重扫:新框挂上、已出图的框摘掉、被平台重渲染掉的补回来 */
+  /* ==========================================================
+   * 预览浮层期让位（2026-11-24 用户报「粘贴按钮浮在预览大图上」）
+   *
+   * 按钮**平时**必须保持高层级：2026-11-22 用户报「指针指上去就闪」——
+   * 平台的悬停遮罩/工具条层级很高，压不过就会被盖住再露出。
+   * 但高层级会穿透图片大图预览：预览层盖住表单右半边时，按钮浮在图上。
+   *
+   * 取舍：只在「预览开着」的这段时间把按钮压到 0，预览一关立刻清空内联，
+   * 回到样式表里的高值（style.css / shadowCss 两份都保持 21 亿不动）。
+   *
+   * 判据用平台自己的预览关闭按钮：容器类名随组件发版会变，
+   * 而「关闭按钮在哪个浮层里」更稳（2026-11-24 现场实测 .img-preview-close）。
+   * ========================================================== */
+  var PREVIEW_CLOSE_SEL = '.img-preview-close,'
+    + '[class*="previewClose"],[class*="preview-close"],[class*="PreviewClose"]';
+  var previewing = false;
+
+  function previewOpen() {
+    try { return !!document.querySelector(PREVIEW_CLOSE_SEL); } catch (e) { return false; }
+  }
+
+  function setPreviewZ(btn, on) {
+    if (!btn) return;
+    try { btn.style.zIndex = on ? '0' : ''; } catch (e) { /* 只读节点 */ }
+  }
+
+  /** 状态变了才动 DOM：每轮重扫都会调，不能每次都写内联（会打断平台的过渡） */
+  function syncPreviewLayer() {
+    var now = previewOpen();
+    if (now === previewing) return;
+    previewing = now;
+    var list = queryRoots('.' + BTN_CLASS);
+    for (var i = 0; i < list.length; i++) setPreviewZ(list[i], now);
+  }
+
   function scan() {
     if (!on && !sizeOn) return;
     if (!inScope()) { unmountAll(); refreshRoots(); return; }
     refreshRoots();
+
+    /* 图片预览开着就让按钮让位（2026-11-24） */
+    syncPreviewLayer();
 
     /* 只开了「粘贴尺码图」:不认上传框,只维护行级按钮 */
     if (!on) {

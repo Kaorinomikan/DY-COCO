@@ -61,6 +61,26 @@
  *      就是我们自己的猫爪 url，光标判据立刻失效（自锁）。结构判据只用来打标。
  *   拖拽起点也不再按平台分叉：任何平台的 grab/move/draggable 按下都能起拖，
  *   只有输入框/文本域（且不在可拖宿主内）继续排除。
+ *
+ * 【回归修正：猫爪只给「拖动手柄」，行内按键回到普通箭头（反馈 #144）】
+ *   用户原话:「按钮上希望是普通的箭头……把它恢复成只对那个拖动按钮生效」。
+ *
+ *   11-21 那次为了「全店拖动按钮都变猫爪」，往打标判据里加了一条
+ *   `if (isDragHost(el)) return true`，而 isDragHost 用的是
+ *   `closest('[draggable],[data-rbd-drag-handle-*]')` —— 只要祖先里有手柄，
+ *   子孙全部算可拖。小黄车**整行**就是 rbd 手柄，于是行内每个子元素
+ *   （按钮、操作区、列容器、商品名…）都各自被打标，`!important` 的猫爪
+ *   直接压掉按钮自己的光标。这不是判据写错，是**范围扩过头**。
+ *
+ *   现在把结构判据收回一层：
+ *     · 元素**自身**是手柄 → 才算结构可拖（`isHandleSelf`，不再用 closest）；
+ *     · 自身是手柄但内部还有按钮/链接（整行、整卡式）→ 判为「手柄容器」，
+ *       不给猫爪，改给普通箭头（`data-dyc-cursor-arrow`），
+ *       行内真正的手柄图标再由「自身光标是 grab」单独命中；
+ *     · 祖先可拖这件事只留给「按下能不能起拖」用（`isDragHost` 保留 closest
+ *       语义），不再参与打标。
+ *   与 11-21 之前的口径一致：**平台自己声明了可拖光标（grab/move）的位置
+ *   才是猫爪**，其余交还平台。
  * ============================================================ */
 
 (function cursorVisibilityFix() {
@@ -126,6 +146,8 @@
 
   var MARK_ATTR = 'data-dyc-cursor-fix';
   var DRAG_ATTR = 'data-dyc-cursor-dragging';
+  /* 整行 / 整卡式手柄：交还普通箭头（反馈 #144，见 buildCss 第 5 条） */
+  var ARROW_ATTR = 'data-dyc-cursor-arrow';
 
   /* ==========================================================
    * 分平台开关（2026-11-21 扩到整平台）
@@ -235,9 +257,69 @@
    * 光看计算光标会漏，所以另给一条不依赖扫描的样式规则（见 buildCss 3）。 */
   var DRAG_HOST_SEL = '[draggable="true"],[data-rbd-drag-handle-draggable-id]';
 
+  /* 行内可点控件（反馈 #144）。
+   *
+   * 用途有两个，都只服务于「手柄容器」这个判断：
+   *   ① 识别「整行 / 整卡式手柄」—— 手柄内部还嵌着按钮、链接；
+   *   ② 把这些控件的光标压回普通箭头（用户在反馈里明确要箭头，
+   *      不是手型；平台多数按钮自己写了 cursor:pointer）。
+   *
+   * ★ 类名按**片段**匹配：平台是 CSS Modules，类名带构建哈希
+   *   （auxo-btn / goodsAction-f0ba48），全名一改就失效。
+   * ★ 只作用于「手柄容器」子树内（见 buildCss 第 6 条），不碰全站按钮。 */
+  var CLICKABLE_LIST = [
+    'button',
+    'a[href]',
+    '[role="button"]',
+    '[role="link"]',
+    'input',
+    'select',
+    'textarea',
+    'label',
+    '[class*="btn"]',
+    '[class*="Btn"]',
+    '[class*="button"]',
+    '[class*="Button"]',
+    '.dyc-code-btn',
+    '.dyc-cartpaste-btn'
+  ];
+  var CLICKABLE_SEL = CLICKABLE_LIST.join(',');
+
+  /** 元素**自身**就是拖拽手柄（不看祖先）。打标只用这一层判据。 */
+  function isHandleSelf(el) {
+    try {
+      return !!(el && el.nodeType === 1 && el.matches && el.matches(DRAG_HOST_SEL));
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /** 元素**落在**手柄子树内 —— 只用于「按下能否起拖」，不用于打标。 */
   function isDragHost(el) {
     try {
       return !!(el && el.closest && el.closest(DRAG_HOST_SEL));
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * 整行 / 整卡式手柄（反馈 #144 的核心判据）。
+   *
+   * 小黄车把**整行**做成 rbd 手柄，行里有按钮、序号、商品名 —— 它视觉上
+   * 不是「一个拖动手柄」，而是一张可拖的卡片。这种容器的可拖语义是整块
+   * 级别的，猫爪盖上去就等于盖住整行，正是用户投诉的现象。
+   *
+   * 判据：自身是手柄 **且** 内部还有可点控件。
+   *   · 命中 → 不给猫爪，给普通箭头（行内按钮/文字继承箭头）；
+   *   · 不命中（纯手柄 / 独立拖拽图标）→ 照常给猫爪。
+   * ★ 必须每次重判、不进 scanned 缓存：React 分步挂载时按钮可能晚于
+   *   行出现，容器会从「纯手柄」变成「整行容器」（见 scanList）。
+   */
+  function isHandleContainer(el) {
+    if (!isHandleSelf(el)) return false;
+    try {
+      return !!el.querySelector(CLICKABLE_SEL);
     } catch (e) {
       return false;
     }
@@ -254,7 +336,11 @@
    * 32px 猫爪（热点在掌心）压住行首 12px 级序号数字 —— 数字基本全被盖住。
    *
    * 这里列出「只供阅读、不是抓取手柄」的单元，交给 buildCss 末尾的反向规则
-   * 还原成默认箭头；行的其余部分（拖拽图标、商品名等）照旧显示猫爪。
+   * 还原成默认箭头。
+   *
+   * ★ 2026-11-24（#144）之后，整行容器本身已改走「普通箭头」（ARROW_ATTR），
+   *   序号格多数情况靠继承就够了；本清单保留为**兜底**：平台若给序号格自己
+   *   写了 cursor:grab（路径 A 会照搬成猫爪），仍靠它压回箭头。
    *
    * ★ 写法约定（新增条目照抄）：
    *   · 用**类名片段**匹配，别写全名 —— 平台是 CSS Modules，类名带构建哈希
@@ -269,23 +355,58 @@
   /**
    * 这个元素该不该显示猫爪（打标判据，三条路径共用）。
    *
-   * 顺序有讲究 —— **先结构、后光标**：
-   *   · 结构判据（draggable / rbd 手柄）不依赖计算样式，不会被我们自己的规则
-   *     反噬。曾经把 draggable 直接写成 CSS 规则，规则生效后 getComputedStyle
-   *     读回来是猫爪 url，第二个判据永远 false，标记与按下态一起失效（自锁）。
-   *   · 光标判据（grab / grabbing / move）覆盖「平台用样式表声明可拖」这类
-   *     没有结构标记的写法 —— 店铺后台大量存在。
+   * 【2026-11-24 收紧（#144）】结构判据只看**自身**，不再看祖先：
+   *   · `isHandleContainer` 先拦下「整行/整卡式手柄」—— 它内部还有按钮，
+   *     视觉上不是拖动手柄，给普通箭头；
+   *   · `isHandleSelf` 只认元素自身是手柄（独立拖拽图标、纯手柄卡片）；
+   *   · 光标判据（grab / grabbing / move）恢复成 11-21 之前的主口径：
+   *     平台自己声明可拖的位置才是猫爪。
+   *   ⚠️ 曾经的写法 `if (isDragHost(el)) return true` 用 closest 判祖先，
+   *      导致整行每个子孙都打标（真机 9 行 101 个节点）—— 已删除，
+   *      勿再以任何形式把「祖先可拖」接回打标判据。
    */
   function isGrabEl(el) {
     if (!el || el.nodeType !== 1) return false;
-    if (isDragHost(el)) return true;
-    return isGrab(cursorOf(el));
+    if (isHandleContainer(el)) return false;
+    if (isGrab(cursorOf(el))) return true;
+    return isHandleSelf(el);
   }
 
-  function mark(el) {
-    if (el && el.nodeType === 1 && !el.hasAttribute(MARK_ATTR)) {
-      el.setAttribute(MARK_ATTR, '');
+  /**
+   * 定一个元素的光标归属（#144 统一出口）：
+   *   · 手柄容器 → 撤猫爪、打「箭头」标记；
+   *   · 其余 → 自身可拖就打猫爪标记，否则什么都不做（交还平台）。
+   * force=true 时即使已有标记也重判（元素可能从纯手柄变成含按钮的行）。
+   */
+  function classify(el, force) {
+    if (!el || el.nodeType !== 1) return;
+
+    if (isHandleContainer(el)) {
+      if (el.hasAttribute(MARK_ATTR)) el.removeAttribute(MARK_ATTR);
+      if (!el.hasAttribute(ARROW_ATTR)) el.setAttribute(ARROW_ATTR, '');
+      return;
     }
+
+    if (!force && (el.hasAttribute(MARK_ATTR) || el.hasAttribute(ARROW_ATTR))) return;
+
+    if (isGrabEl(el)) {
+      if (el.hasAttribute(ARROW_ATTR)) el.removeAttribute(ARROW_ATTR);
+      if (!el.hasAttribute(MARK_ATTR)) el.setAttribute(MARK_ATTR, '');
+    }
+  }
+
+  /**
+   * 摘掉旧版本留下的猫爪标记（#144）。
+   *
+   * 判据收紧后，上一版打在小黄车行内按钮/序号/列容器上的标记还留在 DOM 里，
+   * 它们各自带着 `!important` 的猫爪 —— 只要用户不刷新页面，修复就看不到。
+   * 开局清一次，随后 scanAll 按新判据重扫（分片执行，不会卡主线程）。
+   */
+  function clearLegacyMarks() {
+    try {
+      var old = document.querySelectorAll('[' + MARK_ATTR + ']');
+      for (var i = 0; i < old.length; i++) old[i].removeAttribute(MARK_ATTR);
+    } catch (e) { /* 忽略 */ }
   }
 
   /* ==========================================================
@@ -368,16 +489,46 @@
      * 按下态也失去统一接管点。所以 draggable 这类结构判据只用来**打标**
      * （见 isGrabEl），光标仍由上面第 1 条规则统一负责。 */
 
-    /* 4) 反向排除（反馈 #143）—— 必须排在标记规则与照搬规则之后。
+    /* 4) 整行 / 整卡式手柄 → 普通箭头（反馈 #144）
+     *
+     * 这类元素的「可拖」是整块级别的（rbd 给整行设了 cursor:grab），
+     * 但行里还有按钮、序号、商品名 —— 用户口径：猫爪只给拖动手柄那一个
+     * 位置，整行其余部分回到普通箭头。
+     *
+     * 只设**容器自身**、不带 `*`：子孙继承箭头；行内真正的手柄图标会被
+     * 单独打上猫爪标记（它自己在平台样式里声明了 grab），自己的声明压过
+     * 从父继承来的箭头。
+     *
+     * 属性选择器叠两遍（(0,3,2)）：第 2 条会把平台 `.row{cursor:grab}`、
+     * `.row .xxx{cursor:grab}` 原样照搬成猫爪，权重可能到 (0,2,0)，
+     * 必须靠权重 + 顺序双保险压回箭头。 */
+    var arrow = '[' + ARROW_ATTR + '][' + ARROW_ATTR + ']';
+    parts.push('html:not([' + DRAG_ATTR + ']) body ' + arrow
+      + ' { cursor: default !important; }');
+
+    /* 5) 手柄容器里的可点控件 → 普通箭头（#144）
+     *
+     * 用户原话:「按钮上希望是普通的箭头」。平台按钮多数自己写了
+     * cursor:pointer，光是「不再给它们打猫爪标记」会得到手型 —— 因此
+     * 在容器子树内统一压成 default。
+     * ★ 只作用于手柄容器内，不碰全站按钮（全域注入下这一点很关键）。 */
+    for (var c = 0; c < CLICKABLE_LIST.length; c++) {
+      var ctl = CLICKABLE_LIST[c];
+      parts.push('html:not([' + DRAG_ATTR + ']) body ' + arrow + ' ' + ctl
+        + ', html:not([' + DRAG_ATTR + ']) body ' + arrow + ' ' + ctl + ' *'
+        + ' { cursor: default !important; }');
+    }
+
+    /* 6) 反向排除（反馈 #143）—— 必须排在标记规则与照搬规则之后。
      *
      * 三条理由：
      *   · 与第 1 条标记规则同为 !important 时，靠**顺序**取胜（后到者赢）；
      *   · 平台自己可能给同一单元写过 `.goodsItem .indexWrapper{cursor:grab}`
      *     （0,2,0），而第 2 条会把这种选择器**带猫爪**原样照搬回来 —— 因此
      *     把属性选择器叠两遍凑到 (0,3,2)，顺序+权重双保险；
-     *   · 标记可能落在排除单元**内部**的子元素上（行内每个子元素都会被
-     *     isDragHost 判成可拖并各自打标），所以第二个选择器要覆盖整棵子树
-     *     `SEL *`，否则序号数字那个 span 仍然自带猫爪。
+     *   · 排除单元**内部**仍可能有自带猫爪标记的子元素（例如路径 A 照搬
+     *     回来的 `.row .seq{cursor:grab}` 会把序号数字也带成猫爪），所以
+     *     第二个选择器要覆盖整棵子树 `SEL *`。
      *
      * 前缀 `html:not([拖动中])` 是有意的：拖动期间整页统一显示「握紧爪」
      * 是既有约定（见上一条规则与 自测-猫爪拖动 态），此时用户正按着手柄，
@@ -419,11 +570,22 @@
   function probe(el, force) {
     if (!enabled) return;
     if (!el || el.nodeType !== 1) return;
-    if (!force && hovered.has(el)) return;
-    hovered.add(el);
 
-    if (el.hasAttribute(MARK_ATTR)) return;
-    if (isGrabEl(el)) el.setAttribute(MARK_ATTR, '');
+    /* 悬停在行内任何位置时，顺手确认它所属的拖拽行（#144）。
+     * 行可能是「整行容器」—— 只有行上有了 arrow 标记，行内按钮才会被
+     * CSS 压回普通箭头。而用户完全可能把鼠标从页面外直接移到行内按钮上，
+     * 行本身一次 mouseover 都收不到；不补这一步，按钮就会保持平台的手型。 */
+    var host = null;
+    try { host = el.closest(DRAG_HOST_SEL); } catch (e0) { host = null; }
+    if (host && host !== el) classify(host, true);
+
+    /* 手柄元素不缓存：它可能刚从「纯手柄」变成含按钮的整行容器，
+     * 悬停时必须重判，否则 arrow 标记永远打不上（#144）。 */
+    var cacheable = !isHandleSelf(el);
+    if (!force && cacheable && hovered.has(el)) return;
+    if (cacheable) hovered.add(el);
+
+    classify(el, force || !cacheable);
   }
 
   function onProbe(e) {
@@ -497,12 +659,21 @@
     for (var i = 0; i < nodes.length; i++) {
       var el = nodes[i];
       if (el.nodeType !== 1) continue;
+
+      /* 手柄元素不进 scanned 缓存、每次强制重判（#144）：
+       * React 分步挂载时按钮可能晚于行出现 —— 行会从「纯手柄」变成
+       * 「整行容器」，必须能把已打上的猫爪标记撤掉、换成箭头。
+       * 数量按行计（每行 1 个），开销可忽略。 */
+      if (isHandleSelf(el)) {
+        classify(el, true);
+        continue;
+      }
+
       if (!force) {
         if (scanned.has(el)) continue;
         scanned.add(el);
       }
-      if (el.hasAttribute(MARK_ATTR)) continue;
-      if (isGrabEl(el)) el.setAttribute(MARK_ATTR, '');
+      classify(el, force);
     }
   }
 
@@ -612,11 +783,13 @@
             }
             var node = item.walker.nextNode();
             while (node) {
-              if (!scanned.has(node)) {
+              /* 手柄元素不进缓存、强制重判（#144）：新增的按钮可能让
+               * 祖先手柄从「纯手柄」变成「整行容器」，需要撤掉猫爪改箭头。 */
+              if (isHandleSelf(node)) {
+                classify(node, true);
+              } else if (!scanned.has(node)) {
                 scanned.add(node);
-                if (!node.hasAttribute(MARK_ATTR) && isGrabEl(node)) {
-                  node.setAttribute(MARK_ATTR, '');
-                }
+                classify(node, false);
               }
               n += 1;
               if (Date.now() - start > SLICE_MS || n > NODE_CAP) break;
@@ -670,6 +843,15 @@
         var added = m.addedNodes;
         for (var j = 0; j < added.length; j++) {
           if (added[j].nodeType === 1) queue.push({ el: added[j], self: false });
+        }
+
+        /* #144：新挂载的按钮会让最近的拖拽手柄祖先从「纯手柄」变成
+         * 「整行容器」—— 它身上可能已经打了猫爪标记，必须补一次强制重判
+         * 才能撤标改箭头。只查最近的一个手柄祖先，成本 O(1)。 */
+        if (m.target && m.target.nodeType === 1) {
+          var host = null;
+          try { host = m.target.closest(DRAG_HOST_SEL); } catch (e0) { host = null; }
+          if (host) queue.push({ el: host, self: true });
         }
       }
 
@@ -796,6 +978,11 @@
     // buildCss() 随后读到的是最终值。异步,不阻塞页面。
     probeCursorImage(function () {
       if (!enabled) return;   // 探针返回前被关掉,不注入
+
+      /* #144：先摘掉旧版留下的猫爪标记，再按新判据重扫。
+       * 不清的话，上一版打在小黄车行内按钮/序号上的标记会继续以
+       * !important 压住按钮 —— 用户不刷新页面就看不到修复。 */
+      clearLegacyMarks();
 
       apply();
       scanAll();
