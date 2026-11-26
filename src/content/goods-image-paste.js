@@ -1193,17 +1193,21 @@
 
   /** 尺码图区域的观察范围:向上找最近一个 class 含 module 的容器
    *  (真机是 style-module_batchImageUpload_xxx)——解析结果与预览常落在 label **外面**,
-   *  只看 label 会「实际成功却判失败」。找不到就退回 input 所在节点。 */
+   *  只看 label 会「实际成功却判失败」。
+   *  ⚠ 2026-11-26:向上时**跳过 label**。真机 label 的类名就叫
+   *  `styles-module_mainLabel__DlvBb`(含 module),不跳就会被它当场截住,
+   *  观察范围一张没扩,「已入框却报未成功」照旧。找不到就退回区块根。 */
   function sizeScope(host) {
     var node = host.mount || host.anchor;
+    node = node ? node.parentElement : null;
     var guard = 0;
-    while (node && guard < 6) {
+    while (node && guard < 8) {
       guard++;
       var cn = (typeof node.className === 'string') ? node.className : '';
-      if (cn.indexOf('module') >= 0) return node;
+      if (node.tagName !== 'LABEL' && cn.indexOf('module') >= 0) return node;
       node = node.parentElement;
     }
-    return host.root || host.anchor;
+    return host.root || host.mount || host.anchor;
   }
 
   function makeSizeButton(host) {
@@ -1369,14 +1373,22 @@
       }
 
       /* 2026-11-22:等待 4 秒 → 8 秒,观察范围从 label 扩到模块容器。
-         用户实测「很快提示失败、实际都成功」就是这两件事造成的。 */
-      return waitImageGrow(scope, base, 8000, basePreview).then(function (got) {
+         2026-11-26:再补一条 —— 平台收下图后会把上传区整块重渲染,旧观察根当场失联,
+         必须重取一次新根接着看,不能把「根没了」当成「没出图」。 */
+      var rescanAt = 0;
+      return waitImageGrow(scope, base, 8000, basePreview, function () {
+        var now = Date.now();
+        if (now - rescanAt < 800) return null;      // 顶多重取一次/0.8 秒,别把 9300 个节点扫穿
+        rescanAt = now;
+        var h = findSizeHost();
+        return h ? sizeScope(h) : null;
+      }).then(function (got) {
         if (got) {
           say('尺码图', 'success', '已入框');
           log('尺码图:成功');
         } else {
-          say('尺码图已交给平台，未看到预览', 'alert', '待确认',
-            '文件已经交给平台,但页面上还没出现预览或解析结果。平台可能还在处理 —— 请等几秒再看,不要重复点击;若始终没有,请点「AI 解析尺码图」手动选择文件。');
+          say('尺码图已交给平台', 'alert', '待确认',
+            '文件已经交给平台,但页面上还没出现预览或解析结果。平台可能还在处理 —— 请等几秒扫一眼尺码区,不要重复点击;若确实没有,请点「AI 解析尺码图」手动选择文件。');
           log('尺码图:已交付但未看到预览');
         }
         return null;
@@ -1391,13 +1403,40 @@
     });
   }
 
-  /** 区块内图片总数涨了 = 平台把图收下了 */
-  function waitImageGrow(root, base, ms, basePreview) {
+  /** 只在日志里用的节点描述:tag.首类名前 24 字 */
+  function descNode(el) {
+    if (!el) return '无';
+    var cn = (typeof el.className === 'string') ? el.className.trim().split(/\s+/)[0] : '';
+    return el.tagName.toLowerCase() + (cn ? '.' + cn.slice(0, 24) : '');
+  }
+
+  /** 区块内图片总数涨了 = 平台把图收下了
+   *  2026-11-26:**根节点失联不再等于失败**。平台收下图后常把上传区整块重渲染,
+   *  旧观察根当场 isConnected=false —— 以前直接 resolve(false),8 秒的等待一秒都没跑,
+   *  于是「已入框」被报成「未看到预览」(用户 20:21:28 那次:开始→报失败只隔 224ms)。
+   *  rescan 由调用方给:根失联时重取新根,基数按新根当前值重算 ——
+   *  宁可漏判(交给 previewCount 兜),绝不把旧树里已有的图算成新增。 */
+  function waitImageGrow(root, base, ms, basePreview, rescan) {
     return new Promise(function (resolve) {
       var start = Date.now();
+      var scope = root;
+      var scoped = base;
       (function tick() {
-        if (!root || !root.isConnected) { resolve(false); return; }
-        if (root.querySelectorAll('img').length > base) { resolve(true); return; }
+        if (!scope || !scope.isConnected) {
+          if (typeof rescan !== 'function') { resolve(false); return; }
+          var next = null;
+          try { next = rescan(); } catch (e) { next = null; }
+          if (next && next.isConnected && next !== scope) {
+            scope = next;
+            scoped = next.querySelectorAll('img').length;
+            log('尺码图:观察根被重渲染,改看 ' + descNode(next) + ' · 现有图 ' + scoped);
+          } else {
+            scope = null;
+          }
+        }
+        if (scope && scope.isConnected && scope.querySelectorAll('img').length > scoped) {
+          resolve(true); return;
+        }
         if (typeof basePreview === 'number' && previewCount() > basePreview) { resolve(true); return; }
         if (Date.now() - start >= ms) { resolve(false); return; }
         setTimeout(tick, 150);

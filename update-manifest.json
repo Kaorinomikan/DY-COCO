@@ -1,5 +1,5 @@
 {
-  "version": "26.11.26.1",
+  "version": "26.11.26.2",
   "algorithm": "sha256",
   "files": [
     {
@@ -40,12 +40,12 @@
     {
       "path": "manifest.json",
       "size": 17154,
-      "sha256": "713a284ae9a399bfd37327cac5dea42e7563a130c033ebb1633efe221224384d"
+      "sha256": "4275258a4c15df8bcdc24666d08828b4fb7b1b1ff75d78addd1baddfe8df5b54"
     },
     {
       "path": "src/background/service-worker.js",
       "size": 91600,
-      "sha256": "f3e6c0c736db01b07904c95590066023e4bc6f4297b53b3cd8bf1343091d9fd1"
+      "sha256": "1fb51591e3195769d3e963ffbca62b35400fefe3bddefa6d3eed81b800b437b1"
     },
     {
       "path": "src/content/anchor.js",
@@ -139,8 +139,8 @@
     },
     {
       "path": "src/content/goods-image-paste.js",
-      "size": 89512,
-      "sha256": "376895aab261cfe0f4ff836c40dd047a2a928dfaab14fab886bd1dc2a0f94b09"
+      "size": 91576,
+      "sha256": "a83284512420f574260fc39e690b5c745f43733861d200d4aa3ff91b3929227c"
     },
     {
       "path": "src/content/goods-list-flag.js",

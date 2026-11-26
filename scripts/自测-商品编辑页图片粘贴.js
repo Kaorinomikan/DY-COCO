@@ -1364,6 +1364,90 @@ const HTML = `<!doctype html><html><body>
     w13.close();
   }
 
+  console.log('\n【十七】尺码图:平台收图后整块重渲染,不许把「根没了」当「没出图」(2026-11-26 用户反馈)');
+  {
+    /* 真机现象(诊断报告 20:21:28):点「粘贴尺码图」→「开始」到「已交付但未看到预览」
+       只隔 224ms,8 秒等待一秒都没跑;而图其实已经入框。
+       两个成因都在这一段里:
+         ① 平台 change 后立刻把上传区整块重渲染 → 观察根 isConnected=false → 老代码直接判失败;
+         ② label 的类名就叫 styles-module_mainLabel__DlvBb(含 module),
+            从锚点向上找「含 module 的容器」会被 label 当场截住,范围根本没扩到模块级。
+       用例让平台换掉整个 label,再把图加在**模块容器**(label 外) —— 两条都得过。 */
+    const html14 = `<!doctype html><html><body>
+      <div id="goodsEditScrollContainer">
+        <div id="sizeModule" class="style-module_batchImageUpload__AbC">
+          <label id="sizeLabel" class="styles-module_mainLabel__DlvBb">
+            <input type="file" accept="image/*" style="display:none">
+            <div id="aiBtn" data-kora-json="AI解析尺码图"><img alt="AI解析图片" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="></div>
+          </label>
+        </div>
+      </div>
+    </body></html>`;
+    const dom14 = new JSDOM(html14, { url: 'https://fxg.jinritemai.com/ffa/g/create', runScripts: 'outside-only' });
+    const w14 = dom14.window;
+    const d14 = w14.document;
+    const msgs14 = [];
+    w14.chrome = {
+      runtime: {
+        id: 'selftest14', lastError: null,
+        sendMessage(m, cb) {
+          if (m && m.type === 'dyc:readClipboardImage') {
+            setTimeout(() => cb({ ok: true, dataUrl: PNG, mime: 'image/png', size: 68 }), 5);
+            return;
+          }
+          if (typeof cb === 'function') setTimeout(() => cb({ ok: false }), 0);
+        }
+      }
+    };
+    w14.dycReadFlags = () => Promise.resolve({ goodsImagePaste: true, sizeChartPaste: true });
+    w14.dycWatchFlags = () => {};
+    w14.isVisible = () => true;
+    w14.findAllByText = () => [];
+    w14.debugLog = () => {};
+    w14.setStatus = (value, kind, opts) => msgs14.push({ value, kind, opts });
+    w14.DYC_PAGE_PATTERNS = { goodsEdit: /^https:\/\/fxg\.jinritemai\.com\/ffa\/g\/create/ };
+    w14.DataTransfer = class {
+      constructor() { this._f = []; this.items = { add: (f) => this._f.push(f) }; }
+      get files() { return { length: this._f.length, item: (i) => this._f[i], 0: this._f[0] }; }
+    };
+    Object.defineProperty(w14.HTMLInputElement.prototype, 'files', {
+      configurable: true, set(v) { this.__f = v; },
+      get() { return this.__f || { length: 0, item: () => null }; }
+    });
+    w14.eval(read(SRC_UNDER_TEST));
+    await sleep(250);
+
+    const btn14 = d14.querySelector('.dyc-imgpaste-size');
+    assert.ok(btn14, '起步没挂上尺码图按钮,后面断言没意义');
+    /* 平台行为:塞完文件 120ms 就把 label 整块换新(观察根当场失联),320ms 后在模块容器里出图 */
+    setTimeout(() => {
+      const label = d14.getElementById('sizeLabel');
+      const fresh = d14.createElement('label');
+      fresh.id = 'sizeLabel2';
+      fresh.className = 'styles-module_mainLabel__DlvBb';
+      fresh.innerHTML = '<input type="file" accept="image/*" style="display:none">'
+        + '<div id="aiBtn2" data-kora-json="AI解析尺码图"><img alt="AI解析图片" src="data:image/gif;base64,R0lGODlhAQABAAAAACw="></div>';
+      label.replaceWith(fresh);
+    }, 120);
+    setTimeout(() => {
+      const im = d14.createElement('img');
+      im.src = 'https://example.test/size-parsed.png';
+      d14.getElementById('sizeModule').appendChild(im);
+    }, 320);
+    btn14.dispatchEvent(new w14.MouseEvent('click', { bubbles: true }));
+    await sleep(1600);
+
+    check('观察根被换掉后仍接着看,判成功', () => {
+      const ok = msgs14.filter((m) => m.value === '尺码图' && m.kind === 'success');
+      assert.equal(ok.length, 1, '没报成功:实际已入框');
+    });
+    check('没有误报「已交给平台 · 待确认」', () => {
+      const bad = msgs14.filter((m) => m.kind === 'alert');
+      assert.equal(bad.length, 0, '误报了失败:' + JSON.stringify(bad[0] && bad[0].value));
+    });
+    w14.close();
+  }
+
   console.log('\n────────────────────────────────────────');
   console.log('  通过 ' + pass + ' / 失败 ' + fail);
   if (fail) {
