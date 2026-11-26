@@ -89,7 +89,6 @@ async function test(name, fn) { await fn(); passed++; console.log('通过：' + 
     ['https://ark.xiaohongshu.com/app', 'xhs', true],
     ['https://pgy.xiaohongshu.com/commerce/redlive/live_center_control', 'xhs', true],
     ['https://www.xiaohongshu.com/explore', 'xhs', false], ['https://xiaohongshu.com', 'xhs', false],
-    ['https://live.kuaishou.com/', 'ks', false], ['https://syt.kwaixiaodian.com/zone/home', 'ks', false],
     ['https://live.taobao.com/', 'tb', false], ['https://www.taobao.com/', 'tb', false]
   ]) await test('网址优先于历史选择：' + url, async () => {
     const f = fixture(url); await flush(); assert.equal(f.selected(), id); assert.deepEqual(f.errors, []);
@@ -99,7 +98,13 @@ async function test(name, fn) { await fn(); passed++; console.log('通过：' + 
   });
   await test('未知网站沿用存档，仿冒域名不匹配', async () => {
     const f = fixture('https://other.test/', { last: 'tb' }); await flush(); assert.equal(f.selected(), 'tb');
-    for (const url of ['https://xiaohongshu.com.evil.test/', 'https://evil.test/xiaohongshu.com/', 'https://notkuaishou.com/', 'https://taobao.com.evil.test/']) assert.equal(f.w.dycDetectPlatform(url), '');
+    // 快手平台已下线（2026-11-25 用户令暂不做）：它的网址不再被认成任何平台，
+    // 弹窗里也不许再留按钮 —— 只用隐藏分组、留着平台壳的做法不算删干净。
+    for (const url of ['https://live.kuaishou.com/', 'https://syt.kwaixiaodian.com/zone/home',
+      'https://xiaohongshu.com.evil.test/', 'https://evil.test/xiaohongshu.com/', 'https://notkuaishou.com/', 'https://taobao.com.evil.test/'])
+      assert.equal(f.w.dycDetectPlatform(url), '');
+    assert.equal(f.d.querySelector('[data-plat="ks"]'), null, '快手按钮应已删除');
+    assert.equal(f.w.DYC_PLATFORMS.some((p) => p.id === 'ks'), false, '平台表不该再有快手');
     f.close();
   });
   await test('支持范围提示由平台表驱动，不在代码里写死站点名', async () => {
@@ -115,7 +120,7 @@ async function test(name, fn) { await fn(); passed++; console.log('通过：' + 
     assert(!/直播回放页/.test(f.w.supportedScopeText()), '提示只列平台，不列细分页面');
     assert.deepEqual(f.errors, []); f.close();
   });
-  await test('小红书显示所属分组和回放下载、快手淘宝空态与未知存档回退', async () => {
+  await test('小红书显示所属分组和回放下载、淘宝空态与未知存档回退', async () => {
     const f = fixture('https://qianfan.xiaohongshu.com/'); await flush();
     const shown = Array.from(f.d.querySelectorAll('#flags-root > [data-gid]:not([hidden])'));
     assert.deepEqual(shown.map((el) => el.dataset.gid), ['xhsLive', 'xhsShop', 'other']);
@@ -124,9 +129,9 @@ async function test(name, fn) { await fn(); passed++; console.log('通过：' + 
     assert.deepEqual(rows.map((row) => row.dataset.flagRow), ['replayDownload']);
     const replayLink = rows[0].querySelector('.replay-page-link');
     assert.equal(replayLink.hidden, true, '小红书不显示抖音复盘链接');
-    f.choose('ks'); assert.equal(f.selected(), 'ks'); assert.equal(f.d.getElementById('platform-empty').hidden, false);
+    f.choose('tb'); assert.equal(f.selected(), 'tb'); assert.equal(f.d.getElementById('platform-empty').hidden, false);
     assert.equal(f.d.querySelectorAll('#flags-root > :not([hidden])').length, 0);
-    f.choose('tb'); assert(f.d.getElementById('platform-empty-title').textContent.includes('淘宝'));
+    assert(f.d.getElementById('platform-empty-title').textContent.includes('淘宝'));
     f.w.applyPlatform('broken'); assert.equal(f.selected(), 'dy');
     assert.equal(replayLink.hidden, false, '切回抖音恢复复盘链接');
     f.close();

@@ -1,5 +1,5 @@
 {
-  "version": "26.11.25.1",
+  "version": "26.11.26.1",
   "algorithm": "sha256",
   "files": [
     {
@@ -23,11 +23,6 @@
       "sha256": "4aca45c2f32f2e6260a17d61c680906d68791b2c8f60005a2a89ab63655a04e5"
     },
     {
-      "path": "icons/platforms/ks.png",
-      "size": 2120,
-      "sha256": "94e45c9afa0c6a83048b4b53330958f4e28c56bf576855dc1cd9793a89e5067b"
-    },
-    {
       "path": "icons/platforms/tb.png",
       "size": 4621,
       "sha256": "88daff369a50dcda37d7f4f1b6d64d1d0cd5f62320ee4767023c13ff5fa9fc20"
@@ -45,12 +40,12 @@
     {
       "path": "manifest.json",
       "size": 17154,
-      "sha256": "7004f7d42d0d17e742c67b805493173dcb8c443906e3f6e2b7701d34aeaae717"
+      "sha256": "713a284ae9a399bfd37327cac5dea42e7563a130c033ebb1633efe221224384d"
     },
     {
       "path": "src/background/service-worker.js",
       "size": 91600,
-      "sha256": "9f7c4ccad31308e26c0a649b9f0396d739c27ba4a729f174544d78e72c63a274"
+      "sha256": "f3e6c0c736db01b07904c95590066023e4bc6f4297b53b3cd8bf1343091d9fd1"
     },
     {
       "path": "src/content/anchor.js",
@@ -94,8 +89,8 @@
     },
     {
       "path": "src/content/cursor-fix.js",
-      "size": 67931,
-      "sha256": "bd28959551cfd7ec5bb7d9605c8d925f57bf1b878eb2bcb5d9d5557736999cfd"
+      "size": 69782,
+      "sha256": "6271c37ca4442cebe51d9d00e7c0a879dcfb22aab474c35ac123150e2a7f07de"
     },
     {
       "path": "src/content/debug-panel.js",
@@ -129,8 +124,8 @@
     },
     {
       "path": "src/content/flags.js",
-      "size": 113205,
-      "sha256": "0c872c4971e25dcb48cd7b22998db554e9fefd65756c034157b56bc05ceeb191"
+      "size": 113011,
+      "sha256": "a4dd581993d25972bf476387a4250acff28697725f43aba293f95e15c9ff2ac6"
     },
     {
       "path": "src/content/goods-batch-copy.js",
@@ -359,8 +354,8 @@
     },
     {
       "path": "src/live/lucky-bag.js",
-      "size": 357608,
-      "sha256": "48c8fe6b9be7f16ed5e7f77f627772d79f45e293a26f44ee56936783fb68b685"
+      "size": 358615,
+      "sha256": "3986895b7e1933388594b259be978094d710632d96356a4886953bf75666a457"
     },
     {
       "path": "src/live/name-wrap.js",

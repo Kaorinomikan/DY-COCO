@@ -61,6 +61,9 @@ const {
   /* ㋅① 判不出（页面既无在播信号、也无未开播文案）⇒ 一次都不开抽屉。
    *     这是本次反馈的正面复现：旧版这一档按在播处理，进页面 3 秒弹一次。 */
   bp = await bootBagPage(null, { live: 'none' });
+  /* 2026-11-26 起「开抽屉」还要过「自动发福袋」这道闸；这组只验开播闸，
+   * 先把自动开关拨开，免得两条闸混在一起、红了分不清是谁拦的。 */
+  bp.api.setAutoForTest(true);
   bp.api.tick();
   ok(bp.api.liveState() === 'unknown', '㋅① 判不出 = unknown（铺垫）');
   ok(bp.api.liveGate() === false, '㋅① unknown 时开播闸关着（旧版这里是开着的）');
@@ -70,6 +73,7 @@ const {
 
   /* ㋅② 明确未开播 ⇒ 同样不开（这条旧版已有，回归钉住） */
   bp = await bootBagPage(null, { live: 'off' });
+  bp.api.setAutoForTest(true);
   bp.api.tick();
   ok(bp.api.liveState() === 'idle', '㋅② 明确未开播 = idle（铺垫）');
   bp.api.confirmNow();
@@ -78,6 +82,7 @@ const {
 
   /* ㋅③ 明确在播 ⇒ 照常开（别把闸做成「永远不开」） */
   bp = await bootBagPage(null, { live: 'on' });
+  bp.api.setAutoForTest(true);
   bp.api.tick();
   ok(bp.api.liveState() === 'live', '㋅③ 明确在播 = live（铺垫）');
   ok(bp.api.liveGate() === true, '㋅③ 在播时开播闸打开');
@@ -280,9 +285,21 @@ const {
   ok(gapAuto > 0 && gapAuto <= 61000,
     '㋅⑮ 等下一轮时下一次开抽屉按 60 秒上限追（实际 ' + Math.round(gapAuto / 1000) + ' 秒）');
 
-  const gapOff = await lookGapFor(false);
-  ok(gapOff > 120000,
-    '㋅⑮ 自动发福袋关着 → 仍按确认间隔（实际 ' + Math.round(gapOff / 1000) + ' 秒）');
+  /* ㋅⑮（反向，2026-11-26 用户定稿）：关掉「自动发福袋」= 纯监视，
+   * 确认节拍不再自动开抽屉。旧版这里仍按 5 分钟弹一次，正是用户报的
+   * 「我点击关闭自动发福袋，也会自己开抽屉」。
+   * 对照放在同一段：拨开开关后同一拍就开 —— 证明不是「永远不开」。 */
+  bp = await bootBagPage();
+  bp.api.setAutoForTest(false);
+  bp.api.tick();
+  bp.api.setNextConfirmAtForTest(0);           // 让确认节拍「到点」
+  bp.api.tick();
+  await sleep(200);
+  ok(bp.clicks.entry === 0, '㋅⑮ 自动发福袋关着 → 到点也不点入口开抽屉');
+  bp.api.setAutoForTest(true);
+  bp.api.tick();
+  await sleep(200);
+  ok(bp.clicks.entry === 1, '㋅⑮ 开关拨开 → 同一拍就开抽屉（对照：不是永远不开）');
 
   /* ㋅⑯ 续发闸诊断（2026-11-05）：自动开着却不续发时，快照要能说清卡在哪一道。
    * 这条只验「有话说、说得出机器码」，不绑具体文案 —— 文案是给人读的。 */

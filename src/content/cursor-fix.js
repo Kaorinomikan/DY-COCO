@@ -75,12 +75,26 @@
  *   现在把结构判据收回一层：
  *     · 元素**自身**是手柄 → 才算结构可拖（`isHandleSelf`，不再用 closest）；
  *     · 自身是手柄但内部还有按钮/链接（整行、整卡式）→ 判为「手柄容器」，
- *       不给猫爪，改给普通箭头（`data-dyc-cursor-arrow`），
+ *       当时不给猫爪、改给普通箭头（属性随 #145 换名，见下节），
  *       行内真正的手柄图标再由「自身光标是 grab」单独命中；
  *     · 祖先可拖这件事只留给「按下能不能起拖」用（`isDragHost` 保留 closest
  *       语义），不再参与打标。
  *   与 11-21 之前的口径一致：**平台自己声明了可拖光标（grab/move）的位置
  *   才是猫爪**，其余交还平台。
+ *
+ * 【再修正：整行商品区悬停就要猫爪（反馈 #145，2026-11-26）】
+ *   用户原话:「让鼠标指向中控台购物车商品的时候也是猫爪图案，不然一拖动的时候，
+ *   猫爪唐突出现，很突兀」。
+ *
+ *   #144 把整行压成箭头，解决的是「按钮/序号被猫爪盖住」，但**收过了头**：
+ *   整行本身就是 rbd 拖拽手柄，按住商品区任意位置都能起拖，而悬停时却给箭头，
+ *   一按下去整页立刻换成猫爪 —— 光标在两态之间跳变，看起来像故障。
+ *
+ *   现在把「整行」拆成两层，各归其位：
+ *     · 行**本体**（商品名、空白区…）→ 猫爪，与拖动中的握紧爪同族，不再跳变；
+ *     · 行内**按钮/链接/输入类 + 序号格** → 仍是普通箭头（#143/#144 的结论保留）。
+ *   落地方式：容器打 `data-dyc-cursor-row` 作锚点（本体靠 MARK_ATTR 出猫爪），
+ *   行内控件与序号格由 buildCss 第 5/6 条按锚点子树压回箭头。
  * ============================================================ */
 
 (function cursorVisibilityFix() {
@@ -146,8 +160,10 @@
 
   var MARK_ATTR = 'data-dyc-cursor-fix';
   var DRAG_ATTR = 'data-dyc-cursor-dragging';
-  /* 整行 / 整卡式手柄：交还普通箭头（反馈 #144，见 buildCss 第 5 条） */
-  var ARROW_ATTR = 'data-dyc-cursor-arrow';
+  /* 整行 / 整卡式手柄：本体猫爪，内部控件回箭头（#145，锚点含义见 buildCss 第 5 条） */
+  var ROW_ATTR = 'data-dyc-cursor-row';
+  /* 上一版给整行打的「箭头」标记，仅用于开局清理（#144 → #145 换名） */
+  var LEGACY_ARROW_ATTR = 'data-dyc-cursor-arrow';
 
   /* ==========================================================
    * 分平台开关（2026-11-21 扩到整平台）
@@ -311,7 +327,7 @@
    * 级别的，猫爪盖上去就等于盖住整行，正是用户投诉的现象。
    *
    * 判据：自身是手柄 **且** 内部还有可点控件。
-   *   · 命中 → 不给猫爪，给普通箭头（行内按钮/文字继承箭头）；
+   *   · 命中 → 判为「整行容器」：本体给猫爪（#145），内部按钮/序号格给箭头；
    *   · 不命中（纯手柄 / 独立拖拽图标）→ 照常给猫爪。
    * ★ 必须每次重判、不进 scanned 缓存：React 分步挂载时按钮可能晚于
    *   行出现，容器会从「纯手柄」变成「整行容器」（见 scanList）。
@@ -338,9 +354,9 @@
    * 这里列出「只供阅读、不是抓取手柄」的单元，交给 buildCss 末尾的反向规则
    * 还原成默认箭头。
    *
-   * ★ 2026-11-24（#144）之后，整行容器本身已改走「普通箭头」（ARROW_ATTR），
-   *   序号格多数情况靠继承就够了；本清单保留为**兜底**：平台若给序号格自己
-   *   写了 cursor:grab（路径 A 会照搬成猫爪），仍靠它压回箭头。
+   * ★ #145 之后整行本体是猫爪，序号格**不再靠继承**（继承下来就是猫爪），
+   *   本清单就是唯一把这一格压回箭头的规则，权重与顺序都必须留足。
+   *   平台若还给它自己写了 cursor:grab（路径 A 会照搬成猫爪），同样靠它压回。
    *
    * ★ 写法约定（新增条目照抄）：
    *   · 用**类名片段**匹配，别写全名 —— 平台是 CSS Modules，类名带构建哈希
@@ -357,7 +373,7 @@
    *
    * 【2026-11-24 收紧（#144）】结构判据只看**自身**，不再看祖先：
    *   · `isHandleContainer` 先拦下「整行/整卡式手柄」—— 它内部还有按钮，
-   *     视觉上不是拖动手柄，给普通箭头；
+   *     由 classify 单独按「整行容器」处理（本体猫爪、控件箭头，见 #145）；
    *   · `isHandleSelf` 只认元素自身是手柄（独立拖拽图标、纯手柄卡片）；
    *   · 光标判据（grab / grabbing / move）恢复成 11-21 之前的主口径：
    *     平台自己声明可拖的位置才是猫爪。
@@ -373,39 +389,49 @@
   }
 
   /**
-   * 定一个元素的光标归属（#144 统一出口）：
-   *   · 手柄容器 → 撤猫爪、打「箭头」标记；
+   * 定一个元素的光标归属（统一出口）：
+   *   · 整行容器 → 打「整行」锚点 + 猫爪标记；行内控件由 CSS 按锚点压回箭头；
    *   · 其余 → 自身可拖就打猫爪标记，否则什么都不做（交还平台）。
-   * force=true 时即使已有标记也重判（元素可能从纯手柄变成含按钮的行）。
+   * force=true 时即使已有标记也重判（元素可能从纯手柄变成含按钮的行，或反之）。
    */
   function classify(el, force) {
     if (!el || el.nodeType !== 1) return;
 
     if (isHandleContainer(el)) {
-      if (el.hasAttribute(MARK_ATTR)) el.removeAttribute(MARK_ATTR);
-      if (!el.hasAttribute(ARROW_ATTR)) el.setAttribute(ARROW_ATTR, '');
+      /* 整行/整卡手柄：本体必须显示猫爪 —— 它整块都能起拖，悬停不给可拖信号，
+       * 按下瞬间整页才跳成猫爪，用户看着就是「唐突出现」（#145）。 */
+      if (el.hasAttribute(LEGACY_ARROW_ATTR)) el.removeAttribute(LEGACY_ARROW_ATTR);
+      if (!el.hasAttribute(ROW_ATTR)) el.setAttribute(ROW_ATTR, '');
+      if (!el.hasAttribute(MARK_ATTR)) el.setAttribute(MARK_ATTR, '');
       return;
     }
 
-    if (!force && (el.hasAttribute(MARK_ATTR) || el.hasAttribute(ARROW_ATTR))) return;
+    /* 不再是整行容器（按钮被 React 卸掉等）→ 摘掉锚点，别让内部控件规则挂空 */
+    if (el.hasAttribute(ROW_ATTR)) el.removeAttribute(ROW_ATTR);
+
+    if (!force && el.hasAttribute(MARK_ATTR)) return;
 
     if (isGrabEl(el)) {
-      if (el.hasAttribute(ARROW_ATTR)) el.removeAttribute(ARROW_ATTR);
       if (!el.hasAttribute(MARK_ATTR)) el.setAttribute(MARK_ATTR, '');
     }
   }
 
   /**
-   * 摘掉旧版本留下的猫爪标记（#144）。
+   * 摘掉旧版本留下的标记（#144 / #145）。
    *
-   * 判据收紧后，上一版打在小黄车行内按钮/序号/列容器上的标记还留在 DOM 里，
-   * 它们各自带着 `!important` 的猫爪 —— 只要用户不刷新页面，修复就看不到。
-   * 开局清一次，随后 scanAll 按新判据重扫（分片执行，不会卡主线程）。
+   * 判据每改一次，上一版打在元素上的属性还留在 DOM 里：旧猫爪标记会在
+   * 新口径下继续以 `!important` 生效，旧「整行箭头」标记则是纯垃圾。
+   * 用户不刷新页面就看不到修复，因此开局清一次，随后 scanAll 按新判据重扫。
    */
   function clearLegacyMarks() {
     try {
-      var old = document.querySelectorAll('[' + MARK_ATTR + ']');
-      for (var i = 0; i < old.length; i++) old[i].removeAttribute(MARK_ATTR);
+      var sel = '[' + MARK_ATTR + '],[' + LEGACY_ARROW_ATTR + '],[' + ROW_ATTR + ']';
+      var old = document.querySelectorAll(sel);
+      for (var i = 0; i < old.length; i++) {
+        old[i].removeAttribute(MARK_ATTR);
+        old[i].removeAttribute(LEGACY_ARROW_ATTR);
+        old[i].removeAttribute(ROW_ATTR);
+      }
     } catch (e) { /* 忽略 */ }
   }
 
@@ -489,33 +515,27 @@
      * 按下态也失去统一接管点。所以 draggable 这类结构判据只用来**打标**
      * （见 isGrabEl），光标仍由上面第 1 条规则统一负责。 */
 
-    /* 4) 整行 / 整卡式手柄 → 普通箭头（反馈 #144）
+    /* 4) 整行 / 整卡式手柄 → 本体猫爪（反馈 #145）
      *
-     * 这类元素的「可拖」是整块级别的（rbd 给整行设了 cursor:grab），
-     * 但行里还有按钮、序号、商品名 —— 用户口径：猫爪只给拖动手柄那一个
-     * 位置，整行其余部分回到普通箭头。
-     *
-     * 只设**容器自身**、不带 `*`：子孙继承箭头；行内真正的手柄图标会被
-     * 单独打上猫爪标记（它自己在平台样式里声明了 grab），自己的声明压过
-     * 从父继承来的箭头。
-     *
-     * 属性选择器叠两遍（(0,3,2)）：第 2 条会把平台 `.row{cursor:grab}`、
-     * `.row .xxx{cursor:grab}` 原样照搬成猫爪，权重可能到 (0,2,0)，
-     * 必须靠权重 + 顺序双保险压回箭头。 */
-    var arrow = '[' + ARROW_ATTR + '][' + ARROW_ATTR + ']';
-    parts.push('html:not([' + DRAG_ATTR + ']) body ' + arrow
-      + ' { cursor: default !important; }');
+     * ★ 这里**故意不出光标规则**：容器已在 classify() 里打上 MARK_ATTR，
+     *   第 1 条规则就给它猫爪了，子孙继承同一张图。
+     * ★ 不要回头给 [ROW] 写 cursor —— #144 就是在这一步把整行压成 default，
+     *   于是「悬停箭头、一按整页变猫爪」，正是用户说的「唐突出现」。
+     *   ROW_ATTR 的职责只剩一个：给第 5 条当锚点。 */
+    var row = '[' + ROW_ATTR + '][' + ROW_ATTR + ']';
 
-    /* 5) 手柄容器里的可点控件 → 普通箭头（#144）
+    /* 5) 整行容器里的可点控件 → 普通箭头（#143 / #144 结论保留）
      *
-     * 用户原话:「按钮上希望是普通的箭头」。平台按钮多数自己写了
-     * cursor:pointer，光是「不再给它们打猫爪标记」会得到手型 —— 因此
-     * 在容器子树内统一压成 default。
-     * ★ 只作用于手柄容器内，不碰全站按钮（全域注入下这一点很关键）。 */
+     * 用户原话:「按钮上希望是普通的箭头」。行本体是猫爪，但行内按钮/链接/
+     * 输入类不是拖拽面，不能跟着变猫爪；平台按钮多数自己写了 cursor:pointer，
+     * 所以不能只靠「不打标记」，要显式压成 default。
+     * 属性选择器叠两遍抬权重：第 2 条会把平台的 `.row .btn{cursor:grab}`
+     * 原样照搬成猫爪，单层属性选择器压不过它。
+     * ★ 只作用于 [ROW] 子树内，不碰全站按钮（全域注入下这一点很关键）。 */
     for (var c = 0; c < CLICKABLE_LIST.length; c++) {
       var ctl = CLICKABLE_LIST[c];
-      parts.push('html:not([' + DRAG_ATTR + ']) body ' + arrow + ' ' + ctl
-        + ', html:not([' + DRAG_ATTR + ']) body ' + arrow + ' ' + ctl + ' *'
+      parts.push('html:not([' + DRAG_ATTR + ']) body ' + row + ' ' + ctl
+        + ', html:not([' + DRAG_ATTR + ']) body ' + row + ' ' + ctl + ' *'
         + ' { cursor: default !important; }');
     }
 
@@ -571,16 +591,16 @@
     if (!enabled) return;
     if (!el || el.nodeType !== 1) return;
 
-    /* 悬停在行内任何位置时，顺手确认它所属的拖拽行（#144）。
-     * 行可能是「整行容器」—— 只有行上有了 arrow 标记，行内按钮才会被
+    /* 悬停在行内任何位置时，顺手确认它所属的拖拽行（#144/#145）。
+     * 行可能是「整行容器」—— 只有行上带了整行锚点，行内按钮才会被
      * CSS 压回普通箭头。而用户完全可能把鼠标从页面外直接移到行内按钮上，
      * 行本身一次 mouseover 都收不到；不补这一步，按钮就会保持平台的手型。 */
     var host = null;
     try { host = el.closest(DRAG_HOST_SEL); } catch (e0) { host = null; }
     if (host && host !== el) classify(host, true);
 
-    /* 手柄元素不缓存：它可能刚从「纯手柄」变成含按钮的整行容器，
-     * 悬停时必须重判，否则 arrow 标记永远打不上（#144）。 */
+    /* 手柄元素不缓存：它可能刚从「纯手柄」变成含按钮的整行容器（或反之），
+     * 悬停时必须重判，否则整行锚点/猫爪标记会漏打（#144/#145）。 */
     var cacheable = !isHandleSelf(el);
     if (!force && cacheable && hovered.has(el)) return;
     if (cacheable) hovered.add(el);
@@ -660,9 +680,10 @@
       var el = nodes[i];
       if (el.nodeType !== 1) continue;
 
-      /* 手柄元素不进 scanned 缓存、每次强制重判（#144）：
+      /* 手柄元素不进 scanned 缓存、每次强制重判（#144/#145）：
        * React 分步挂载时按钮可能晚于行出现 —— 行会从「纯手柄」变成
-       * 「整行容器」，必须能把已打上的猫爪标记撤掉、换成箭头。
+       * 「整行容器」，必须补上整行锚点（行内控件才会被压回箭头）。
+       * 两种形态本体都是猫爪，所以这里不涉及撤标，只差锚点。
        * 数量按行计（每行 1 个），开销可忽略。 */
       if (isHandleSelf(el)) {
         classify(el, true);
@@ -783,8 +804,8 @@
             }
             var node = item.walker.nextNode();
             while (node) {
-              /* 手柄元素不进缓存、强制重判（#144）：新增的按钮可能让
-               * 祖先手柄从「纯手柄」变成「整行容器」，需要撤掉猫爪改箭头。 */
+              /* 手柄元素不进缓存、强制重判（#144/#145）：新增的按钮可能让
+               * 祖先手柄从「纯手柄」变成「整行容器」，需要补上整行锚点。 */
               if (isHandleSelf(node)) {
                 classify(node, true);
               } else if (!scanned.has(node)) {
@@ -845,9 +866,9 @@
           if (added[j].nodeType === 1) queue.push({ el: added[j], self: false });
         }
 
-        /* #144：新挂载的按钮会让最近的拖拽手柄祖先从「纯手柄」变成
-         * 「整行容器」—— 它身上可能已经打了猫爪标记，必须补一次强制重判
-         * 才能撤标改箭头。只查最近的一个手柄祖先，成本 O(1)。 */
+        /* #144/#145：新挂载的按钮会让最近的拖拽手柄祖先从「纯手柄」变成
+         * 「整行容器」—— 必须补一次强制重判才能补上整行锚点（行内控件
+         * 才会被压回箭头）。只查最近的一个手柄祖先，成本 O(1)。 */
         if (m.target && m.target.nodeType === 1) {
           var host = null;
           try { host = m.target.closest(DRAG_HOST_SEL); } catch (e0) { host = null; }

@@ -236,6 +236,7 @@ const {
 
   /* ㊭① 改版后短文案：button 里就一句「超级福袋」（当前真机写法） */
   bp = await bootBagPage(null, { entryHtml: '<button id="entry">超级福袋</button>' });
+  bp.api.setAutoForTest(true);      // 2026-11-26：开抽屉的自动节拍随「自动发福袋」开关
   ok(bp.clicks.entry === 0, '㊭① 进页面不当场开抽屉（留 3 秒给页面渲染完）');
   bp.api.confirmNow();
   ok(bp.clicks.entry === 1, '㊭① 入口只剩「超级福袋」也能找到门并点开');
@@ -251,6 +252,7 @@ const {
   bp = await bootBagPage(null, {
     entryHtml: '<button id="entry"><i></i>超级福袋<i></i>活动管理</button>'
   });
+  bp.api.setAutoForTest(true);
   bp.api.confirmNow();
   ok(bp.clicks.entry === 1, '㊭② 图标+两段裸文本入口点得到（控件层整串匹配）');
 
@@ -260,6 +262,7 @@ const {
   bp = await bootBagPage('<span id="promo">推荐使用超级福袋</span>', {
     entryHtml: '<button id="entry"><i></i><span>超级福袋</span><span>活动管理</span></button>'
   });
+  bp.api.setAutoForTest(true);
   const promoEl = bp.doc.getElementById('promo');
   if (promoEl) promoEl.addEventListener('click', function () { bp.clicks.promo = (bp.clicks.promo || 0) + 1; });
   bp.api.confirmNow();
@@ -268,6 +271,7 @@ const {
 
   /* ㊭④ 门都没了：提示不再写死旧文案（2026-11-02 起写法会变） */
   bp = await bootBagPage(null, { entryHtml: '' });
+  bp.api.setAutoForTest(true);
   bp.api.confirmNow();
   await sleep(60);
   ok(/没找到福袋抽屉入口/.test(bp.api.snapshot().check.stat),

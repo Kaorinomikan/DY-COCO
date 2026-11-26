@@ -825,12 +825,16 @@ const {
   ok(thumbLeft && thumbLeft.indexOf('calc(') === 0 && thumbLeft === labs[1].style.left,
     '㊦① 圆钮圆心与「5 推荐」标签同一坐标（' + thumbLeft + '）');
 
-  /* ㊦① 问号说明（用户：确认间隔 + 问号 → 每隔设定的时间自动打开抽屉检查一次福袋状态。） */
+  /* ㊦① 问号说明（用户：确认间隔 + 问号 → 每隔设定的时间自动打开抽屉检查一次福袋状态。）
+   * 2026-11-26 追加限制句：关掉「自动发福袋」后不再自动开抽屉 —— 前半句
+   * 仍是用户原口径（用途），后半句说明关闭后的边界。 */
   const qh = sh.querySelector('.qh');
   const qtip = sh.querySelector('.qtip');
   ok(!!qh && qh.textContent === '?', '㊦① 标签旁有问号');
-  ok(!!qtip && qtip.textContent === '每隔设定的时间自动打开抽屉检查一次福袋状态。',
-    '㊦① 问号文案与用户口径逐字一致');
+  ok(!!qtip && qtip.textContent.indexOf('每隔设定的时间自动打开抽屉检查一次福袋状态') === 0,
+    '㊦① 问号前半句仍是用户原口径（用途）');
+  ok(!!qtip && /关掉「自动发福袋」后不再自动开抽屉/.test(qtip.textContent),
+    '㊦① 问号补上「关掉后不再自动开抽屉」的限制');
   qh.dispatchEvent(new bp.win.Event('pointerenter'));
   ok(qtip.classList.contains('show'), '㊦① 悬停问号时提示弹出');
   qh.dispatchEvent(new bp.win.Event('pointerleave'));
@@ -902,6 +906,7 @@ const {
    * 2026-11-01 05:42 用户删掉「授权」闸：不需要先点一次面板，
    * 只要开播期间，就按设定间隔自己运作。 */
   bp = await bootBagPage();
+  bp.api.setAutoForTest(true);      // 2026-11-26：确认节拍只在「自动发福袋」开着时开抽屉
   ok(bp.clicks.entry === 0, '㊦⑤ 进页面不当场开抽屉（留 3 秒给页面渲染完）');
   bp.api.confirmNow();
   ok(bp.clicks.entry === 1, '㊦⑤ 无需任何授权，到点就点了「超级福袋-活动管理」入口');
@@ -921,6 +926,7 @@ const {
 
   /* ㊦⑥ 你开着的抽屉：不重复开、也绝不替你关 */
   bp = await bootBagPage(null, { preOpen: true });
+  bp.api.setAutoForTest(true);
   bp.api.confirmNow();
   await sleep(1800);
   ok(bp.clicks.entry === 0, '㊦⑥ 你已经开着抽屉时不再点入口');
@@ -1120,6 +1126,7 @@ const {
    * 倒计时，再定时开抽屉纯属打断直播操作。倒计时活着 → 顺延节拍不开窗；
    * 没有运行信息 → 才按间隔兜底开抽屉确认。 */
   env = await boot({ watch: true, withStart: false });
+  env.api.setAutoForTest(true);     // 2026-11-26：确认节拍随「自动发福袋」开关
   ok(env.api.snapshot().check.stat === '', '㊯ 铺垫：还没做过确认');
   env.api.confirmNow();                         // 无卡片信息：走兜底路径
   ok(env.api.snapshot().check.stat === '',
@@ -1179,6 +1186,9 @@ const {
    * ③ 读完没有进行中了 → 回到按间隔确认（不变成连发骚扰）；
    * ④ 有进行中时点手动刷新 = 校准倒计时（㊲ 已覆盖入口路径）。 */
   bp = await bootBagPage();
+  /* 2026-11-26 用户定：自动确认只在「自动发福袋」开着时开抽屉 ——
+   * 这组验的是自动节拍本身，先把开关拨开（关着的口径归 自测-6 ㋅⑮）。 */
+  bp.api.setAutoForTest(true);
   bp.api.setTimingForTest({ afterDrawLag: 0 });  // ㊳ 专验「到点立即恢复确认」的分工，冷却时机归 ㊴
   const cardS = bp.doc.createElement('div');
   cardS.innerHTML = '<span>进行中活动</span><span>03 分 12 秒 后结束</span>' +
@@ -1209,6 +1219,7 @@ const {
    * 一直这样子挂着」）。旧版只有倒计时到期这一条锚点，drawAt 被清零后
    * 只能干等下一个 N 分钟节拍（2 分钟一轮的福袋会白挂 5 分钟）。 */
   bp = await bootBagPage(null, { drawerRowHtml: '● 活动已结束' });
+  bp.api.setAutoForTest(true);                  // 到点验证属于自动节拍（2026-11-26 口径）
   bp.api.setTimingForTest({ afterDrawLag: 0 });
   const cardE = bp.doc.createElement('div');
   cardE.innerHTML = '<span>进行中活动</span><span>00 分 20 秒 后结束</span>' +
@@ -1250,6 +1261,7 @@ const {
    * 冷却锚点 = 最后一次扫到「进行中/开奖中」的时刻（lastRunningAt）。
    * 测试里把 15 秒压成几百毫秒（afterDrawLag），行为链路等价。 */
   bp = await bootBagPage();
+  bp.api.setAutoForTest(true);                  // 冷却过后恢复的是「自动确认」（2026-11-26 口径）
   const cardL = bp.doc.createElement('div');
   cardL.innerHTML = '<span>进行中活动</span><span>03 分 12 秒 后结束</span>' +
     '<div>10元店铺红包 ID 活动ID:7702886904815681839</div>';

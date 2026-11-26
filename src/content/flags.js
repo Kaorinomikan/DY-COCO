@@ -339,7 +339,7 @@ var DYC_FLAG_GROUPS = [
  *   微信侧直接复用 DYC_PAGE_PATTERNS.wxAll（域级键），不再另写一份 ——
  *   两份正则必然漂移，而 wxAll 已经在内容脚本里承担同样的判定。
  *
- * ★ 新增平台（淘宝 / 快手 / 小红书…）只改这里 + DYC_FLAG_GROUPS，**不动 popup 样式**。
+ * ★ 新增平台（淘宝 / 小红书…）只改这里 + DYC_FLAG_GROUPS，**不动 popup 样式**。
  *   弹窗布局与平台数量完全解耦：功能少的平台自动「中间留空、页脚黏底」，
  *   功能多的自动「滚到底才见页脚」—— 同一行 margin-top:auto 产生两种表现。
  *   详见 AGENTS.md 第 27 条；守卫是 scripts/自测-弹窗面板.js（禁止平台专属样式）。
@@ -374,11 +374,6 @@ var DYC_PLATFORMS = [
     // 千帆（ark）2026-11-17 夜落第一个功能（商品名完整显示）⇒ 加回 xhsShop。
     groups: ['xhsLive', 'xhsShop'],
     urlRe: /^https:\/\/(?:[a-z0-9-]+\.)*xiaohongshu\.com\//
-  },
-  {
-    id: 'ks', label: '快手', mark: '快', color: '#f17a33', status: '暂无功能',
-    groups: [],
-    urlRe: /^https:\/\/(?:[a-z0-9-]+\.)*(?:kuaishou|kwaixiaodian)\.com\//
   },
   {
     id: 'tb', label: '淘宝', mark: '淘', color: '#f27623', status: '暂无功能',

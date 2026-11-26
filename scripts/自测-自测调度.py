@@ -155,6 +155,9 @@ def main():
     ok("除脚本类自测外，都在正文里引用了被测源文件", not blind, str(blind))
 
     # ---------- ⑩ 发布凭据指纹：内容变即失效 ----------
+    # .tmp 被 .gitignore 忽略，新开的并行工作树里本来就没有这个目录；
+    # 不先建出来，mkdtemp 会 FileNotFoundError，整条回收被误判成「行为断言失败」。
+    (ROOT / ".tmp").mkdir(parents=True, exist_ok=True)
     base = Path(tempfile.mkdtemp(prefix="release-fingerprint-", dir=ROOT / ".tmp"))
     git = "git"
     subprocess.run([git, "init", "-b", "main"], cwd=base, capture_output=True)

@@ -1952,6 +1952,13 @@
    */
   function maybeConfirm(force) {
     if (!flags.watch && !force) return;
+    /* 纯监视不开抽屉（2026-11-26 用户定稿）：关掉「自动发福袋」后，插件只读
+     * 页面上常驻的进行中卡片，不再按确认间隔弹「超级福袋-活动管理」。
+     * 旧版这条闸只看总闸，于是「我只想看，不要它动手」的人照样每 N 分钟被
+     * 夺一次抽屉 —— 用户报的「关了自动发福袋也自己开抽屉」就是这里。
+     * 手动刷新（force）、手动发福袋及其复核/追读链不受约束：那条链是你亲手
+     * 开的抽屉，读的是眼前现场，不会额外弹。 */
+    if (!force && !flags.auto) return;
     /* 自动节拍只在明确在播时开抽屉（2026-11-03 用户拍板）。
      *
      * ★ 口径反转（本次改动的核心）：旧版是 `if (liveState === 'idle') return`
@@ -5718,15 +5725,17 @@
       var k2 = document.createElement('span'); k2.textContent = '确认间隔';
       /* 问号提示（2026-11-01 05:26 用户：「确认间隔→确认间隔（问号：每隔设定的时间
        * 打开一次福袋抽屉获取倒计时。）」）。文案只回答「这个滑块在干什么」，
-       * 不写实现细节，也不复述开关状态 —— 按第 25 条：一处只回答当前问题。 */
+       * 不写实现细节，也不复述开关状态 —— 按第 25 条：一处只回答当前问题。
+       * 2026-11-26 补限制：关掉「自动发福袋」后不再自动开抽屉，这条间隔随之
+       * 不生效 —— 不说清楚，用户拖了没反应只会以为坏了。 */
       var qh = document.createElement('button');
       qh.type = 'button';
       qh.className = 'qh';
       qh.textContent = '?';
-      qh.setAttribute('aria-label', '说明：每隔设定的时间自动打开抽屉检查一次福袋状态。');
+      qh.setAttribute('aria-label', '说明：每隔设定的时间自动打开抽屉检查一次福袋状态；关掉「自动发福袋」后不再自动开抽屉，要看状态请点「手动刷新」。');
       var qtip = document.createElement('span');
       qtip.className = 'qtip';
-      qtip.textContent = '每隔设定的时间自动打开抽屉检查一次福袋状态。';
+      qtip.textContent = '每隔设定的时间自动打开抽屉检查一次福袋状态；关掉「自动发福袋」后不再自动开抽屉，要看状态请点「手动刷新」。';
       function tipOn() { qtip.classList.add('show'); qh.classList.add('on'); }
       function tipOff() { qtip.classList.remove('show'); qh.classList.remove('on'); }
       qh.addEventListener('pointerenter', tipOn);

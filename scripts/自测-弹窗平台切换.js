@@ -74,7 +74,8 @@ check('DYC_PLATFORMS 存在且含 dy / wx', () => {
   // ⚠️ 别用 deepEqual：PLATS 来自 jsdom 的另一个 realm，数组原型不同，
   //    deepEqual 会以「same structure but not reference-equal」判失败。
   const ids = Array.from(PLATS, (p) => p.id).join(',');
-  assert.equal(ids, 'dy,wx,xhs,ks,tb', '平台顺序应保留原入口并追加新平台，实际 ' + ids);
+  // 2026-11-25：快手平台下线（用户令暂不做）⇒ 序列里不再有 ks。
+  assert.equal(ids, 'dy,wx,xhs,tb', '平台顺序应保留原入口并追加新平台，实际 ' + ids);
 });
 check('每个分组都被认领（漏一个 = 那组永远不显示）', () => {
   const owned = PLATS.reduce((acc, p) => acc.concat(p.groups), []);

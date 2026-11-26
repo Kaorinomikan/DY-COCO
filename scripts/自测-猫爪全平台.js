@@ -290,7 +290,7 @@ async function test(name, fn) {
     + '<button class="auxo-btn" id="top" style="cursor:pointer">置顶</button>'
     + '</div></div></div>';
 
-  console.log('\n【七】只对手柄生效：行内按键回到普通箭头（反馈 #144）');
+  console.log('\n【七】整行商品区悬停即猫爪，行内控件才是箭头（反馈 #144 / #145）');
 
   await test('#144 行内按钮不再被猫爪接管，光标是普通箭头', async () => {
     const f = await boot(URL_SHOP_LIST, { cursorFix: true }, CART_ROW_BTNS);
@@ -303,21 +303,31 @@ async function test(name, fn) {
     assert.equal(f.cursor(del), 'default', '用户要求按钮上是普通箭头，不是手型');
   });
 
-  await test('#144 整行容器改走普通箭头，不再整行猫爪', async () => {
+  /* #145（用户 2026-11-26）：「让鼠标指向中控台购物车商品的时候也是猫爪图案，
+   * 不然一拖动的时候，猫爪唐突出现，很突兀」。
+   * 整行是 rbd 手柄、整块都能起拖 ⇒ 悬停就必须给猫爪，不能等按下才出现。 */
+  await test('#145 悬停整行商品区即显示猫爪（不必等按下拖动）', async () => {
     const f = await boot(URL_SHOP_LIST, { cursorFix: true }, CART_ROW_BTNS);
     const row = f.w.document.getElementById('row');
-    f.fire(row, 'mouseover');
-    assert.ok(row.hasAttribute('data-dyc-cursor-arrow'), '整行应打上「箭头」标记');
-    assert.equal(row.hasAttribute('data-dyc-cursor-fix'), false, '整行不该再是猫爪');
-    assert.equal(f.cursor(row), 'default', '整行光标应是普通箭头');
+    const title = f.w.document.getElementById('title');
+    f.fire(title, 'mouseover');
+    assert.equal(row.hasAttribute('data-dyc-cursor-fix'), true, '整行本体应带猫爪标记');
+    assert.equal(row.hasAttribute('data-dyc-cursor-row'), true,
+      '整行应带「整行容器」锚点（行内控件靠它压回箭头）');
+    assert.match(f.cursor(row), /url\(/, '整行光标应是猫爪');
+    assert.match(f.cursor(title), /url\(/, '商品名跟着整行显示猫爪，不能还是箭头');
   });
 
-  await test('#144 同一行里商品名也随之回到箭头（猫爪只给拖动手柄）', async () => {
+  await test('#145 悬停是猫爪、按下拖动仍是猫爪（同一族图，不跳变）', async () => {
     const f = await boot(URL_SHOP_LIST, { cursorFix: true }, CART_ROW_BTNS);
     const title = f.w.document.getElementById('title');
     f.fire(title, 'mouseover');
-    assert.doesNotMatch(f.cursor(title), /url\(/, '商品名继承整行的箭头，不再显示猫爪');
-    assert.equal(f.cursor(title), 'default', '应是普通箭头');
+    const hover = f.cursor(title);
+    assert.match(hover, /url\(/, '前提：悬停已是猫爪');
+    f.startDrag(f.w.document.getElementById('handle'));
+    assert.equal(f.dragMark(), true, '按下拖拽图标应进入拖动态');
+    assert.match(f.cursor(title), /url\(/, '拖动中仍是猫爪 —— 用户抱怨的是「箭头→猫爪」跳变');
+    assert.ok(f.cursor(title) !== hover, '两态用不同图（悬停张开 / 拖动收拢），但都是猫爪');
   });
 
   await test('#144 平台自己声明 grab 的拖拽图标仍然显示猫爪', async () => {
@@ -330,19 +340,23 @@ async function test(name, fn) {
     assert.match(f.cursor(h), /url\(/, '拖动手柄这个位置必须是猫爪');
   });
 
-  await test('#144 按钮后挂载：整行会从「纯手柄猫爪」改回箭头', async () => {
+  await test('#145 按钮后挂载：整行补上锚点，行内控件照样是箭头', async () => {
     const f = await boot(URL_SHOP_LIST, { cursorFix: true }, CART_ROW);
     const row = f.w.document.getElementById('row');
     f.fire(row, 'mouseover');
-    assert.ok(row.hasAttribute('data-dyc-cursor-fix'), '前提：暂无按钮时，纯手柄行判为猫爪');
+    assert.equal(row.hasAttribute('data-dyc-cursor-row'), false,
+      '前提：暂无按钮时它是纯手柄，不需要整行锚点');
+    assert.match(f.cursor(row), /url\(/, '纯手柄本来就是猫爪');
     const btn = f.w.document.createElement('button');
     btn.id = 'late';
     btn.textContent = '删除';
     row.appendChild(btn);
     f.fire(row, 'mouseover');   // 手柄元素不进缓存，每次强制重判
-    assert.equal(row.hasAttribute('data-dyc-cursor-fix'), false,
-      '行内出现按钮后应撤掉猫爪（React 分步挂载是常态）');
-    assert.ok(row.hasAttribute('data-dyc-cursor-arrow'), '并改打箭头标记');
+    assert.equal(row.hasAttribute('data-dyc-cursor-row'), true,
+      '行内出现按钮后应补上整行锚点（React 分步挂载是常态）');
+    assert.equal(row.hasAttribute('data-dyc-cursor-fix'), true,
+      '整行本体仍是猫爪，不因多出按钮就退回箭头（#145 改口）');
+    assert.equal(f.cursor(btn), 'default', '新出现的按钮仍是普通箭头');
   });
 
   await test('#144 拖动期间按钮随整页握紧爪（既有约定不破）', async () => {
@@ -362,13 +376,21 @@ async function test(name, fn) {
     assert.match(seg, /isHandleSelf/, '结构判据只看元素自身');
   });
 
-  await test('#144 守卫：箭头规则带「非拖动中」前缀且叠两遍权重', async () => {
+  await test('#145 守卫：整行容器不许再被压成箭头，正文只打锚点', async () => {
+    const seg = SRC.split('function classify(')[1].split('function clearLegacyMarks(')[0];
+    assert.match(seg, /hasAttribute\(ROW_ATTR\)[\s\S]{0,120}setAttribute\(MARK_ATTR/,
+      'classify 的整行分支要同时打上整行锚点与猫爪标记（#144 只打箭头，已作废）');
+    assert.ok(!/body \[data-dyc-cursor-row\]\[data-dyc-cursor-row\] \{ cursor: default/.test(SRC),
+      '不许给整行容器写 cursor: default —— 那正是「悬停箭头、一按变猫爪」的成因');
+  });
+
+  await test('#144 守卫：行内控件规则带「非拖动中」前缀且叠两遍权重', async () => {
     const f = await boot(URL_SHOP_LIST, { cursorFix: true }, CART_ROW_BTNS);
     const css = f.style().textContent;
-    const arrow = '[data-dyc-cursor-arrow][data-dyc-cursor-arrow]';
-    assert.ok(css.indexOf('html:not([data-dyc-cursor-dragging]) body ' + arrow) > -1,
-      '整行箭头规则要有「非拖动中」前缀 + 属性叠两遍（压过平台照搬的 grab 规则）');
-    assert.ok(css.indexOf(arrow + ' button') > -1,
+    const row = '[data-dyc-cursor-row][data-dyc-cursor-row]';
+    assert.ok(css.indexOf('html:not([data-dyc-cursor-dragging]) body ' + row) > -1,
+      '整行控件规则要有「非拖动中」前缀 + 属性叠两遍（压过平台照搬的 grab 规则）');
+    assert.ok(css.indexOf(row + ' button') > -1,
       '行内按钮要压回普通箭头');
     assert.ok(css.indexOf('cursor: default !important') > css.indexOf('[data-dyc-cursor-fix]'),
       '箭头规则必须排在猫爪标记规则之后');
